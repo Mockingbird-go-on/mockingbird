@@ -1,0 +1,223 @@
+topic: databases
+title: Базы данных — всё по теме
+keywords: [базы данных, database, sql, nosql, postgresql, mysql, redis, patroni, патрони, галера, galera, wal, mvcc, vacuum, репликация, replication, pgbouncer]
+sections:
+  - id: relational
+    name: Реляционные БД и SQL
+    blocks:
+      - q: "Что такое реляционная БД и ACID?"
+        keywords: [relational, реляционная, acid, атомарность, изоляция]
+        a: "**Реляционная БД** хранит данные в таблицах со связями (FK). **ACID**: **Atomicity** (транзакция целиком), **Consistency** (инварианты), **Isolation** (параллельные транзакции не мешают), **Durability** (зафиксированные данные переживают сбой). Гарантирует надёжность, но дороже по производительности."
+        related: ["Что такое транзакция?"]
+      - q: "Что такое транзакция и commit/rollback?"
+        keywords: [транзакция, transaction, commit, rollback, изоляция]
+        a: "**Транзакция** — группа операций как единое целое: либо все применяются (**COMMIT**), либо ни одна (**ROLLBACK**). Изоляция транзакций и уровни изоляции определяют, как параллельные транзакции видят изменения друг друга."
+        related: ["Какие бывают уровни изоляции транзакций?"]
+      - q: "Какие бывают уровни изоляции транзакций?"
+        keywords: [изоляция, isolation, read committed, repeatable read, serializable, read uncommitted]
+        a: "Строгость растёт: **Read Uncommitted** (dirty reads), **Read Committed** (нет dirty, есть non-repeatable), **Repeatable Read** (нет фантомов при snapshot), **Serializable** (полная изоляция, дорого). По умолчанию: **PostgreSQL — Read Committed**, **MySQL — Repeatable Read**."
+        related: ["Что такое dirty read?"]
+      - q: "Что такое индексы и как они работают?"
+        keywords: [индекс, index, b tree, btree, hash, покрывающий]
+        a: "**Индекс** — структура для быстрого поиска: чаще **B-tree** (балансируется, порядок сохраняется), реже **hash**, **GIN/GiST** для JSON/полнотекста. Ускоряет SELECT и WHERE, но замедляет INSERT/UPDATE и занимает место. Индекс без использования в запросе — бесполезен."
+        related: ["Как понять, используется ли индекс?"]
+      - q: "Что такое JOIN и какие бывают?"
+        keywords: [join, inner join, left join, outer join, cross join]
+        a: "**JOIN** связывает таблицы: **INNER** — только совпавшие строки; **LEFT/RIGHT** — все строки одной стороны + совпавшие другой (NULL для пустых); **FULL** — обе; **CROSS** — декартово произведение. Для JOIN нужны условия (обычно по FK) и индексы."
+        related: ["Чем INNER отличается от LEFT JOIN?"]
+      - q: "Что такое нормализация и денормализация?"
+        keywords: [нормализация, 1нф, 2нф, 3нф, нормальные формы, денормализация]
+        a: "**Нормализация** — устранение избыточности и аномалий через нормальные формы (**1NF** атомарность, **2NF** зависимость от всего ключа, **3NF** от неключевых атрибутов). Плюс — целостность, минус — больше JOIN'ов. **Денормализация** — осознанная избыточность для скорости чтения."
+        related: ["Когда денормализация оправдана?"]
+      - q: "Что такое первичный и внешний ключ?"
+        keywords: [primary key, foreign key, pk, fk, уникальность]
+        a: "**Primary Key (PK)** — уникальный идентификатор строки (не NULL, один на таблицу). **Foreign Key (FK)** — ссылка на PK другой таблицы, обеспечивает **целостность связей**. ON DELETE CASCADE/RESTRICT — поведение при удалении связанных строк."
+        related: ["Что такое JOIN?"]
+      - q: "Что такое NULL в SQL и почему он проблемный?"
+        keywords: ["null", "none", three valued logic, is null, coalesce]
+        a: "**NULL** — «нет значения», не равно ничему, даже NULL. **Трёхзначная логика**: NULL AND/OR — NULL. Сравнения `= NULL` не работают — нужен **IS NULL**; **COALESCE/NULLIF** обрабатывают NULL. Классическая ловушка собеседований и баг в запросах."
+        related: ["Что такое COALESCE?"]
+  - id: performance
+    name: Производительность и оптимизация
+    blocks:
+      - q: "Что такое EXPLAIN и как читать план запроса?"
+        keywords: [explain, план запроса, seq scan, index scan, cost, analyze]
+        a: "**EXPLAIN** показывает **план исполнения** SQL: способ доступа (seq scan, index scan, bitmap), cost (относительная стоимость), число строк. **EXPLAIN ANALYZE** — реальное исполнение. На что смотреть: seq scan на больших таблицах, наличие индексных доступов, узлы с высокой cost."
+        related: ["Как понять, используется ли индекс?"]
+      - q: "Почему запрос медленный и как его ускорить?"
+        keywords: [медленный запрос, оптимизация, индекс, плана, узкое место]
+        a: "Порядок диагностики: **EXPLAIN ANALYZE** → найти seq scan на больших таблицах, лишние JOIN'ы/сортировки, отсутствие индекса, распаковку больших строк. Средства: **индексы**, покрывающие индексы, партиционирование, кэш, витрины/агрегация заранее, ограничение выборки (LIMIT)."
+        related: ["Что такое EXPLAIN?"]
+      - q: "Что такое покрывающий индекс?"
+        keywords: [covering index, покрывающий индекс, include, index only scan]
+        a: "**Покрывающий индекс** включает **все колонки** нужные запросу (`CREATE INDEX ... INCLUDE (col)`), тогда **Index Only Scan** без обращения к таблице — быстрее. Выигрыш при частых запросах по узкому набору полей; плата — место и скорость записи."
+        related: ["Что такое индексы?"]
+      - q: "Что такое партиционирование таблиц?"
+        keywords: [partitioning, партиционирование, range, hash, секции]
+        a: "**Партиционирование** делит большую таблицу на **секции** по ключу (RANGE по времени, HASH по id): поиск идёт в нужной секции, старые секции можно дропать. В PostgreSQL — declarative partitioning. Помогает при огромных объёмах и временных данных."
+        related: ["Как ускорить большой запрос?"]
+      - q: "Что такое connection pool?"
+        keywords: [connection pool, пул соединений, pgbouncer, соединения]
+        a: "**Пул** переиспользует открытые соединения к БД: создание TCP+TLS+auth дорого, а соединения от сотен сервисов исчерпывают БД (max_connections). Инструменты: **pgbouncer**, **HikariCP**. Правило: соединений должно хватать, но не «взрывать» БД."
+        related: ["Что делать при нехватке соединений?"]
+  - id: nosql
+    name: NoSQL
+    blocks:
+      - q: "Что такое NoSQL и какие бывают типы?"
+        keywords: [nosql, key value, document, columnar, graph, типы]
+        a: "**NoSQL** — нереляционные хранилища под конкретный паттерн: **key-value** (Redis), **document** (MongoDB, CouchDB), **columnar** (Cassandra, ClickHouse), **graph** (Neo4j). Отказываются от части ACID ради **масштабируемости** и **гибкой схемы**. Выбор по характеру данных и нагрузке."
+        related: ["Когда выбирать NoSQL, а когда SQL?"]
+      - q: "Что такое CAP-теорема?"
+        keywords: [cap, consistency, availability, partition tolerance, согласованность]
+        a: "**CAP**: распределённая система может гарантировать только два из трёх: **Consistency** (все видят одно), **Availability** (всегда отвечает), **Partition tolerance** (работает при разрыве сети). На практике сеть рвётся всегда → выбор между CP и AP: БД (CP, строгая согласованность) или кэши/реплики (AP)."
+        related: ["Что такое eventual consistency?"]
+      - q: "Что такое eventual consistency?"
+        keywords: [eventual consistency, конечная согласованность, репликация, задержка]
+        a: "**Eventually consistent** — система в конце концов придёт к согласованному состоянию, но в момент времени реплики могут различаться (задержка репликации). Компромисс AP вместо CP. Примеры: DNS, реплики Cassandra, кэши. Для части данных нужна строгая согласованность — использовать CP."
+        related: ["Что такое CAP-теорема?"]
+      - q: "Что такое Redis и для чего его используют?"
+        keywords: [redis, кэш, key value, pub/sub, in memory, ttl]
+        a: "**Redis** — in-memory key-value хранилище: кэш, сессии, rate-limiting, очереди (pub/sub, Streams, Redis Queue), счётчики. Очень быстрый (память), типы данных: string, list, hash, set, zset. **TTL** для автоматического истечения. Персистентность — RDB/AOF, но не замена основной БД."
+        related: ["Как правильно кэшировать?"]
+      - q: "Что такое MongoDB и чем отличается от PostgreSQL?"
+        keywords: [mongodb, документная, document, bson, агрегация]
+        a: "**MongoDB** — document-БД: документы (BSON) без жёсткой схемы, вложенные структуры, горизонтальное масштабирование (sharding), агрегационный pipeline. Отличие от PostgreSQL: гибкая схема и масштабируемость против строгих связей, транзакций и SQL."
+        related: ["Что такое document store?"]
+      - q: "Что такое шардирование и репликация?"
+        keywords: [sharding, шардирование, replication, репликация, горизонтальное масштабирование]
+        a: "**Репликация** — копии данных на несколько узлов (отказоустойчивость, чтение с реплик). **Шардирование** — деление данных по ключу на разные узлы (вертикальное масштабирование записи). Часто вместе: каждый шард реплицирован. Ключ шарда критичен для распределения."
+        related: ["Что такое CAP-теорема?"]
+  - id: cache
+    name: Кэширование
+    blocks:
+      - q: "Как правильно кэшировать?"
+        keywords: [кэш, cache, cache aside, write through, ttl, инвалидация]
+        a: "Паттерны: **cache-aside** (читаем кэш, промах → БД → кладём в кэш), **write-through** (пишем в кэш и БД), **write-behind**. Ключевое — **инвалидация**: TTL, удаление при изменении, версионирование. Без инвалидации кэш выдаёт устаревшие данные."
+        related: ["Что такое cache-aside?"]
+      - q: "Что такое cache stampede (thundering herd)?"
+        keywords: [cache stampede, thundering herd, стампеда, разрушение кэша]
+        a: "**Stampede** — при истечении популярного ключа все запросы одновременно идут в БД (перегрузка). Защита: **single-flight** (один запрос в БД, остальные ждут), **stale-while-revalidate**, jitter в TTL, разнесённые дедлайны."
+        related: ["Как правильно кэшировать?"]
+      - q: "Что такое TTL и почему он важен?"
+        keywords: [ttl, время жизни, expire, истечение, кэш]
+        a: "**TTL** — время жизни записи в кэше. Слишком большой — устаревшие данные; слишком маленький — низкий hit rate и лишняя нагрузка на БД. Подбирается по частоте изменения данных; комбинируется с инвалидацией по событию."
+        related: ["Как правильно кэшировать?"]
+  - id: distributed
+    name: Распределённые данные
+    blocks:
+      - q: "Что такое 2PC (two-phase commit)?"
+        keywords: [2pc, two phase commit, распределённая транзакция, prepare, commit]
+        a: "**2PC** — координатор просит всех участников **prepare** (заблокировать и быть готовыми), затем **commit** всем; при любом отказе — **abort**. Гарантирует атомарность между БД, но блокирует ресурсы и чувствителен к падению координатора (blocking)."
+        related: ["Что такое saga?"]
+      - q: "Что такое saga в микросервисах?"
+        keywords: [saga, сага, компенсация, распределённая транзакция, откат]
+        a: "**Saga** — цепочка локальных транзакций с **компенсацией**: если шаг падает, выполняются обратные действия для уже пройденных шагов. Альтернатива 2PC для микросервисов: нет глобальных блокировок, но согласованность **eventually**. Orchestration (координатор) или choreography (события)."
+        related: ["Что такое 2PC?"]
+      - q: "Что такое outbox pattern?"
+        keywords: [outbox, паттерн, событие, транзакция, публикация]
+        a: "**Outbox** — событие пишется в таблицу **в той же транзакции**, что и бизнес-данные; отдельный релизер публикует его в очередь. Гарантирует «не потерять событие» без распределённой транзакции. Классика для event-driven интеграций."
+        related: ["Что такое saga?"]
+      - q: "Что такое dead letter queue?"
+        keywords: [dlq, dead letter, очередь недоставленных, retry, обработка]
+        a: "**DLQ** — очередь для сообщений, которые не удалось обработать после ретраев (ошибка формата, баг). Служит для отладки, повторной обработки и аудита. Политика: ретраи с backoff, потом DLQ + алерт, а не потеря сообщения."
+        related: ["Что такое retry и backoff?"]
+  - id: ha_clustering
+    name: HA, кластеры и репликация
+    blocks:
+      - q: "Что такое Patroni и как работает HA-кластер PostgreSQL?"
+        keywords: [patroni, патрони, ha, кластер, high availability, switchover, failover, dcs, etcd, consul, leader, replica, postgresql]
+        a: "**Patroni** — Python-демон для **High Availability** PostgreSQL: автоматический **failover** при падении мастера и **switchover** (плановое переключение). Архитектура: кластер из N инстансов PostgreSQL (1 leader + реплики) + **DCS** (Etcd/Consul/ZooKeeper) как источник правды о том, кто leader. Patroni на каждом узле следит за здоровьем, пишет ключ лидерства в DCS, при потере связи мастера с DCS инициирует выборы новой реплики в leader. **Параметры**: `synchronous_mode` (синхронная репликация — ноль потери данных, ноFalback при отставании), `maximum_lag_on_failover` (макс. отставание реплики). **Результат**: отказ мастера автоматически продвигает реплику. **Подводный камень**: DCS — тоже единая точка отказа; нужно 3+ узла Etcd и алерт на потерю кворума."
+        related: ["Как работает репликация PostgreSQL?", "Что такое synchronous_commit?", "Как настроить Etcd кворум?"]
+      - q: "Как работает репликация PostgreSQL (streaming и logical)?"
+        keywords: [репликация, streaming, logical, wal, standby, реплика, logical replication, publication, subscription]
+        a: "**Streaming (физическая)** — реплика получает **WAL**-записи от мастера через протокол репликации; standby — побайтовая копия (на уровне блоков). Всегда одинаковая мажорная версия, одинаковая структура. **Logical (логическая)** — репликация через **publication/subscription** на уровне SQL-команд (INSERT/UPDATE/DELETE); разные версии, разные таблицы, фильтрация по строкам. Streaming — для HA (Patroni), logical — для интеграций, миграций, sharding. **Подводный камень**: logical не реплицирует DDL и sequence state — нужно синхронизировать вручную."
+        related: ["Что такое WAL?", "Что такое Patroni?", "Чем physical отличается от logical репликации?"]
+      - q: "Что такое WAL и checkpoint?"
+        keywords: [wal, write ahead log, checkpoint, журнал, lsn, redo log, innodb]
+        a: "**WAL (Write-Ahead Log)** — журнал транзакций: изменения сначала пишутся в WAL (последовательно, быстро), потом применяются к таблицам (произвольный доступ, медленнее). Гарантия **Durability**: после COMMIT запись в WAL на диске = данные надёжны. **Checkpoint** — момент, когда все изменения из WAL гарантированно сброшены на страницы таблиц; после checkpoint старые WAL-сегменты можно удалять/архивировать. В PostgreSQL — `wal_level`, `max_wal_size`, `checkpoint_timeout`. **В MySQL/InnoDB** аналог — **redo log** + **binlog**."
+        related: ["Что такое PITR?", "Как работает репликация PostgreSQL?"]
+      - q: "Что такое MVCC и как PostgreSQL обеспечивает изоляцию?"
+        keywords: [mvcc, многоверсионность, snapshot, vacuum, dead tuples, xmin, xmax, transaction id]
+        a: "**MVCC (Multi-Version Concurrency Control)** — каждая транзакция видит **снимок** данных на момент старта (**snapshot**), а не блокирует строки для читателей. При UPDATE старая версия строки помечается `xmax` (dead tuple), создаётся новая. Читатели старой транзакции видят старую версию. Плюс — читатели не блокируют писателей и наоборот. Минус — **dead tuples** накапливаются (bloat) → нужен **VACUUM** для очистки. Уровни изоляции PostgreSQL: Read Committed (snapshot на каждый оператор), Repeatable Read (snapshot на транзакцию), Serializable (SSI — предикатные блокировки)."
+        related: ["Что такое VACUUM?", "Какие бывают уровни изоляции транзакций?"]
+      - q: "Что такое VACUUM и autovacuum?"
+        keywords: [vacuum, autovacuum, bloat, dead tuples, analyze, статистика, очистка]
+        a: "**VACUUM** — помечает dead tuples (от старых версий строк) как доступные для переиспользования, не возвращая место ОС (кроме **VACUUM FULL** — полный пересбор таблицы, блокирует). **ANALYZE** — обновляет статистику распределения данных для планировщика. **autovacuum** — фоновый процесс, запускается автоматически по порогам (`autovacuum_vacuum_threshold`, `autovacuum_vacuum_scale_factor`). **Проблемы**: долгие транзакции мешают vacuum (dead tuples нельзя очистить), bloat растёт → нужен ручной VACUUM FULL или pg_repack. **Тюнинг**: `autovacuum_naptime`, `autovacuum_max_workers`, `vacuum_cost_limit`."
+        related: ["Что такое MVCC?", "Почему растёт размер таблицы?"]
+      - q: "Что такое Galera Cluster (MySQL/MariaDB)?"
+        keywords: [galera, wsrep, мультимастер, multi-master, mysql, mariadb, синхронная репликация, cert]
+        a: "**Galera Cluster** — **синхронная мультимастерная** репликация для MySQL/MariaDB через **wsrep** API. Все узлы — мастера (принимают запись), репликация — сертификация транзакций (cert-based replication): узел применяет транзакцию локально, реплицирует, при конфликте откатывает. Гарантия: транзакция либо committed на всех, либо ни на одном. Плюс — нет failover-задержки (любой узел — мастер). Минус — чувствительность к сети и DDL, конфликтующие writes замедляют, нужен **HAProxy/ProxySQL** для балансировки по `wsrep_ready`. Для PostgreSQL-аналог — **Patroni** (но primary-replica, не multi-master)."
+        related: ["Чем Galera отличается от Patroni?", "Что такое wsrep_ready?"]
+      - q: "Что такое synchronous_commit и режимы синхронизации?"
+        keywords: [synchronous_commit, synchronous_standby_names, sync, async, replica, quorum]
+        a: "**synchronous_commit** — определяет, когда считать COMMIT завершённым: **off/local** (запись в WAL в памяти — быстро, риск потери при падении), **on** (flush на диск —_durability), **remote_write/remote_flush/remote_apply** — ждать синхронной реплики. **synchronous_standby_names** — какие реплики синхронные: `FIRST n (replica1, replica2)` (n первых), `ANY n (...)` (quorum — любые n). Для HA: синхронная репликация = ноль потери при failover, но slower writes. **Patroni** управляет этим автоматически через `synchronous_mode`."
+        related: ["Как работает репликация PostgreSQL?", "Что такое Patroni?"]
+      - q: "Что такое split-brain и как защититься?"
+        keywords: [split-brain, расщепление мозга, fencing, stonith, dcs, кворум]
+        a: "**Split-brain** — два узла одновременно считают себя лидером (разрыв сети между ними). Последствия — двойная запись, потеря данных, рассинхронизация. **Защита**: **DCS** (Etcd/Consul) с **кворумом** (большинство узлов онлайн), **fencing/STONITH** (выключить проигравший узел), таймауты (`ttl` ключа лидерства в Patroni). В Patroni: мастер теряет ключ в DCS → демоm себя лидером, реплика получает ключ → становится лидером. Если DCS недоступен — кластер «замораживается» (нет записи) пока DCS не восстановится — это лучше split-brain."
+        related: ["Что такое Patroni?", "Как настроить Etcd кворум?"]
+  - id: postgresql
+    name: PostgreSQL — специфичные вопросы
+    blocks:
+      - q: "Что такое индексы PostgreSQL: B-tree, GIN, GiST, BRIN?"
+        keywords: [btree, gin, gist, brin, индекс, index, postgresql, jsonb, полнотекстовый, range]
+        a: "**B-tree** — универсальный: точечный поиск, диапазоны, сортировка. **GIN** — для массивов, JSONB, полнотекстового поиска (много ключей на строку, медленная запись, быстрый поиск). **GiST** — геометрия, диапазоны, полнотекстовый (tsvector). **BRIN** — для огромных таблиц с физическим порядком (time-series): хранит только min/max блока, крошечный размер. **Выбор**: B-tree по умолчанию; GIN для JSONB/поиска; BRIN для временных рядов на больших таблицах. `CREATE INDEX CONCURRENTLY` — без блокировки записи."
+        related: ["Как понять используется ли индекс?", "Что такое покрывающий индекс?"]
+      - q: "Что такое JSONB и когда его использовать?"
+        keywords: [jsonb, json, document, nosql, postgresql, гибкая схема]
+        a: "**JSONB** — бинарный JSON в PostgreSQL: индексируемый (GIN), запрашиваемый (`->`, `->>`, `@>`, `?`), валидируемый. Плюс — гибкая схема без миграций, NoSQL-функции в реляционной БД. Минус — больше места, нет полной реляционной строгости. Когда использовать: метаданные, динамические атрибуты, конфиги. Когда НЕ использовать — если поле нужно во WHERE/JOIN часто → выноси в отдельную колонку. Альтернатива — отдельная документная БД (MongoDB)."
+        related: ["Что такое GIN-индекс?", "Чем JSONB отличается от JSON?"]
+      - q: "Какие бывают расширения PostgreSQL?"
+        keywords: [extensions, расширения, postgis, pg_stat_statements, pg_partman, timescaledb, pgvector]
+        a: "**pg_stat_statements** — статистика запросов (count, avg time, IO) — основа профайлинга. **PostGIS** — геоданные. **pg_partman** — автопартиционирование (time-series). **TimescaleDB** — time-series на PostgreSQL. **pgvector** — векторный поиск (AI/embeddings). **pgcrypto** — шифрование колонок. **Установка**: `CREATE EXTENSION IF NOT EXISTS ...;`. pg_stat_statements в `shared_preload_libraries`."
+        related: ["Как найти медленные запросы?"]
+      - q: "Как найти медленные запросы в PostgreSQL?"
+        keywords: [pg_stat_statements, медленный запрос, profiling, pg_stat_activity, log_min_duration_statement]
+        a: "**pg_stat_statements** — главный инструмент: `query`, `calls`, `mean_exec_time`, `total_exec_time`, `rows`. Запрос: `SELECT query, calls, mean_exec_time FROM pg_stat_statements ORDER BY total_exec_time DESC LIMIT 20`. **pg_stat_activity** — что выполняется прямо сейчас (`state = 'active'`, `wait_event`). **log_min_duration_statement** — лог запросов дольше N мс. **auto_explain** — лог планов медленных запросов. Порядок: top-N по total_time → EXPLAIN ANALYZE конкретного → индекс/переписывание."
+        related: ["Что такое EXPLAIN?", "Какие бывают расширения PostgreSQL?"]
+      - q: "Что такое CTE и оконные функции?"
+        keywords: [cte, with, common table expression, window function, over, partition by, row_number]
+        a: "**CTE (WITH)** — временный именованный подзапрос в пределах одного SELECT; улучшает читаемость, в PostgreSQL 12+ поддерживает inline (оптимизатор может развернуть). **Recursive CTE** — рекурсия для деревьев/графов (org chart, category tree). **Оконные функции** — агрегаты БЕЗ группировки строк: `SUM(...) OVER (PARTITION BY ... ORDER BY ...)`, `ROW_NUMBER()`, `RANK()`, `LAG()`, `LEAD()`. Примеры: top-N в группе, скользящее среднее, сравнение с предыдущей строкой. Мощный инструмент для аналитики."
+        related: ["Что такое JOIN?"]
+      - q: "Что такое partial index и expression index?"
+        keywords: [partial index, expression index, функциональный индекс, where, выражение]
+        a: "**Partial index** — индекс по подмножеству строк: `CREATE INDEX ... WHERE status = 'active'`. Меньше размер, быстрее обновление, для частого фильтра. **Expression index** — индекс по выражению: `CREATE INDEX ON users (lower(email))` — для case-insensitive поиска. Важно: запрос должен использовать ТОТ ЖЕ синтаксис выражения, чтобы индекс сработал."
+        related: ["Что такое индексы PostgreSQL?"]
+  - id: backup
+    name: Резервное копирование и восстановление
+    blocks:
+      - q: "Что такое PITR — восстановление на момент времени?"
+        keywords: [pitr, point-in-time, recovery, wal, архивирование, backup, восстановление, base backup]
+        a: "**PITR** — восстановление БД на **любой момент времени** из базового backup + WAL-архивов. Настройка: `archive_mode=on`, `archive_command='cp %p /backup/wal/%f'`, периодический base backup (`pg_basebackup`). Восстановление: `restore_command`, `recovery_target_time='2025-01-01 12:00:00'` в `recovery.signal`. Сценарий: «упали в 12:30, нужно откатиться к 12:00» → PITR к 12:00. **Для Cron**: `pgBackRest`/`Barman` автоматизируют base backup + WAL-архивирование."
+        related: ["Что такое WAL?", "Как настроить backup PostgreSQL?"]
+      - q: "Какие стратегии backup PostgreSQL?"
+        keywords: [backup, pg_dump, pg_basebackup, снапшот, physical, logical, pgbackrest]
+        a: "**pg_dump/pg_dumpall** — логический backup (SQL-скрипт или custom): переносим между версиями/архитектурами, медленный на больших БД. **pg_basebackup** — физический (побайтовая копия data dir + WAL): для PITR и реплик. **FS-снапшот** (LVM/ZFS): мгновенный, но нужна консистентность (pg_start_backup/pg_stop_backup или `pgbackrest`). **pgBackRest/Barman** — инкрементальные backup + WAL-архив + PITR. Стратегия: ежедневный full + WAL-архив + еженедельная проверка восстановления."
+        related: ["Что такое PITR?", "Как тестировать backup?"]
+      - q: "Как тестировать восстановление из backup?"
+        keywords: [тестирование backup, restore, проверка, dry run, recovery test]
+        a: "**Тест восстановления** — обязательная часть стратегии: backup, который не проверен = нет backup'а. Регулярно (раз в неделю/месяц) разворачивать backup на staging, проверять целостность (`pg_checksums`, сравнение размера, тестовые запросы). Автоматизация: CI/CD pipeline разворачивает backup, прогоняет smoke-тесты. **pgBackRest**: `pgbackrest restore --type=pitr --target-time=...` для теста PITR. Фиксировать RTO/RPO — целевое время/потерю данных при восстановлении."
+        related: ["Какие стратегии backup PostgreSQL?"]
+  - id: migrations
+    name: Миграции схемы и locks
+    blocks:
+      - q: "Какие бывают блокировки в БД?"
+        keywords: [lock, блокировка, deadlock, row lock, table lock, advisory lock, access exclusive, share]
+        a: "**Уровни блокировок таблиц** (PostgreSQL): `ACCESS SHARE` (SELECT), `ROW EXCLUSIVE` (INSERT/UPDATE/DELETE), `SHARE` (CREATE INDEX), `ACCESS EXCLUSIVE` (DROP/TRUNCATE/ALTER) — самый строгий. **Row locks** — на уровне строк (FOR UPDATE, FOR SHARE). **Deadlock** — две транзакции ждут блокировки друг друга → БД откатывает одну. **Advisory locks** — приложенческие блокировки (`pg_advisory_lock`) для координации вне транзакций. **Диагностика**: `pg_locks`, `lock_timeout`, `statement_timeout`. Защита: короткие транзакции, консистентный порядок блокировок."
+        related: ["Что такое тупик (deadlock)?", "Что такое transaction?"]
+      - q: "Что такое deadlock и как избежать?"
+        keywords: [deadlock, тупик, взаимоблокировка, retry, порядок блокировок]
+        a: "**Deadlock** — T1 держит блокировку A и ждёт B, T2 держит B и ждёт A → обе висят. PostgreSQL автоматически detects и откатывает одну (`ERROR: deadlock detected`). **Предотвращение**: всегда блокировать ресурсы в **одном порядке** (например, по id), держать транзакции короткими, `lock_timeout` для ограничения ожидания. На уровне кода — retry после deadlock (он expected, не фатальный). В распределённых системах — таймауты + idempotency ключи."
+        related: ["Какие бывают блокировки в БД?"]
+      - q: "Как сделать zero-downtime миграцию схемы?"
+        keywords: [миграция, schema, zero downtime, online, expand contract, parallel]
+        a: "**Zero-downtime** — схема меняется без блокировки записи. **Expand-Contract**: 1) добавить новую колонку/таблицу (expand), 2) двойная запись (старая + новая), 3) бэкфилл данных, 4) читать из новой, 5) удалить старую (contract). В PostgreSQL: `ALTER TABLE ADD COLUMN ... DEFAULT ...` (в PG 11+ не пересчитывает данные), `CREATE INDEX CONCURRENTLY` (без блокировки), `ALTER TABLE ... SET NOT NULL` — разбить на шаги (сначала NOT VALID, потом VALIDATE). Избегать долгих `ACCESS EXCLUSIVE` операций на проде."
+        related: ["Что такое блокировки в БД?", "Как создать индекс без блокировки?"]
+      - q: "Что такое savepoint и вложенные транзакции?"
+        keywords: [savepoint, точка сохранения, nested transaction, rollback to savepoint]
+        a: "**Savepoint** — точка внутри транзакции, к которой можно откатиться (**ROLLBACK TO savepoint**), не прерывая всю транзакцию. Позволяет «попробовать и откатить часть». Вложенных транзакций в SQL нет (SAVEPOINT — их эмуляция). Пример: вставить batch, если часть падает — откатить к savepoint, продолжить остальное. В ORM (SQLAlchemy/Django) — `transaction.atomic()` использует savepoint под капотом."
+        related: ["Что такое транзакция?"]
+      - q: "Что такое pgBouncer и зачем он нужен?"
+        keywords: [pgbouncer, connection pooler, пул соединений, transaction pooling, session pooling]
+        a: "**pgBouncer** — легковесный connection pooler для PostgreSQL: переиспользует соединения между клиентами. Режимы: **session pooling** (соединение на сессию), **transaction pooling** (соединение на транзакцию — максимальная утилизация), **statement pooling** (на оператор — редко). Нужно когда: сотни-тысячи клиентов (микросервисы, web), `max_connections` PostgreSQL исчерпан, частый connection setup/teardown. Параметры: `pool_size`, `max_client_conn`, `reserve_pool_size`. **Подводный камень**: transaction pooling не работает с session-level features (temp tables, SET, advisory locks в сессии)."
+        related: ["Что такое connection pool?", "Почему исчерпываются соединения?"]

@@ -1,0 +1,231 @@
+topic: kubernetes
+title: Kubernetes — всё по теме
+keywords: [kubernetes, k8s, кубер, оркестрация]
+sections:
+  - id: arch
+    name: Архитектура кластера
+    blocks:
+      - q: "Расскажи про архитектуру Kubernetes."
+        keywords: [архитектура, кластер, control plane, worker node, master]
+        a: "Кластер = **control plane** + **worker-ноды**. Control plane: **kube-apiserver** (шлюз API), **etcd** (хранилище состояния), **kube-scheduler** (размещение подов), **kube-controller-manager** (контроллеры). На нодах: **kubelet**, **kube-proxy**, **container runtime**. Пользователь общается с apiserver через `kubectl`."
+        related: ["Что такое kubeconfig?"]
+      - q: "Что такое etcd и почему он критичен?"
+        keywords: [etcd, состояние, raft, хранилище, бэкап]
+        a: "**etcd** — распределённое key-value хранилище, **единственный источник правды** кластера (все объекты и состояние). Использует консенсус **Raft**, требует быстрых дисков. Критичен для доступности: без него нет управления; нужны **регулярные бэкапы** (etcdctl snapshot) и восстановление."
+        related: ["Как забэкапить кластер?"]
+  - id: control
+    name: Control plane
+    blocks:
+      - q: "В чём особенности control plane и для чего он нужен?"
+        keywords: [control plane, control-plane, controlplane, мастер, управление, компоненты]
+        a: "**Control plane** — «мозг» кластера: принимает все операции, хранит состояние и приводит кластер к желаемому состоянию. Компоненты: **kube-apiserver** (единственная точка входа, authN/authZ, admission, запись в etcd), **etcd** (состояние), **kube-scheduler** (планирование подов), **kube-controller-manager** (набор контроллеров), опционально **cloud-controller-manager**. Control plane **не обслуживает** пользовательский трафик — только управление. Для отказоустойчивости — 3+ реплики etcd/apiserver."
+        related: ["Что будет при падении control plane?", "Как обеспечить HA control plane?"]
+      - q: "Что делает kube-apiserver?"
+        keywords: [kube-apiserver, apiserver, api server, входная точка]
+        a: "**kube-apiserver** — фронтенд control plane: единственная точка доступа к API. Выполняет **аутентификацию**, **авторизацию** (RBAC), **admission control** (валидация, мутация, вебхуки), сохраняет объекты в **etcd**. Все компоненты (kubelet, scheduler, controller-manager, kubectl) общаются только через него."
+        related: ["Что такое admission webhooks?"]
+      - q: "Как kube-scheduler выбирает ноду для пода?"
+        keywords: [scheduler, планировщик, фильтрация, scoring, nodeaffinity, taints]
+        a: "Двухфазно: **фильтрация** — отбрасывает неподходящие ноды (ресурсы requests, nodeSelector, nodeAffinity, taints/tolerations, порты); затем **scoring** — ранжирует (баланс ресурсов, топология, локализация). Результат — binding к ноде. Плагины расширяют логику (TopologySpreadConstraints, PriorityClass)."
+        related: ["Чем nodeAffinity отличается от taints?"]
+      - q: "Что делает kube-controller-manager?"
+        keywords: [controller manager, контроллеры, reconcile, желаемое состояние]
+        a: "Набор контроллеров (**deployment, replicaset, node, endpoint, service-account** и др.). Каждый работает по **control loop**: смотрит текущее состояние → сравнивает с желаемым → действует. Так Deployments, ReplicaSets и узлы поддерживаются в консистентном виде."
+        related: ["Что такое control loop?"]
+      - q: "Что такое control loop (reconcile)?"
+        keywords: [control loop, reconcile, цикл управления, конвергентность]
+        a: "Бесконечный цикл: **Observe → Diff → Act**: контроллер читает состояние, находит разницу с желаемым и применяет действия, пока не сойдётся (convergence). Основа декларативной модели Kubernetes и всех контроллеров."
+        related: ["Почему Kubernetes называют декларативным?"]
+      - q: "Что будет, если упадёт etcd или apiserver?"
+        keywords: [etcd падение, apiserver недоступен, отказ, доступность кластера]
+        a: "Без **apiserver** нельзя менять состояние, но существующие поды **продолжают работать**; control plane «заморожен». Без **etcd** — потеря управления и риск потери конфигурации (без бэкапов). kubelet продолжает поддерживать поды на нодах, но без реконсиляции сверху."
+        related: ["Как восстановиться после потери etcd?"]
+  - id: worker
+    name: Worker-ноды
+    blocks:
+      - q: "Что делает kubelet?"
+        keywords: [kubelet, агент, нода, поды]
+        a: "**kubelet** — агент на каждой ноде: управляет жизненным циклом **подов** (создание, рестарты, пробы), общается с apiserver, регистрирует ноду и отчитывается о статусе подов. Через него работают readiness/liveness пробы."
+        related: ["Что происходит при падении kubelet?"]
+      - q: "Что делает kube-proxy?"
+        keywords: [kube-proxy, iptables, ipvs, сервисы, балансировка]
+        a: "Реализует **Service**: настраивает правила **iptables/ipvs** для балансировки трафика между подами, health-check endpoints, отвечает за ClusterIP/NodePort/LoadBalancer на уровне ноды."
+        related: ["В чём разница между iptables и ipvs режимами?"]
+      - q: "Что такое container runtime?"
+        keywords: [container runtime, cri, containerd, cri-o, docker runtime]
+        a: "Низкоуровневый компонент, запускающий контейнеры по стандарту **CRI**. Современные: **containerd**, **CRI-O**. Docker напрямую не используется (нужен cri-dockerd). kubelet общается с runtime через CRI-сокет."
+        related: ["Почему Docker убрали из k8s?"]
+  - id: workloads
+    name: Workloads
+    blocks:
+      - q: "Что такое Pod?"
+        keywords: [pod, под, минимальная единица, контейнеры]
+        a: "**Pod** — минимальная единица деплоя: один или несколько контейнеров, разделяющих сеть, IP и тома. Жизненный цикл: **Pending → Running → Succeeded/Failed**. Готовность проверяется **readiness/liveness/startup** пробами. Обычно поды управляются контроллерами, а не создаются вручную."
+        related: ["Что такое multi-container pod?"]
+      - q: "В чём отличие Deployment, ReplicaSet и StatefulSet?"
+        keywords: [deployment, replicaset, statefulset, отличие, сравнение]
+        a: "**ReplicaSet** поддерживает число реплик. **Deployment** — декларативные обновления и откаты поверх ReplicaSet (rolling update). **StatefulSet** — для stateful-приложений: **стабильные имена** (pod-0, pod-1), стабильный сетевой ID, **свой PVC на реплику**, гарантированный порядок. Stateless — Deployment, stateful — StatefulSet."
+        related: ["Когда нужен StatefulSet, а не Deployment?"]
+      - q: "Что такое DaemonSet?"
+        keywords: [daemonset, daemon, на каждой ноде, агенты]
+        a: "**DaemonSet** запускает **по одному поду на каждой ноде** (автоматически добавляется на новые ноды). Классика: сборщики логов, node-exporters, мониторинг, kube-proxy."
+        related: ["В чём отличие DaemonSet от Deployment?"]
+      - q: "Что такое Job и CronJob?"
+        keywords: [job, cronjob, cron, задачи, батч, пакетная обработка]
+        a: "**Job** — запустить N подов до успешного завершения (пакетная обработка, миграции). **CronJob** — Job по расписанию cron (бэкапы, отчёты). Ошибки и ретраи настраиваются через backoffLimit."
+        related: ["Как не потерять Job при перезапуске кластера?"]
+      - q: "Как Kubernetes делает rolling update и откат?"
+        keywords: [rolling update, обновление, откат, maxsurge, maxunavailable, rollout]
+        a: "**Deployment** создаёт новый ReplicaSet и поэтапно переносит реплики: параметры **maxSurge/maxUnavailable**; готовность проверяется пробами перед переключением. **kubectl rollout status**, откат — **kubectl rollout undo**."
+        related: ["Что такое blue-green deployment?"]
+      - q: "Что такое HPA?"
+        keywords: [hpa, autoscaling, масштабирование, метрики, vpa]
+        a: "**HorizontalPodAutoscaler** автоматически меняет число реплик по метрикам (**CPU, memory, custom, external**) через metrics-server/adapters. В отличие от **VPA** (вертикальное масштабирование ресурсов пода). Плюс cluster-autoscaler для числа нод."
+        related: ["Как HPA взаимодействует с cluster-autoscaler?"]
+      - q: "Что такое init container и зачем он нужен?"
+        keywords: [init container, initContainer, инит, подготовка, sidecar]
+        a: "**Init-контейнеры** выполняются **до основных** и завершаются полностью: подготовка данных, ожидание зависимостей, миграции, права на файлы. Если init упал — под не запустится (RestartPolicy). От sidecar отличается: init завершается, sidecar живёт вместе с подом."
+        related: ["Что такое multi-container pod?"]
+      - q: "Что такое sidecar-контейнер?"
+        keywords: [sidecar, патерн, multi-container, лог-аген, прокси]
+        a: "**Sidecar** — вспомогательный контейнер в том же поде: сбор логов (**fluentd/filebeat**), мэш-прокси (**envoy**), прокси TLS, синхронизация файлов. Делит с основным контейнером сеть и тома. Даёт низкоинвазивную функциональность без изменения кода приложения."
+        related: ["Что такое init container?"]
+      - q: "Что такое liveness, readiness и startup probes?"
+        keywords: [probes, liveness, readiness, startup, пробы, healthcheck]
+        a: "**liveness** — жив ли процесс: при провале перезапуск пода. **readiness** — готов ли принимать трафик: при провале под убирается из Service (трафик не идёт, но под жив). **startup** — защита для медленных приложений (откладывает liveness). Команды: httpGet, tcpSocket, exec; параметры initialDelay/period/timeout."
+        related: ["Что такое HTTP-проба в k8s?"]
+  - id: config
+    name: Конфигурация и секреты
+    blocks:
+      - q: "ConfigMap и Secret: в чём отличие?"
+        keywords: [configmap, secret, конфиг, секреты, base64]
+        a: "Оба хранят конфигурацию и передаются в поды как **env или файлы**. **ConfigMap** — несекретные данные. **Secret** — для чувствительных (пароли, ключи): закодирован **base64** (это НЕ шифрование!), может быть зашифрован at-rest (encryption provider) и монтируется как файлы/тома."
+        related: ["Как безопасно хранить секреты в k8s?"]
+      - q: "Как передать конфигурацию в под?"
+        keywords: [env, переменные окружения, configmap, secret, том, downard api]
+        a: "Через **env vars** (valueFrom: configMapKeyRef/secretKeyRef), **файлы** (монтирование ConfigMap/Secret как том), **args/command**, **downward API** (метаданные пода). Изменение ConfigMap не всегда обновляет env — для файловых монтирований нужно обновление пода."
+      - q: "Чем Namespace отличается от других объектов изоляции?"
+        keywords: [namespace, неймспейс, изоляция, квота, лимиты, мультитенантность]
+        a: "**Namespace** — логическая группировка и **изоляция объектов** (подов, сервисов, секретов) внутри кластера: свои квоты, RBAC, политики. Не изолирует сеть (NetworkPolicy — отдельно) и не ограничивает ресурсы сам по себе. Используется для сред (dev/stage/prod) и команд."
+        related: ["Что такое ResourceQuota?"]
+      - q: "Что такое ResourceQuota и LimitRange?"
+        keywords: [resourcequota, limitrange, квота, лимиты, namespace]
+        a: "**ResourceQuota** — суммарные лимиты ресурсов **на namespace** (общие CPU/память, число подов/сервисов). **LimitRange** — дефолты и границы на **отдельный под/контейнер**. Вместе управляют распределением ресурсов между командами и средами."
+        related: ["Что такое Namespace?"]
+      - q: "Что такое ServiceAccount?"
+        keywords: [serviceaccount, сервисный аккаунт, токен, приложение]
+        a: "**ServiceAccount** — учётная запись для **приложений в кластере**: её токен монтируется в под и используется для обращений к API. Каждому поду назначается SA (default). Отдельный SA на приложение + RBAC = принцип least privilege."
+        related: ["Что такое RBAC в Kubernetes?"]
+      - q: "Как безопасно хранить секреты в k8s?"
+        keywords: [secrets, шифрование, vault, внешние секреты, sealed]
+        a: "Сам Secret — только base64. Уровни: **encryption-at-rest** (apiserver `--encryption-provider-config`), **External Secrets Operator / Sealed Secrets / Vault CSI** — секреты живут снаружи и доставляются в кластер. Git — только зашифрованные/скрытые значения."
+        related: ["Что такое External Secrets Operator?"]
+      - q: "Что такое External Secrets Operator?"
+        keywords: [external secrets, eso, vault, aws secrets manager, синхронизация]
+        a: "**ESO** — контроллер, который **синхронизирует секреты из внешних хранилищ** (Vault, AWS SM, GCP SM, Azure KV) в k8s-Secrets по декларативным манифестам. Секрет не лежит в git и может ротироваться автоматически. Альтернативы: Sealed Secrets, Vault Agent."
+        related: ["Как безопасно хранить секреты в k8s?"]
+  - id: network
+    name: Сервисы и сеть
+    blocks:
+      - q: "Как работает Service и какие бывают типы?"
+        keywords: [service, сервис, clusterip, nodeport, loadbalancer, externalname]
+        a: "**Service** — стабильная точка доступа к группе подов (по label selector). Типы: **ClusterIP** (внутри кластера), **NodePort** (порт на каждой ноде), **LoadBalancer** (внешний облачный LB), **ExternalName** (CNAME). Маршрутизация и балансировка — через kube-proxy (iptables/ipvs)."
+        related: ["Чем NodePort отличается от LoadBalancer?"]
+      - q: "Что такое Ingress?"
+        keywords: [ingress, nginx ingress, траефик, маршрутизация, tls]
+        a: "**Ingress** — L7-маршрутизация внешнего трафика по хосту/пути к сервисам: единая точка входа, **TLS**-терминирование, rewrite, rate-limit. Работает через **Ingress Controller** (nginx, traefik, haproxy). Для L4/протоколов, отличных от HTTP — используй LoadBalancer."
+        related: ["Чем Ingress отличается от LoadBalancer?"]
+      - q: "Как устроена сеть между подами (CNI)?"
+        keywords: [cni, сеть, calico, flannel, cilium, networkpolicy, плагины]
+        a: "**CNI-плагины** дают каждому поду свой IP и плоскую сеть: **Calico** (BGP, NetworkPolicy), **Flannel** (overlay VXLAN), **Cilium** (eBPF, политики, observability). Правила доступа — **NetworkPolicy** (allow/deny между подами), реализуются CNI."
+        related: ["Что такое NetworkPolicy?"]
+  - id: storage
+    name: Хранилище
+    blocks:
+      - q: "Что такое PV, PVC и StorageClass?"
+        keywords: [pv, pvc, storageclass, хранилище, csi, provisioning]
+        a: "**PV** (PersistentVolume) — ресурс хранилища; **PVC** — запрос на него; **StorageClass** — динамическое provisioning (**CSI**-драйверы: EBS, GCE PD, NFS). Поды ссылаются на PVC, PVC на StorageClass — хранилище создаётся автоматически. Режимы доступа: ReadWriteOnce, ReadOnlyMany, ReadWriteMany."
+        related: ["Как выбрать StorageClass?"]
+      - q: "Как сохранить данные в StatefulSet?"
+        keywords: [statefulset, данные, volumeclaimtemplates, pvc, стабильное хранилище]
+        a: "**volumeClaimTemplates** в StatefulSet создают **отдельный PVC на каждую реплику**; при пересоздании пода PVC сохраняется и данные не теряются. Это ключевое отличие от Deployment, где поды эфемерны."
+        related: ["Как расширить PVC?"]
+  - id: ops
+    name: Операции
+    blocks:
+      - q: "Какие основные kubectl команды?"
+        keywords: [kubectl, get, describe, logs, exec, apply, delete, rollout, port-forward]
+        a: "**kubectl get** (ресурсы), **describe** (детали), **logs -f** (логи), **exec -it** (в под), **apply -f** (декларативно), **delete**, **rollout status/undo**, **port-forward**, **top** (метрики), **get events** (события). Для контекстов: `kubectl config use-context`."
+        related: ["Чем apply отличается от create?"]
+      - q: "Что такое taints и tolerations?"
+        keywords: [taints, tolerations, выделение нод, node pool]
+        a: "**Taint** на ноде «не размещай здесь поды без toleration» (NoSchedule, NoExecute, PreferNoSchedule). **Toleration** на поде «могу жить на такой ноде». Используются для выделения нод (GPU, dedicated), изоляции и контроля эвакуации."
+        related: ["Чем taints отличаются от nodeAffinity?"]
+      - q: "Как ограничить ресурсы пода?"
+        keywords: [requests, limits, cpu, memory, qos, guaranteed, burstable]
+        a: "**requests** — гарантия, используется при планировании; **limits** — потолок (может приводить к throttling/OOM). По соотношению получаются классы **QoS**: **Guaranteed** (r==l), **Burstable** (r<=l), **BestEffort** (без требований). Рекомендуется задавать и то и другое."
+        related: ["Что происходит при превышении limits?"]
+      - q: "Что такое RBAC в Kubernetes?"
+        keywords: [rbac, role, clusterrole, rolebinding, serviceaccount, права доступа]
+        a: "**RBAC** управляет доступом к API: **Role/ClusterRole** (права), **RoleBinding/ClusterRoleBinding** (привязка к пользователю или **ServiceAccount**). Принцип **least privilege**: минимально необходимые права, раздельные SA для приложений."
+        related: ["Чем Role отличается от ClusterRole?"]
+      - q: "Что такое Helm?"
+        keywords: [helm, charts, шаблоны, values, release, upgrade]
+        a: "**Helm** — менеджер пакетов для k8s: **charts** шаблонизируют манифесты с параметризацией через **values.yaml**; релизы с историей — **helm upgrade/rollback**. Упрощает установку сложных приложений, но добавляет слой абстракции."
+        related: ["В чём риск использования Helm?"]
+      - q: "Из чего состоит Helm chart?"
+        keywords: [chart, chart.yaml, values.yaml, templates, helpers, hooks, структура]
+        a: "Чарт — директория: **Chart.yaml** (метаданные: name, version, dependencies), **values.yaml** (значения по умолчанию), **templates/** (Go-шаблоны манифестов), **_helpers.tpl** (переиспользуемые куски шаблонов). Значения подставляются через `{{ .Values... }}`; при установке их можно переопределить `-f` или `--set`. Hooks — lifecycle-шаблоны (pre-install, post-upgrade)."
+        related: ["Что такое Helm?"]
+      - q: "Как работают helm install, upgrade и rollback?"
+        keywords: [helm install, helm upgrade, rollback, release, revision, история]
+        a: "`helm install` создаёт **release** (установку) с версией чарта и values. `helm upgrade` создаёт новую **revision** — история хранится в Secret'ах кластера. `helm rollback --revision N` откатывает к прошлой. Директивы hook'ов и порядок apply управляют последовательностью; каждая revision — снапшот конфигурации, отсюда возможность отката."
+        related: ["Что такое Helm?"]
+      - q: "В чём риск использования Helm?"
+        keywords: [helm, риски, абстракция, сложность, drift, шаблоны]
+        a: "Основные риски: **слой абстракции** (не видно, что реально в манифестах), **drift** между values/чартом и фактическим состоянием, сложность дебага шаблонов, уязвимые зависимости чартов. Митигируются: рендер `helm template`, lint и schema-валидация, пиннинг версий, обзоры диффов (`helm diff`), GitOps поверх чартов."
+        related: ["Что такое Helm?"]
+      - q: "Как сделать бэкап кластера?"
+        keywords: [бэкап, backup, velero, etcd snapshot, восстановление, restore]
+        a: "Два уровня: **этики данных** (бэкап **etcd**: `etcdctl snapshot save`, восстановление — snapshot restore) и **ресурсов/приложений** (**Velero**: бэкап манифестов и PV через CSI-снапшоты). Регулярно тестировать восстановление!"
+        related: ["Что такое Velero?"]
+      - q: "Что такое Kustomize?"
+        keywords: [kustomize, kustomization, overlay, base, patches]
+        a: "**Kustomize** — декларативная параметризация манифестов без шаблонов: **base** + **overlays** (dev/stage/prod), патчи, генерация ConfigMap/Secret, суффиксы имён. Не требует установки (встроен в kubectl). Проще Helm для чисто-манифестных проектов, без чарт-движка."
+        related: ["Чем Kustomize отличается от Helm?"]
+      - q: "Что такое PodDisruptionBudget?"
+        keywords: [pdb, poddisruptionbudget, disruption, недоступность, eviction]
+        a: "**PDB** ограничивает, сколько реплик **одновременно может быть недоступно** при добровольных прерываниях (drain нод, обновления). Пример: minAvailable: 2 или maxUnavailable: 1. Защищает от полной недоступности сервиса при плановых операциях. Не действует на внезапные отказы."
+        related: ["Что такое node drain?"]
+      - q: "Что такое node drain и cordon?"
+        keywords: [drain, cordon, эвакуация, обслуживание ноды, eviction]
+        a: "**cordon** — нода не принимает **новые** поды (пометка unschedulable). **drain** — cordon + **эвакуация** существующих подов (рестарт на других нодах, с учётом PDB). Стандартный процесс перед обслуживанием/снятием ноды. **uncordon** — вернуть ноду в работу."
+        related: ["Что такое PodDisruptionBudget?"]
+      - q: "Что такое PriorityClass?"
+        keywords: [priorityclass, приоритет, вытеснение, preemption, важность]
+        a: "**PriorityClass** задаёт приоритет пода (globalDefault). При нехватке ресурсов **прерваны (evicted)** будут сначала поды с меньшим приоритетом; критические системные поды имеют высокий priority. Важно: агрессивные приоритеты могут выбивать рабочие поды."
+        related: ["Что такое QoS классы подов?"]
+      - q: "Что такое securityContext и pod security?"
+        keywords: [securitycontext, runasnonroot, capabilities, psp, pod security standards]
+        a: "**securityContext** — права контейнера: **runAsNonRoot, runAsUser, readOnlyRootFilesystem, capabilities, seccomp**. **Pod Security Standards** (baseline/restricted) — встроенная политика через admission (PSA). Старый PodSecurityPolicy удалён. Цель — минимизация прав и риск эскалации."
+        related: ["Что такое container escape?"]
+      - q: "Что такое admission webhooks?"
+        keywords: [admission, webhook, mutating, validating, мутация, валидация]
+        a: "**Admission webhooks** — хуки на этапе admission при создании/изменении объектов: **MutatingWebhook** изменяет объект до сохранения (дефолты, инжекция sidecar), **ValidatingWebhook** проверяет (политики, запреты). Вызываются apiserver до записи в etcd. Основная точка расширения политик."
+        related: ["Что делает kube-apiserver?"]
+      - q: "Что такое NetworkPolicy?"
+        keywords: [networkpolicy, сетевые политики, изоляция, allow, deny]
+        a: "**NetworkPolicy** — правила allow/deny трафика между подами на основе label-селекторов (ingress/egress). Реализуется CNI (Calico, Cilium). По умолчанию трафик разрешён — политики включают изоляцию. Важно для сегментации и безопасности."
+        related: ["Почему NetworkPolicy не работает без CNI?"]
+      - q: "Что такое Gateway API?"
+        keywords: [gateway api, gw api, ingress, маршрутизация, service mesh]
+        a: "**Gateway API** — эволюция Ingress: декларативные **GatewayClass/Gateway/HTTPRoute** с расширяемыми политиками. Лучше моделирует L4/L7, разделение ролей (инфраструктура/приложение) и поддерживается CNI и mesh-решениями (Cilium, Istio). Ingress остаётся обратносовместимым."
+        related: ["Что такое Ingress?"]
+      - q: "Что такое Service Mesh?"
+        keywords: [service mesh, сервисная сетка, istio, linkerd, envoy, mTLS]
+        a: "**Service Mesh** — слой сетевой абстракции над подами: sidecar-прокси (**Envoy**), контрольная плоскость (**Istio, Linkerd**). Даёт **mTLS** между сервисами, трафик-маршрутизацию, ретраи, таймауты, наблюдаемость (трейсы, метрики). Плата — ресурсы и сложность."
+        related: ["Что такое mTLS?"]
+      - q: "Что такое Headless Service?"
+        keywords: [headless, service без clusterip, dns, кластер ip]
+        a: "**Headless Service** (`clusterIP: None`) не создаёт виртуальный IP: **DNS возвращает IP всех подов** напрямую. Используется для stateful-приложений (прямые адреса pod-0, pod-1), service discovery «вручную», mesh. Балансировку тогда делают клиент/приложение."
+        related: ["Как работает Service?"]

@@ -1,0 +1,123 @@
+topic: git
+title: Git — всё по теме
+keywords: [git, гит, версионный контроль, vcs]
+sections:
+  - id: branching
+    name: Модели ветвления
+    blocks:
+      - q: "Расскажи про модели ветвления Git."
+        keywords: [ветвление, модели, git flow, github flow, trunk based, branching]
+        a: "**Git Flow**: master + develop + feature/release/hotfix — строго и структурированно. **GitHub Flow**: main + короткие feature-ветки с PR. **Trunk-based**: маленькие частые коммиты прямо в main (или короткоживущие ветки), идеально для CI/CD. Выбор зависит от размера команды и ритма релизов."
+        related: ["Какую модель выбрать?"]
+      - q: "Чем merge отличается от rebase?"
+        keywords: [merge, rebase, отличие, история, конфликты]
+        a: "**merge** создаёт merge commit и сохраняет ветвление (история правдива, удобно видеть параллельность). **rebase** переписывает ветку поверх другой — **линейная история**, конфликты решаются по одному. Правило: **не rebase общие (публичные) ветки**."
+        related: ["Что такое interactive rebase?"]
+      - q: "Чем Git Flow отличается от GitHub Flow?"
+        keywords: [git flow, github flow, сравнение, релизы, hotfix]
+        a: "**Git Flow** — развитая модель для релизов-«релизов»: develop, release-ветки, hotfix; хорошо для версионируемых продуктов. **GitHub Flow** — проще: main всегда деплойбельный, фичи через PR; для непрерывной доставки. Выбор по процессу релизов команды."
+        related: ["Что такое trunk-based?"]
+  - id: history
+    name: Работа с историей
+    blocks:
+      - q: "Чем git revert отличается от git reset?"
+        keywords: [revert, reset, откат, история]
+        a: "**git revert** создаёт **новый коммит**, отменяющий изменения — безопасно для общих веток. **git reset** двигает HEAD и может переписывать историю: `--soft` (только HEAD), `--mixed` (HEAD+index), `--hard` (всё, изменения теряются). Reset — только на локальных ветках."
+        related: ["Что произойдёт при git reset --hard?"]
+      - q: "Что такое git reflog и зачем он нужен?"
+        keywords: [reflog, восстановление, потерянные коммиты, checkout sha]
+        a: "**reflog** — журнал всех перемещений HEAD (включая reset и удаления веток). Позволяет восстановить «потерянные» коммиты: `git reflog` → `git checkout <sha>` / `git reset --hard <sha>`."
+        related: ["Можно ли восстановить удалённую ветку?"]
+      - q: "Что такое cherry-pick и stash?"
+        keywords: [cherry pick, stash, перенос коммитов, спрятать]
+        a: "**git cherry-pick** переносит конкретный коммит в другую ветку (hotfix в несколько веток). **git stash** временно прячет незакоммиченные изменения (`git stash`, `git stash pop`, `git stash list`), чтобы переключиться на другую ветку."
+        related: ["Чем cherry-pick опасен?"]
+      - q: "Что такое interactive rebase?"
+        keywords: [interactive rebase, rebase i, squash, fixup, reword, редактирование]
+        a: "**git rebase -i** — редактирование истории: **squash/fixup** (склейка коммитов), **reword** (переписать сообщение), **edit/drop** (изменить/удалить). Применяется **до публикации** ветки; для чужих/публичных веток запрещено."
+        related: ["Чем merge отличается от rebase?"]
+      - q: "Что такое git bisect?"
+        keywords: [bisect, бисект, поиск бага, половинное деление]
+        a: "**git bisect** находит коммит, внесший баг, **бинарным поиском**: `git bisect start`, `git bisect good/bad <sha>` — git переключает по середине, пока не укажет «плохой» коммит. Экономит время при большом числе коммитов."
+        related: ["Что такое git blame?"]
+      - q: "Что такое git blame?"
+        keywords: [blame, blame, автор, коммит, строка кода]
+        a: "**git blame file** показывает для каждой строки **последний коммит и автора**. Помогает понять, кто и зачем менял код, и найти историю строки (`git log -L`). Не путать с наказанием — это поиск контекста."
+        related: ["Что такое git log?"]
+      - q: "Что такое git amend и когда его использовать?"
+        keywords: [amend, аменд, изменение коммита, --no-edit]
+        a: "**git commit --amend** — дополнить **последний коммит** (забытые файлы, правка сообщения): `--no-edit` сохраняет текст. Правило: только **если коммит не опубликован**; после push — revert-коммиты или force-push (только в своих ветках)."
+        related: ["Чем revert отличается от reset?"]
+  - id: commands
+    name: Команды и рабочий процесс
+    blocks:
+      - q: "Что происходит при git add, commit и push?"
+        keywords: [git add, git commit, git push, staging, index, рабочий процесс]
+        a: "**add** — переместить изменения в **staging (index)**; **commit** — снять снапшот из staging в историю; **push** — отправить локальные коммиты в удалённый репозиторий. `git status` показывает: modified (не в staging), staged (в index), committed."
+        related: ["Что такое HEAD в git?"]
+      - q: "Как работать с удалёнными репозиториями?"
+        keywords: [remote, origin, fetch, pull, push, upstream]
+        a: "**git remote add origin <url>** — подключить удалённый репо; **fetch** — скачать изменения без merge; **pull = fetch + merge**; **push** — отправить; `-u` задаёт upstream. `git remote -v` — список. Конфликт истории — `git pull --rebase`."
+        related: ["Чем fetch отличается от pull?"]
+      - q: "Что такое git status и git diff?"
+        keywords: [status, diff, изменения, unstaged, staged]
+        a: "**git status** — состояние рабочего дерева и index. **git diff** — разницу **незастейдженных** изменений; `git diff --staged` — разницу уже в index; `git diff HEAD` — всё вместе. Стандартные инструменты перед commit/review."
+        related: ["Что происходит при git add?"]
+      - q: "Что такое .gitignore?"
+        keywords: [gitignore, игнор, исключения, файлы, node_modules]
+        a: "**`.gitignore`** — паттерны файлов, которые git не отслеживает (node_modules, .env, build/, логи). Правила по каталогам; `!` для исключений; `git check-ignore -v file` — почему игнорируется. Уже отслеживаемые файлы игнор не отменяет."
+        related: ["Что такое git status?"]
+      - q: "Что такое detached HEAD?"
+        keywords: [detached head, откреплённый, checkout sha, потерять коммиты]
+        a: "**Detached HEAD** — когда HEAD указывает не на ветку, а на конкретный коммит (`git checkout <sha>`): новые коммиты не привязаны к ветке и могут «потеряться» (найдутся в reflog). Выход: создать ветку `git switch -c name`."
+        related: ["Что такое HEAD в git?"]
+      - q: "Что такое fork и чем отличается от ветки?"
+        keywords: [fork, форк, ветка, upstream, pull request]
+        a: "**Fork** — копия репозитория на стороне сервера (в своём аккаунте), для работы без прав записи в оригинал; изменения вносятся через **pull request** (upstream). **Ветка** — вариант внутри того же репозитория. Fork используется в open-source, ветки — в команде."
+        related: ["Что такое PR?"]
+  - id: internals
+    name: Внутреннее устройство
+    blocks:
+      - q: "Как устроены объекты Git?"
+        keywords: [объекты, blob, tree, commit, sha, contents]
+        a: "Git — **content-addressed** хранилище: **blob** (содержимое файла), **tree** (каталог: имена→blob/tree), **commit** (tree + parent + автор + сообщение), **tag**. Каждый объект имеет **SHA-1/256** от содержимого. Ветка — просто указатель на коммит."
+        related: ["Что такое HEAD?"]
+      - q: "Что такое HEAD в Git?"
+        keywords: [head, указатель, ветка, рабочий коммит]
+        a: "**HEAD** — указатель на текущий коммит (обычно через имя ветки). Операции (commit, diff) относительно HEAD. Detached HEAD — когда HEAD указывает на коммит напрямую. `HEAD~1` — предыдущий коммит."
+        related: ["Что такое detached HEAD?"]
+      - q: "Как git хранит ветки и почему они дешёвые?"
+        keywords: [ветки, указатели, cheap, commit, создание]
+        a: "**Ветка** — всего лишь **указатель на коммит** (файл .git/refs). Создание/удаление — мгновенно и дёшево; «весит» история, а не ветки. Поэтому в git принято много веток. Merge — это связывание коммитов графом."
+        related: ["Как устроены объекты Git?"]
+      - q: "Что такое merge commit и fast-forward?"
+        keywords: [merge commit, fast forward, нелинейная история, divergence]
+        a: "**Fast-forward** — если ветки не разошлись, git просто двигает указатель (линейная история, нет merge-коммита). **Merge commit** — при расхождении: фиксирует объединение двух историй с двумя родителями. `--no-ff` принудительно создаёт merge-коммит."
+        related: ["Чем merge отличается от rebase?"]
+      - q: "Как git решает merge-конфликты?"
+        keywords: [конфликты, merge, 3-way, base, решение]
+        a: "Git использует **3-way merge**: берёт **общего предка** (base) и обе ветки; совпадающие с одной из сторон изменения применяются автоматически. Конфликт — когда обе ветки **по-разному изменили одно место**. Конфликт решает человек."
+        related: ["Как разрешать merge-конфликты?"]
+  - id: collaboration
+    name: Коллаборация
+    blocks:
+      - q: "Как разрешать merge-конфликты?"
+        keywords: [конфликт, merge conflict, resolve, разрешение]
+        a: "Помечаются маркерами `<<<<<<< / ======= / >>>>>>>`. Решаются вручную: выбрать свою/их версию или объединить, затем `git add` и завершить merge/rebase. Советы: маленькие PR, частый fetch, разграничение зон ответственности."
+        related: ["Как избежать конфликтов?"]
+      - q: "Что такое git hooks и pre-commit?"
+        keywords: [hooks, pre commit, хуки, husky]
+        a: "**Git hooks** — скрипты на события: pre-commit, commit-msg, pre-push, post-merge. Управляются через фреймворки (**husky, pre-commit**). Используются для линта, форматирования, тестов, проверки сообщений — не пускать «грязное» в репозиторий."
+        related: ["Почему хуки нельзя использовать для безопасности?"]
+      - q: "Что такое PR / merge request?"
+        keywords: [pr, merge request, pull request, ревью, code review]
+        a: "**PR/MR** — предложение слить ветку с обсуждением и **code review**: проверка, CI-проверки, автотесты, approval. Является точкой контроля качества и передачи знаний в команде."
+        related: ["Какой размер PR считается хорошим?"]
+      - q: "Что такое code review и как его проводить?"
+        keywords: [code review, ревью, кода, чеклист, качество]
+        a: "Проверка кода коллегой до merge: корректность, тесты, безопасность, стиль, понятность. Хороший ревьюер: смотрит поведение, а не стиль; задаёт вопросы, а не диктует; контролирует размер PR и комментирует **что и зачем**, а не как."
+        related: ["Что такое PR?"]
+      - q: "Что такое protected branches?"
+        keywords: [protected, защита ветки, rules, approval, main]
+        a: "**Защита веток** — правила на сервере (GitHub/GitLab): запрет push напрямую в main, обязательные **approval**, пройденный CI, требование актуальности. Реализует процесс: всё входит через PR, ничего напрямую в production-ветку."
+        related: ["Что такое PR?"]

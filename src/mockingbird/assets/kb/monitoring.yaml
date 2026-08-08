@@ -1,0 +1,170 @@
+topic: monitoring
+title: Мониторинг и логирование — всё по теме
+keywords: [мониторинг, prometheus, прометеус, графана, grafana, логи, observability, alertmanager, loki, tempo, jaeger, sli, slo, error budget, p99, percentile]
+sections:
+  - id: base
+    name: Observability
+    blocks:
+      - q: "Что такое observability и её три столпа?"
+        keywords: [observability, наблюдаемость, три столпа, metrics, logs, traces]
+        a: "Три столпа: **метрики** (агрегированные числа — CPU, RPS, latency), **логи** (события — ошибки, аудит), **трейсы** (путь запроса через сервисы) + дашборды. Они отвечают на «что происходит», «почему», «где узкое место»."
+        related: ["Как связаны метрики и трейсы?"]
+      - q: "Метрики vs логи vs трейсы: когда что использовать?"
+        keywords: [метрики, логи, трейсы, отличие, когда что]
+        a: "**Метрики** — для дашбордов и алертов (дёшево хранить, быстро агрегировать). **Логи** — для деталей конкретного события (дороже). **Трейсы** — для анализа задержек между сервисами. Стратегия: мониторить метриками, копать логи/трейсы по алерту."
+      - q: "Что такое golden signals?"
+        keywords: [golden signals, золотые сигналы, latency, traffic, errors, saturation]
+        a: "Четыре сигнала (Google SRE): **Latency** (задержка), **Traffic** (объём запросов), **Errors** (доля ошибок), **Saturation** (перегрузка ресурсов). Они дают полную картину здоровья сервиса снаружи. Дополняют RED/USE."
+        related: ["Что такое RED и USE методы?"]
+      - q: "Что такое RED и USE методы?"
+        keywords: [red, use, методы, rate, errors, duration, utilization]
+        a: "**RED** — для сервисов (request-ориентированный): **Rate** (запросов/с), **Errors** (ошибки), **Duration** (latency). **USE** — для ресурсов: **Utilization** (загрузка), **Saturation** (перегрузка), **Errors**. RED — «что чувствует пользователь», USE — «как здоров ресурс»."
+        related: ["Что такое golden signals?"]
+      - q: "Что такое blackbox и whitebox мониторинг?"
+        keywords: [blackbox, whitebox, внешний, внутренний, мониторинг]
+        a: "**Blackbox** — наблюдение **снаружи** (как видит пользователь): пробы HTTP, TCP, DNS (blackbox_exporter). **Whitebox** — **изнутри** приложения: метрики кода, latency, ошибки, бизнес-метрики. Полный мониторинг = и то, и другое."
+        related: ["Что такое blackbox_exporter?"]
+  - id: prometheus
+    name: Prometheus
+    blocks:
+      - q: "Расскажи про Prometheus и как он работает."
+        keywords: [prometheus, pull, tsdb, promql, target, scrape]
+        a: "**Prometheus** — TSDB с **pull-моделью**: периодически «скрейпит» метрики с targets (экспортёры: node_exporter, blackbox, mysql_exporter, kube-state-metrics). Язык запросов **PromQL**, alerting rules, service discovery. Метки (labels) — измерения для агрегации."
+        related: ["Что такое node_exporter?"]
+      - q: "Что такое Alertmanager?"
+        keywords: [alertmanager, алерты, уведомления, дедупликация, маршрутизация]
+        a: "Обрабатывает алерты от Prometheus: **дедупликация**, **группировка**, **маршрутизация** по severity/командам, **ингибирование**, silence. Доставка: email, Slack, Telegram, webhook. Правила алертов пишутся в Prometheus (expr, `for`, labels)."
+        related: ["Чем alert rule отличается от record rule?"]
+      - q: "Что такое SLI, SLO и error budget?"
+        keywords: [sli, slo, error budget, бюджет ошибок, сервис левел]
+        a: "**SLI** — измеримая метрика (доля успешных запросов, latency p99). **SLO** — целевое значение SLI за период (99.9% за месяц). **Error budget** = 100% - SLO — «бюджет» на ошибки, расходуется при сбоях; алерты строят по бюджету, а не по единичным падениям."
+        related: ["Как считать SLO?"]
+      - q: "Чем alert rule отличается от record rule?"
+        keywords: [alert rule, record rule, правило, promql, производительность]
+        a: "**Alert rule** — условие, при котором создаётся алерт (expr + `for` + labels). **Record rule** — предвычисление сложного PromQL-запроса в отдельную метрику (например, 5m rate) — ускоряет дашборды и алерты. Обе задаются в prometheus.yml/rules."
+        related: ["Что такое Alertmanager?"]
+      - q: "Как считать SLO из метрик?"
+        keywords: [slo, apdex, p99, percentage, соотношение]
+        a: "Пример: SLI = успешные / все запросы за месяц, или **Apdex** (доля запросов быстрее порога). В Prometheus: `sum(rate(...))` по времени. SLO — целевое значение (99.9%); error budget — сколько процентов можно «просрочить» до нарушения."
+        related: ["Что такое SLI, SLO и error budget?"]
+      - q: "Что такое экспортёры (exporters)?"
+        keywords: [exporters, экспортеры, node exporter, blackbox, kube state]
+        a: "**Exporters** — агенты, собирающие метрики в формате Prometheus: **node_exporter** (ОС: CPU, память, диск, сеть), **blackbox_exporter** (пробы), **kube-state-metrics** (объекты k8s), **mysql/postgres/redis exporters**. Их эндпоинты скрейпит Prometheus."
+        related: ["Что такое node_exporter?"]
+      - q: "Что такое кардинальность метрик?"
+        keywords: [cardinality, кардинальность, labels, метки, high]
+        a: "**Кардинальность** — число уникальных значений метрики (по labels). Высокая (например, URL с динамическим id в label) **взрывает хранилище** и память Prometheus. Правило: метки — ограниченные множества (status, method), а не uuid/url."
+        related: ["Что такое labels в PromQL?"]
+      - q: "Что такое recording rules?"
+        keywords: [recording, record rule, precompute, promql, скорость дашборда]
+        a: "**Recording rules** — заранее вычисленные PromQL-выражения, сохранённые как новые метрики: `record: instance:node_cpu_utilization:ratio5m`. Снимают нагрузку с дашбордов и алертов, агрегируя горячие запросы один раз."
+        related: ["Чем alert rule отличается от record rule?"]
+  - id: dashboards
+    name: Визуализация
+    blocks:
+      - q: "Что такое Grafana и что в ней настраивают?"
+        keywords: [grafana, дашборды, панели, datasource]
+        a: "**Grafana** — визуализация метрик: дашборды с панелями, data sources (Prometheus, Loki, InfluxDB...), переменные для интерактивности, аннотации, оповещения. Стандарт для построения «окна наблюдения»."
+        related: ["Как устроены панели в Grafana?"]
+      - q: "Какие бывают типы панелей в Grafana?"
+        keywords: [панели, graph, time series, gauge, stat, таблица]
+        a: "Основные: **Time series** (графики по времени), **Stat** (одно число), **Gauge** (циферблат), **Table**, **Bar/Bar gauge**, **Logs** (для Loki). Выбор зависит от вопроса: тренд — time series, текущее состояние — stat/gauge, сравнение — bar."
+        related: ["Что такое Grafana?"]
+      - q: "Как делят панели дашборда по сервисам?"
+        keywords: [дашборды, организация, панели, метрики, разделение]
+        a: "Организация по срезам: **RED** (rate/errors/latency) по сервисам, **USE** по ресурсам, или по слоям (LB → app → DB). Переменные (`$service`) дают интерактивность. Не «всё в кучу» — дашборд должен отвечать на конкретный вопрос."
+        related: ["Что такое RED и USE методы?"]
+  - id: logs
+    name: Логирование
+    blocks:
+      - q: "Что такое ELK / EFK стек?"
+        keywords: [elk, efk, elasticsearch, logstash, fluentd, kibana, логи]
+        a: "**Elasticsearch** (хранение и поиск логов), **Logstash или Fluentd** (сбор и трансформация), **Kibana** (UI и дашборды). Альтернатива — **Loki + Promtail + Grafana**: дешевле за счёт индексации только метаданных."
+        related: ["Чем Loki лучше Elasticsearch?"]
+      - q: "Как организовать сбор логов из контейнеров?"
+        keywords: [логи контейнеров, stdout, sidecar, fluentd, вектор, agent]
+        a: "Приложения пишут в **stdout/stderr**, контейнерный runtime хранит их, агент (**Promtail/Fluent Bit/Vector**) забирает и отправляет в центральный стек. Логи должны быть **структурированными** (JSON) и с корреляцией (request id)."
+        related: ["Зачем писать логи в stdout?"]
+      - q: "Что такое структурированное логирование?"
+        keywords: [структурированные логи, json, request id, парсинг, trace id]
+        a: "Логи как **JSON/структура** с полями (level, ts, msg, service, request_id, trace_id) вместо строк — легко фильтровать, парсить и коррелировать. Плюс **request/trace id** связывают логи одного запроса. Основа эффективного поиска в Loki/ELK."
+        related: ["Зачем писать логи в stdout?"]
+      - q: "Чем Loki отличается от Elasticsearch?"
+        keywords: [loki, elasticsearch, отличие, индексация, gzip]
+        a: "**Elasticsearch** индексирует всё содержимое логов — мощный полнотекстовый поиск, но дорого. **Loki** индексирует **только метки** (labels), содержимое хранит сжатым — дешевле, но поиск по содержимому медленнее. Выбор по масштабу и задачам поиска."
+        related: ["Что такое ELK стек?"]
+      - q: "Как логировать в распределённой системе?"
+        keywords: [распределенные логи, correlation id, trace id, агрегация]
+        a: "Единый формат и централизованный сбор; **correlation/trace ID** генерируется при входе и пробрасывается между сервисами; агрегация в один стек (Loki/ELK). Метки: service, env, version, cluster. Без trace id поиск по событию в микросервисах невозможен."
+        related: ["Что такое распределённая трассировка?"]
+  - id: tracing
+    name: Трассировка
+    blocks:
+      - q: "Что такое distributed tracing?"
+        keywords: [трассировка, tracing, distributed, span, trace, jaeger]
+        a: "**Distributed tracing** — отслеживание запроса через все сервисы: **trace** = дерево **span** (операций) с parent/child, latency каждого шага. Инструменты: **Jaeger, Zipkin, Tempo**. Отвечает на «где именно тормозит путь запроса»."
+        related: ["Что такое span?"]
+      - q: "Что такое OpenTelemetry?"
+        keywords: [opentelemetry, otel, стандарт, агенты, коллектор]
+        a: "**OpenTelemetry** — открытый стандарт сбора **метрик, логов и трейсов**: SDK для языков, агенты, **OTel Collector** (сбор, трансформация, экспорт). Единый формат и вендор-агностичность; современный дефолт для observability."
+        related: ["Что такое distributed tracing?"]
+      - q: "Что такое сэмплинг трассировок?"
+        keywords: [sampling, сэмплинг, head based, tail based, объем]
+        a: "**Сэмплинг** — запись только части трейсов для контроля объёма и стоимости: **head-based** (решение в начале, равномерно/по вероятности) и **tail-based** (решение после, можно сохранить «интересные» — ошибки, медленные). Компромисс полноты и затрат."
+        related: ["Что такое distributed tracing?"]
+      - q: "Что такое span в трейсинге?"
+        keywords: [span, спан, trace, латентность, родительский]
+        a: "**Span** — единица работы с именем, start/end, latency, атрибутами и **trace_id + parent_span_id**. Цепочка spans образует trace. Трейс-контекст (W3C TraceContext) передаётся через заголовки между сервисами."
+        related: ["Что такое distributed tracing?"]
+  - id: alertmanager
+    name: Alertmanager и алертинг
+    blocks:
+      - q: "Что такое Alertmanager и как он работает?"
+        keywords: [alertmanager, алерт, alert, routing, inhibition, silence, notification, prometheus alerting]
+        a: "**Alertmanager** — компонент Prometheus для маршрутизации и дедупликации алертов. Pipeline: Prometheus → правило (PromQL `ALERT IF`) → Alertmanager → **receiver** (Slack, email, PagerDuty, webhook). **Routing**: дерево по `match` лейблам (severity, team, service). **Inhibition** — suppression: если `severity=critical`, то `severity=warning` для того же сервиса подавляется. **Silence** — временное отключение алерта (на время maintenance). **Grouping** — алерты с одинаковыми лейблами группируются в одно уведомление (не спам). **Group_wait/group_interval** — задержка перед отправкой и между повторами."
+        related: ["Как написать alerting rule в Prometheus?", "Что такое inhibition?"]
+      - q: "Как написать alerting rule в Prometheus?"
+        keywords: [alerting rule, alert rule, prometheus, for, labels, annotations, expression, запись правил]
+        a: "**Alerting rule** в `rules.yml`: `alert: HighErrorRate` / `expr: rate(http_requests_total{status=~\"5..\"}[5m]) > 0.1` / `for: 5m` (горит минимум 5 мин) / `labels: severity: critical` / `annotations: summary: \"{{ $labels.service }} error rate > 10%\"`. **For** — фильтр флаппинга (мгновенные всплески не алертятся). **Labels** — для routing в Alertmanager. **Annotations** — текст уведомления (поддерживает Go-шаблоны). **Recording rules** — предрасчёт тяжёлых PromQL (`record: job:http_requests:rate5m`) для скорости."
+        related: ["Что такое Alertmanager?", "Как предотвратить alert fatigue?"]
+      - q: "Как предотвратить alert fatigue (шторм алертов)?"
+        keywords: [alert fatigue, шторм алертов, noise, false positive, multi level, severity, deduplication]
+        a: "**Alert fatigue** — слишком много алертов → игнорируют даже важные. Борьба: (1) **Severity levels** — critical (page/on-call), warning (ticket), info (log) — только critical будит, (2) **Inhibition** — critical подавляет warning на тот же сервис, (3) **Grouping** — один алерт на N проблем одного сервиса, (4) **For** — алерт только если проблема длится N минут, (5) **SLO-based** вместо threshold — алертить по error budget burn rate (умнее), (6) **Регулярный review** — выключать noisy-алерты. **Антипаттерн**: алерт на каждый метрик-провал → дюжина алертов на один отказ БД."
+        related: ["Что такое Alertmanager?", "Что такое SLO-based alerting?"]
+  - id: promql
+    name: PromQL
+    blocks:
+      - q: "Что такое PromQL и какие основные функции?"
+        keywords: [promql, query, rate, histogram quantile, increase, sum by, avg over time, метрики]
+        a: "**PromQL** — язык запросов Prometheus. Основные функции: `rate(counter[5m])` — рост в секунду (для counter), `increase(counter[1h])` — рост за час, `histogram_quantile(0.99, rate(http_duration_seconds_bucket[5m]))` — p99 latency, `sum by(service)(rate(...))` — агрегация по лейблу, `avg_over_time(memory[10m])` — среднее за окно, `topk(5, ...)` — топ-5. **Instant** vs **Range** запросы: `[5m]` — range vector (много значений), без скобок — instant (одно). **Counter** → `rate`/`increase`; **Gauge** → как есть; **Histogram** → `histogram_quantile`. **Подводный камень**: `rate` без range → NaN; counter reset → rate корректно обрабатывает."
+        related: ["Что такое histogram_quantile?", "Чем rate отличается от increase?"]
+      - q: "Чем rate отличается от increase в PromQL?"
+        keywords: [rate, increase, counter, per second, total, окно, promql разница]
+        a: "**rate(counter[5m])** — **в секунду** (средняя скорость роста за окно). Удобно для дашбордов (RPS, errors/sec). **increase(counter[5m])** — **суммарный рост за всё окно** (абсолютное число). Пример: counter вырос на 300 за 5 минут → `rate` = 1/sec, `increase` = 300. Оба корректно обрабатывают counter reset (перезапуск сервиса). **irate** — мгновенная скорость (только последние 2 точки) — быстрее реагирует, но шумнее. **Выбор**: `rate` для стабильных дашбордов, `increase` для «сколько событий за период», `irate` для alerting (быстрая реакция)."
+        related: ["Что такое PromQL?", "Что такое irate?"]
+  - id: loki
+    name: Loki и логирование
+    blocks:
+      - q: "Что такое Grafana Loki и чем отличается от ELK?"
+        keywords: [loki, логи, grafana, elasticsearch, elk, сравнение, label, index,成本低]
+        a: "**Loki** — log aggregation от Grafana Labs. В отличие от **ELK/ Elasticsearch**, Loki **не индексирует содержимое логов** — индексирует только **лейблы** (metadata), сами логи хранятся в сжатом виде (chunks). **Преимущества**: дешевле в 10-100 раз (нет full-text index), простая интеграция с Prometheus/Grafana (тот же Label-подход). **Недостатки**: медленный full-text search (grep по несжатым данным), нет аналитики на уровне ES aggregations. **LogQL** — язык запросов (похож на PromQL + regex grep): `{job=\"nginx\"} |= \"error\" | json | duration > 1s`. **Выбор**: Loki для cheap log retention + Grafana-интеграция; ELK для сложного full-text search и analytics."
+        related: ["Что такое Promtail?", "Чем Loki отличается от Elasticsearch?"]
+      - q: "Что такое Promtail и как он собирает логи?"
+        keywords: [promtail, agent, log shipper, discovery, relabel, pipeline stages, loki agent]
+        a: "**Promtail** — агент Loki (аналог Filebeat/Fluentd). Читает лог-файлы → парсит → добавляет лейблы → отправляет в Loki. **Discovery**: `journalctl` (systemd), `docker`, `kubernetes` (поды) — автоматически находит источники логов. **Relabeling** — трансформация лейблов из метаданных (под → namespace, app). **Pipeline stages**: `json` → парсинг JSON-логов, `regex` → извлечение полей, `timestamp` → кастомный формат времени, `labels` → поля → лейблы. **Подводный камень**: высокий cardinality лейблов (request_id, user_id) → Loki раздувает индекс → используйте structured metadata вместо лейблов для high-cardinality."
+        related: ["Что такое Loki?", "Как парсить JSON логи в Promtail?"]
+  - id: sli_slo
+    name: SLI/SLO и Error Budget
+    blocks:
+      - q: "Что такое SLI, SLO и SLA?"
+        keywords: [sli, slo, sla, service level, indicator, objective, agreement, error budget, availability]
+        a: "**SLI (Service Level Indicator)** — метрика качества: `successful_requests / total_requests` (доля 200 из всех HTTP). **SLO (Objective)** — целевое значение SLI: 99.9% успешных запросов за 28 дней. **SLA (Agreement)** — бизнес-договор с штрафом: если SLO < 99.5% → компенсация клиенту. **Error budget** — допустимое количество нарушений SLO: при 99.9% → 0.1% бюджета на ошибки (43 мин/мес). **Использование**: burn rate alerting (быстрый расход budget → алерт), freeze releases при исчерпании, балансировка инновация vs стабильность. **Подводный камень**: слишком жёсткий SLO (99.999%) → только stability, нет экспериментов."
+        related: ["Что такое error budget burn rate?", "Как выбрать SLI?"]
+      - q: "Что такое error budget и burn rate?"
+        keywords: [error budget, бюджет ошибок, burn rate, multi window, multi burn rate alerting, slo]
+        a: "**Error budget** = 100% − SLO. При SLO 99.9% → budget = 0.1% → ~43 мин/мес на простой. **Burn rate** — скорость расходования бюджета: `actual_error_rate / allowed_error_rate`. Burn rate 1 = равномерно (как раз уложимся в бюджет). Burn rate 10 = тратим в 10 раз быстрее → через 1/10 периода исчерпаем. **Multi-window burn rate alerting**: `6h window burn rate > 14.4` → page (критический расход), `1h window burn rate > 6` → ticket. Позволяет алертить разумно: медленный рост → не page, резкий всплеск → page. **При исчерпании budget**: freeze feature releases → только bugfixes → стабилизация."
+        related: ["Что такое SLI/SLO?", "Как настроить burn rate alerting?"]
+      - q: "Что такое RED и USE методики?"
+        keywords: [red, use, rate errors duration, utilization saturation errors, методика, golden signals]
+        a: "**RED** (для request-driven сервисов): **Rate** (запросов/сек), **Errors** (ошибок/сек), **Duration** (p50/p99 latency). Базовый дашборд для любого HTTP/gRPC сервиса. **USE** (для ресурсов — CPU, disk, network): **Utilization** (% использования), **Saturation** (очередь, p99), **Errors** (счётчик сбоев). Базовый дашборд для инфраструктуры. **Google Four Golden Signals**: Latency, Traffic, Errors, Saturation — комбинация. **Применение**: каждое RED/USE измерение → SLI → SLO. **Best practice**: RED на каждый сервис в Grafana из коробки (через Service Mesh или instrumentation)."
+        related: ["Что такое SLI?", "Как построить дашборд RED?"]

@@ -1,0 +1,79 @@
+topic: virtualization_storage
+title: Виртуализация и хранилища данных — всё по теме
+keywords: [виртуализация, virtualization, kvm, vmware, hyper-v, хранилище, storage, ceph, raid, lvm, nfs, iscsi, object storage, s3, distributed storage]
+sections:
+  - id: virtualization
+    name: Виртуализация
+    blocks:
+      - q: "Чем KVM отличается от VMware и Hyper-V?"
+        keywords: [kvm, vmware, hyper-v, гипервизор, type 1, type 2, qemu, сравнение]
+        a: "**KVM** — Type-1 гипервизор в ядре Linux, использует **QEMU** для эмуляции устройств. Открытый, бесплатный, стандарт де-факто для open-source облаков (OpenStack, Proxmox, oVirt). **VMware ESXi** — Type-1, проприетарный, лидер enterprise (vSphere, HA/DRS/vMotion). Высокая производительность, богатые фичи (vMotion, FT, DRS), но дорогой. **Hyper-V** — Microsoft, интегрирован с Windows Server / Azure Stack. Поддерживает Linux, но Windows-first. **Выбор**: KVM для cost-effective open-source и cloud; VMware для enterprise с vSphere; Hyper-V для Microsoft-центричных сред. **Производительность**: KVM ≈ VMware ≈ Hyper-V на modern hardware (VirtIO/vmxnet/paravirt)."
+        related: ["Что такое QEMU?", "Что такое VirtIO?"]
+      - q: "Что такое live migration и как оно работает?"
+        keywords: [live migration, vmotion, живая миграция, shared storage, ram transfer, downtime]
+        a: "**Live migration** — перенос работающей ВМ между хостами без остановки. Этапы: (1) ВМ на shared storage (NFS/iSCSI/Ceph) → диск общий, (2) **pre-copy** RAM: копируем страницы RAM на целевой хост, пока ВМ работает, (3) итеративно: копируем dirty pages, пока delta не станет минимальной, (4) **stop-and-copy**: пауза ВМ (<100мс), копируем последние dirty pages, запуск на новом хосте. **Условие**: shared storage + совместимые CPU (Intel→Intel, AMD→AMD). **В VMware**: vMotion. **В KVM**: `virsh migrate --live`. **Post-copy**: сначала переключаем, потом тянем RAM по сети (быстрее начало, риск при отказе сети). **Подводный камень**: long-running connections (TCP sessions) не переносятся при network partition."
+        related: ["Что такое shared storage?", "Что такое vMotion?"]
+      - q: "Что такое VirtIO и зачем оно нужно?"
+        keywords: [virtio, virtio-blk, virtio-net, virtio-scsi, paravirtualized, драйверы, производительность]
+        a: "**VirtIO** — набор **паравиртуализированных** драйверов (Linux/Guest): virtio-net (сеть), virtio-blk (диск), virtio-scsi (SCSI), virtio-balloon (memory), virtio-rng (random). В отличие от эмуляции (e1000, IDE), virtio знает что он в ВМ → работает быстрее (меньше overhead, нет лишней эмуляции оборудования). **Производительность**: virtio-net ≈ 95% нативной сети (10Gbps+), virtio-blk ≈ 90% нативного I/O. **В QEMU/KVM**: `--network virtio`, `--disk bus=virtio`. **В Windows**: нужно установить virtio-win драйверы (Red Hat). **Без virtio**: e1000/IDE → 30-50% медленнее. **VirtIO-FS** — файловая система для sharing между хостом и гостем."
+        related: ["Что такое QEMU?", "Чем KVM отличается от VMware?"]
+  - id: storage_types
+    name: Типы хранилищ
+    blocks:
+      - q: "Чем блочное хранилище отличается от файлового и объектного?"
+        keywords: [блочное, block, файловое, file, объектное, object, iscsi, nfs, s3, сравнение, when use]
+        a: "**Блочное (Block)** — raw блоки (как диск), доступ через iSCSI/FC/NVMe-oF. Файловая система ВМ (ext4, NTFS) поверх. База данных, ОС. Низкая задержка, random I/O. **Файловое (File)** — файлы в каталогах, доступ через NFS/SMB. Shared home, документооборот, логи. Средняя задержка, metadata overhead. **Объектное (Object)** — объекты с metadata, доступ через HTTP API (S3). Бэкапы, медиа, архивы, data lake. Нет иерархии (плоское key-value), нет block-level update (overwrite целиком). **Выбор**: block для БД/ОС, file для shared data, object для massive unstructured data + API. **Cloud**: EBS (block), EFS (file), S3 (object)."
+        related: ["Что такое iSCSI?", "Что такое S3?"]
+      - q: "Что такое iSCSI и как оно работает?"
+        keywords: [iscsi, target, initiator, luns, scsi over ip, fc, fcoe, chap auth]
+        a: "**iSCSI** — SCSI-команды поверх TCP/IP (порт 3260). **Initiator** (клиент, ВМ/сервер) → **Target** (сервер хранилища) → **LUN** (Logical Unit, «диск»). После подключения LUN виден как блочное устройство (`/dev/sdb`). **Auth**: CHAP (username+password). **Multipath**: два пути (через два свитча) для HA + пропускной способности. **vs FC (Fibre Channel)**: iSCSI — IP-сеть (дешевле), FC — выделенная SAN (дороже, ниже задержка). **vs NVMe-oF**: NVMe over Fabrics — новее, быстрее (RDMA). **Performance**: iSCSI ограничен TCP overhead; для БД — jumbo frames (MTU 9000), отдельный VLAN. **В VMware**: VMFS на iSCSI LUN."
+        related: ["Что такое LUN?", "Что такое multipath?"]
+      - q: "Что такое S3-совместимое хранилище?"
+        keywords: [s3, объектное хранилище, minio, ceph rgw, swift, backblaze, wasabi]
+        a: "**S3** — протокол Amazon (HTTP API: PUT/GET/DELETE objects, list buckets). **S3-compatible** — альтернативные хранилища с тем же API: **MinIO** (self-hosted, open-source), **Ceph RGW** (часть Ceph), **Backblaze B2**, **Wasabi**, **Cloud.ru OBS**, Yandex Object Storage. **Features**: bucket (контейнер), object (файл + metadata), multipart upload (большие файлы), versioning, lifecycle (Hot→Cold→delete), encryption (SSE), presigned URLs. **Use cases**: бэкапы, медиа-файлы, data lake, static website, лого-архивы. **Преимущества**: API-доступ (нет блочного), дешевизна для больших объёмов, горизонтальная масштабируемость. **Ограничение**: eventual consistency (старые S3), нет partial update (весь файл)."
+        related: ["Что такое MinIO?", "Чем object отличается от block?"]
+  - id: raid_lvm
+    name: RAID и LVM
+    blocks:
+      - q: "Какие бывают уровни RAID и когда их использовать?"
+        keywords: [raid, raid 0, raid 1, raid 5, raid 6, raid 10, parity, mirror, striping, rebuild]
+        a: "**RAID 0** (striping) — скорость, **нет избыточности** (один диск падает = потеря). Только для cache/temp. **RAID 1** (mirror) — 2 диска, копия. Чтение быстрее, запись = 1 диск. OS disk. **RAID 5** (parity) — N дисков + 1 parity, переживает 1 отказ. Хорошая экономия, медленный rebuild. **RAID 6** (double parity) — переживает 2 отказа. Для больших дисков (>4TB) — rebuild RAID 5 занимает дни и опасен. **RAID 10** (1+0) — mirror + stripe. Быстро, переживёт N/2 отказов (по одному на mirror). Для БД. **Выбор**: RAID 10 для БД (random I/O, critical), RAID 6 для архивов/cold data, RAID 1 для OS. **Hardware vs Software**: HW RAID (кэш, BBU) для прод-БД; SW RAID (mdadm/ZFS) — дешевле, гибче."
+        related: ["Что такое rebuild?", "Чем RAID 5 отличается от RAID 6?"]
+      - q: "Что такое LVM и как оно работает?"
+        keywords: [lvm, logical volume manager, pv, vg, lv, snapshot, extend, thin pool]
+        a: "**LVM** — слой абстракции над физическими дисками. Слои: **PV** (Physical Volume — диск/раздел), **VG** (Volume Group — пул из PV), **LV** (Logical Volume — «раздел» из VG, виден как `/dev/vg/lv`). **Преимущества**: resize на лету (`lvextend --resizefs`), snapshot (копия-на-запись для backup), перемещение между дисками (`pvmove`), thin provisioning (выделять по факту). **Snapshot**: создал snapshot → прочитал/забил backup → удалил. COW (copy-on-write): snapshot хранит только изменённые блоки. **Thin pool**: LV размером больше физического (over-provisioning) — следить за заполнением. **vs ZFS**: LVM + ext4 = проще; ZFS = встроенный checksum/dedup/compression/RAID (но дороже)."
+        related: ["Что такое snapshot?", "Как расширить LV?"]
+      - q: "Что такое ZFS и в чём его преимущества?"
+        keywords: [zfs, zettabyte file system, pool, dataset, snapshot, send receive, checksum, dedup, arc]
+        a: "**ZFS** — файловая система + volume manager + RAID в одном. **Features**: **Copy-on-Write** (snapshot мгновенный), **checksumming** на каждый блок (обнаружение silent corruption), **self-healing** (авто-восстановление с mirror/RAID-Z), **compression** (lz4/zstd на лету), **dedup** (дедупликация), **ARC/L2ARC** (adaptive cache в RAM + SSD), **send/receive** (репликация между пулами по сети). **RaidZ1/Z2/Z3** — аналоги RAID 5/6 с защитой от silent corruption. **Pool** (zpool) из vdev (mirror или raidz). **Dataset** (как каталог/LV) — per-dataset quota, compression, snapshot. **Использование**: NAS (TrueNAS), backup-target, БД (если настроить recordsize), виртуализация (Proxmox, oVirt). **Минусы**: RAM-hungry (1GB RAM на 1TB данных), сложный rollback при partial pool failure."
+        related: ["Что такое snapshot?", "Что такое ARC?"]
+  - id: distributed_storage
+    name: Распределённые хранилища
+    blocks:
+      - q: "Что такое Ceph и как оно работает?"
+        keywords: [ceph, цеф, rbd, rgw, cephfs, osd, monitor, placement groups, distributed, s3 compatible]
+        a: "**Ceph** — распределённое хранилище (unified: block + file + object). **Компоненты**: **MON** (Monitor — координация, кворум), **OSD** (Object Storage Daemon — данные на дисках), **MDS** (Metadata Server — для CephFS). **CRUSH** — алгоритм размещения (не central lookup → масштабируемость). **PG (Placement Groups)** — корзины для平衡ирования. **Интерфейсы**: **RBD** (RADOS Block Device — блочное, для ВМ/K8s PV), **RGW** (RADOS Gateway — S3-совместимый), **CephFS** (POSIX-совместимая ФС). **Replication**: 3 копии (default) или erasure coding. **Self-healing**: OSD падает → CRUSH перебалансирует. **Использование**: OpenStack (Cinder/Glance/Manila), Proxmox, K8s (Rook). **Минусы**: сложность настройки, RAM/CPU overhead, 3+ узла минимум."
+        related: ["Что такое RBD?", "Что такое CRUSH?"]
+      - q: "Что такое GlusterFS и когда его использовать?"
+        keywords: [glusterfs, груст, brick, volume, fuse, distributed, replicate, stripe, nas alternative]
+        a: "**GlusterFS** — распределённая файловая система (FUSE-монтаж). **Brick** — каталог на сервере. **Volume** — набор bricks: **Distribute** (шардирование по каталогам), **Replicate** (mirror), **Stripe** (striping), комбинированные (Distributed-Replicate). Нет metadata server (эластичность, нет SPOF). **Доступ**: FUSE (клиент монтит `/mnt/gluster`), NFS (через gNFS), SMB. **Use cases**: shared storage для контейнеров/ВМ, NAS-замена, media storage. **vs Ceph**: Gluster проще (POSIX-only, нет block/object), Ceph мощнее (unified, self-healing, но сложнее). **vs NFS**: Gluster = distributed (много серверов), NFS = single server. **Минусы**: FUSE overhead, производительность зависит от паттерна доступа (metadata operations медленнее)."
+        related: ["Что такое Ceph?", "Чем GlusterFS отличается от NFS?"]
+      - q: "Что такое erasure coding и чем оно отличается от репликации?"
+        keywords: [erasure coding, кодирование стирания, reed solomon, parity, replication vs ec, storage efficiency]
+        a: "**Репликация** — хранить N полных копий (обычно 3). Просто, быстро (любая копия), но **333% overhead** (2 лишних копии). **Erasure coding (EC)** — разбить данные на k чанков + m parity (например k=10, m=4 → 14 чанков по разным узлам). Переживает до m отказов. **Overhead**: при k=10/m=4 = 40% (вместо 200% при 3-репликах). **Минус**: медленнее на random write (пересчёт parity), больше CPU. **Выбор**: replication для hot data (БД, VMs) — низкая задержка; EC для cold/warm data (бэкапы, архивы, S3) — экономия места. **В Ceph**: EC pool для RGW (object), replication для RBD (block). **В MinIO**: EC per-drive. **Подводный камень**: rebuild EC дольше репликации (нужно прочитать k чанков)."
+        related: ["Что такое репликация?", "Что такое Ceph?"]
+  - id: backup_storage
+    name: Backup хранилища
+    blocks:
+      - q: "Как спроектировать хранилище для бэкапов?"
+        keywords: [backup storage, хранилище бэкапов, dedup, retention, immutability, ransomware, tape, glacier]
+        a: "**Требования**: объём (рост), retention (политика хранения), скорость восстановления (RTO), защита от ransomware (immutable). **Технологии**: (1) **Deduplication** — ZFS/btrfs/коммерческий VTL (до 10× экономия). (2) **Compression** — zstd/gzip на лету. (3) **Erasure coding** — для тёплых бэкапов (экономия vs 3-реплики). (4) **Immutability / WORM** — Object Lock в S3/MinIO (нельзя удалить/изменить даже админом). (5) **Tiering**: hot (SSD, быстрый restore) → warm (HDD) → cold (tape/ Glacier, дёшево). **Инструменты**: **BorgBackup/Restic** (dedup+encryption, клиент-сервер), **pgBackRest/Barman** (PostgreSQL PITR), **Veeam** (коммерческий, VM backup). **Best practice**: правило 3-2-1 + **1 offline/offsite copy** (air-gapped от ransomware)."
+        related: ["Что такое deduplication?", "Что такое immutable backup?"]
+      - q: "Что такое deduplication и какие виды бывают?"
+        keywords: [dedup, deduplication, дедупликация, inline, post process, block level, file level, source target]
+        a: "**Дедупликация** — хранить только уникальные блоки/файлы. Виды: (1) **File-level** — целые файлы (если дубликат — ссылка). Просто, но мало экономии (изменение 1 байта = новый файл). (2) **Block/chunk-level** — разбивает на блоки (4-128KB), дедуплицирует каждый. Больше экономии (10-30×). (3) **Inline** — дедуп при записи (меньше места, больше CPU). (4) **Post-process** — пишется всё, дедуп в фоне (быстрая запись, нужен буфер). **Source dedup** — на клиенте (меньше трафика). **Target dedup** — на сервере бэкапов. **Хэш**: SHA-256 блока → lookup → если есть, ссылка. **Подводный камень**: hash collision (крайне редко, но критично), rebuild после отказа нужно пересчитать хэши. **Инструменты**: ZFS (block-level dedup, RAM-hungry), Borg, Veeam."
+        related: ["Что такое immutable backup?", "Что такое ZFS?"]
+      - q: "Что такое immutable backup и зачем он нужен?"
+        keywords: [immutable, worm, write once read many, object lock, ransomware protection, air gap]
+        a: "**Immutable backup** — backup, который **нельзя изменить или удалить** до истечения retention. Защита от ransomware: даже если атакующий получит доступ к backup-серверу, он не может зашифровать/удалить immutable-копии. **Реализация**: (1) **Object Lock (S3/MinIO)** — WORM на bucket/object (governance/compliance mode). (2) **Tape offline** — кассета вне библиотеки (air gap, физически недоступна). (3) **Veeam Hardened Repo** — Linux-сервер с immutable backup files (single-use credentials). **Retention**: 7-30 дней immutable → потом auto-delete. **Governance** mode — root может снять lock (для теста). **Compliance** mode — никто не может (закон/регулятор). **Best practice**: один daily immutable + один offline (tape/USB). **Без immutability**: ransomware шифрует бэкапы вместе с прод → нет восстановления."
+        related: ["Как защитить бэкапы от ransomware?", "Что такое WORM?"]

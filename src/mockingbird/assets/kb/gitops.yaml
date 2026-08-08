@@ -1,0 +1,64 @@
+topic: gitops
+title: GitOps — всё по теме
+keywords: [gitops, git ops, argocd, аргоцд, flux, флюкс, declarative, sync, drift, pull based, push based]
+sections:
+  - id: fundamentals
+    name: Основы GitOps
+    blocks:
+      - q: "Что такое GitOps и как он работает?"
+        keywords: [gitops, git ops, declarative, desired state, reconciliation, git as source of truth]
+        a: "**GitOps** — подход, где **Git-репозиторий** является единственным источником правды для состояния инфраструктуры/приложений. Принципы: (1) **Декларативность** — желаемое состояние описано в манифестах (YAML/Helm/Kustomize), (2) **Versioning** — все изменения через PR/MR (audit, rollback через git revert), (3) **Pull-based** — агент в кластере (ArgoCD/Flux) сравнивает Git с реальностью и **синхронизирует**, (4) **Continuous reconciliation** — автоматическое исправление drift. **Преимущество** над CI-push: нет секретов CI в кластере, нет `kubectl apply` из Jenkins, кластер сам себя лечит."
+        related: ["Чем ArgoCD отличается от Flux?", "Чем pull отличается от push?"]
+      - q: "Чем GitOps pull отличается от CI/CD push?"
+        keywords: [pull based, push based, ci cd, argocd, flux,jenkins, gitlab ci, firewall, cluster access]
+        a: "**Push (CI-based)**: Jenkins/GitLab CI → `kubectl apply` → кластер. CI нужен kubeconfig с правами на кластер (секреты, firewall, RBAC). **Pull (GitOps)**: агент **внутри** кластера (ArgoCD/Flux) → читает Git → применяет. Не нужен cluster access из CI. **Преимущества pull**: (1) кластер изолирован — CI не имеет прямого доступа, (2) self-healing — если кто-то вручную меняет кластер, агент откатывает, (3) audit — все изменения через git, (4) disaster recovery — восстановление из Git. **Недостаток**: агенты требуют ресурсов в кластере."
+        related: ["Что такое reconciliation?", "Как ArgoCD получает доступ к Git?"]
+      - q: "Что такое reconciliation loop и self-healing?"
+        keywords: [reconciliation, rekонсилиация, self healing, drift detection, auto sync, prune]
+        a: "**Reconciliation loop** — агент (ArgoCD/Flux) периодически сравнивает желаемое состояние (Git) с актуальным (cluster). При расхождении (**drift**): (1) **auto-sync** — агент автоматически применяет манифесты из Git, возвращая кластер к желаемому, (2) **prune** — удаляет ресурсы, которых нет в Git, (3) **self-heal** — если кто-то сделал `kubectl edit`, изменения откатываются. **Без self-healing**: ручное подтверждение (кнопка Sync в ArgoCD UI). **Подводный камень**: self-healing ломает ручные hotfix (kubectl scale для инцидента) — нужен `IgnoreDifferences` или pause sync."
+        related: ["Что такое drift detection?", "Как настроить auto-sync в ArgoCD?"]
+  - id: argocd
+    name: ArgoCD
+    blocks:
+      - q: "Чем ArgoCD отличается от Flux?"
+        keywords: [argocd, flux, сравнение, UI, declarative, helm, kustomize, multi cluster]
+        a: "**ArgoCD**: CNCF Graduated. **Web UI** (визуальный дифф, дерево ресурсов, sync-кнопка). CRD: `Application`, `AppProject`. Helm/Kustomize/Plain YAML. Multi-cluster (один ArgoCD → много кластеров). **Flux**: CNCF Graduated. **CLI-first** (нет UI из коробки, есть extensions). CRD: `GitRepository`, `Kustomization`, `HelmRelease`. Легче (Go-бинар), лучше для embedding в платформы. **Выбор**: ArgoCD — когда нужен UI, визуальный audit, ручной approve для prod. Flux — когда всё declarative, CLI-driven, minimal overhead."
+        related: ["Что такое ArgoCD Application?", "Как Flux управляет релизами?"]
+      - q: "Что такое ArgoCD Application и AppProject?"
+        keywords: [application, appproject, source, destination, syncPolicy, project, rbac]
+        a: "**Application** — CRD, описывающая: `source` (Git repo + path + revision), `destination` (cluster + namespace), `syncPolicy` (auto-sync, prune, selfHeal). Одно Application = один набор манифестов. **AppProject** — группировка Applications с ограничениями: какие Git-repo допустимы (`sourceRepos`), какие кластеры (`destinations`), RBAC (кто может создавать/синхронизировать). **Multi-tenancy**: AppProject per team → изоляция. **App-of-Apps** — Application, который ссылается на другие Applications (tree structure для управления большим числом приложений)."
+        related: ["Как настроить multi-cluster в ArgoCD?", "Что такое App-of-Apps?"]
+      - q: "Как ArgoCD управляет секретами в GitOps?"
+        keywords: [secrets, секреты, sealed secrets, external secrets, sops, vault, gitops security]
+        a: "Проблема: Git = публичный/полу-публичный, секреты нельзя хранить в plaintext. Решения: (1) **Sealed Secrets** (Bitnami) — шифрует секрет в `SealedSecret` CRD, только контроллер в кластере расшифровывает, (2) **External Secrets Operator** — `ExternalSecret` CRD ссылается на Vault/AWS SM/SM, оператор синхронит, (3) **SOPS** (Mozilla) — шифрует значения в YAML, ключи в KMS/Vault, (4) **Vault Agent Injector** — секреты инжектируются в под из Vault (не в Git). **Best practice**: External Secrets + Vault — Git хранит только ссылки, секреты в Vault с ротацией."
+        related: ["Что такое Sealed Secrets?", "Как интегрировать Vault с GitOps?"]
+      - q: "Как ArgoCD Rollouts помогает с canary деплоями?"
+        keywords: [rollouts, progressive delivery, canary, blue green, analysis, prometheus, analysis template]
+        a: "**ArgoCD Rollouts** — CRD `Rollout` (заменяет `Deployment`) с **progressive delivery**: `strategy.canary` или `strategy.blueGreen`. Canary: шаги (`setWeight: 10% → pause → setWeight: 50% → pause → setWeight: 100%`). **Analysis** — автоматическая проверка метрик (Prometheus/Datadog): если error rate > порог → **auto-rollback**. `AnalysisTemplate`: запрос PromQL → условие → успех/провал. Интеграция с Istio/SMI для traffic splitting (L7) или ReplicaSet scaling (L4). **Преимущество**: автоматизация canary без ручного контроля метрик."
+        related: ["Что такое progressive delivery?", "Как настроить analysis в Rollouts?"]
+  - id: flux
+    name: Flux
+    blocks:
+      - q: "Как Flux управляет релизами?"
+        keywords: [flux, helmrelease, kustomization, gitrepository, notification, image update automation]
+        a: "**Flux** состоит из контроллеров: **source-controller** (`GitRepository`, `HelmRepository`, `Bucket` — клонирует Git, кэширует), **kustomize-controller** (`Kustomization` — применяет Kustomize overlays), **helm-controller** (`HelmRelease` — helm install/upgrade). Pipeline: GitRepository → Kustomization/HelmRelease → apply. **Notifications**: `Alert` → Slack/Teams/Discord webhook при sync/fail. **Image automation**: `ImageRepository` + `ImagePolicy` (semver/regex) + `ImageUpdateAutomation` — автоматически бампит версию образа в Git при появлении нового тега. Multi-cluster: один Flux per cluster."
+        related: ["Чем Flux отличается от ArgoCD?", "Что такое HelmRelease?"]
+      - q: "Как Flux обновляет образы автоматически?"
+        keywords: [image update automation, imagepolicy, imagerepository, semver, latest, git commit, automation]
+        a: "**Flux Image Update Automation**: (1) `ImageRepository` — сканирует registry на новые теги, (2) `ImagePolicy` — фильтр (например, `semver: 1.x` или `alphabetical: regexp:^main-`), (3) `ImageUpdateAutomation` — бампит `image:` в манифесте → commit в Git → Flux видит новый commit → sync. Результат: push в registry → автодеплой без CI involvement. **Подводный камень**: rate limit на registry, ветка с auto-commits может конфликтовать с ручными PR."
+        related: ["Что такое Flux?", "Как настроить image policy?"]
+  - id: patterns
+    name: Паттерны и multi-cluster
+    blocks:
+      - q: "Что такое App-of-Apps паттерн?"
+        keywords: [app of apps, application tree, bootstrapping, hierarchical, umbrella, multi app]
+        a: "**App-of-Apps** — Application, чей Git-repo содержит манифесты **других** Applications. Структура: root Application → `apps/` (манифесты Application для каждого микросервиса). Создаёт **дерево** приложений: root sync → дочерние Applications создаются → каждый синхронизируется независимо. **Преимущества**: один bootstrap Application разворачивает весь стек; управление через git (добавил YAML → новый Application). **Подводный камень**: cascading deletion — удаление root удаляет все дочерние (cascade=foreground). **Альтернатива**: ApplicationSet (нативный генератор, шаблоны по кластерам/namespace)."
+        related: ["Что такое ApplicationSet?", "Как управлять 100+ приложениями в ArgoCD?"]
+      - q: "Как управлять секретами при multi-cluster GitOps?"
+        keywords: [multi cluster, secrets, cluster secret, vault, external secrets, per cluster, bootstrap]
+        a: "**Проблема**: один Git-repo → много кластеров, но секреты разные per cluster. Решения: (1) **External Secrets Operator** — `SecretStore` per cluster (каждый кластер → свой путь в Vault), (2) **Sealed Secrets** — один sealed secret → расшифровка разная per cluster (cluster-specific private key), (3) **Cluster-specific branches** в Git (branch per cluster, секреты зашифрованы SOPS с разными ключами). **Bootstrap**: cluster secret (kubeconfig) для ArgoCD → ApplicationSet разворачивает ExternalSecrets → ESO тянет секреты из Vault. **Best practice**: никогда не хранить plaintext секреты в Git."
+        related: ["Что External Secrets Operator?", "Как настроить Vault integration?"]
+      - q: "Что такое ApplicationSet в ArgoCD?"
+        keywords: [applicationset, генератор, template, list, clusters, git, matrix, merge, multi cluster]
+        a: "**ApplicationSet** — CRD для **генерации** Applications из шаблонов. Генераторы: (1) `list` — статический список (namespace/name pairs), (2) `clusters` — из Cluster secrets (multi-cluster), (3) `git` — директории/файлы в Git как параметры, (4) `matrix` — комбинация (git × clusters = каждое приложение на каждый кластер), (5) `merge` — приоритетное слияние. Template — обычный Application manifest с переменными из генератора. **Результат**: один ApplicationSet → десятки/сотни Applications. **Use cases**: bootstrap нового кластера (все сервисы разом), deploy одного приложения на все окружения."
+        related: ["Что такое App-of-Apps?", "Как масштабировать ArgoCD на 100 кластеров?"]

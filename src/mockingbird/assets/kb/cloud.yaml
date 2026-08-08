@@ -1,0 +1,161 @@
+topic: cloud
+title: Облачные технологии — всё по теме
+keywords: [cloud, облако, aws, gcp, azure, облачные вычисления, yandex cloud, вк клауд, vk cloud, cloud.ru, selectel, 152-фз]
+sections:
+  - id: fundamentals
+    name: Основы облака
+    blocks:
+      - q: "Что такое IaaS, PaaS, SaaS и FaaS?"
+        keywords: [iaas, paas, saas, faas, модели, сервисы]
+        a: "**IaaS** — инфраструктура как сервис (VM, сети, хранилища): AWS EC2, GCP Compute. **PaaS** — платформа (управляемое приложение/рантайм): Heroku, App Engine. **SaaS** — готовое приложение: Gmail, Slack. **FaaS** — функции как сервис (serverless): Lambda. Уровень контроля снижается, обслуживание — тоже."
+        related: ["Что такое shared responsibility model?"]
+      - q: "Что такое shared responsibility model?"
+        keywords: [shared responsibility, разделение ответственности, безопасность, облако]
+        a: "**Модель разделения ответственности**: облако отвечает за **безопасность облака** (железо, сеть, гипервизор, физические дата-центры), клиент — за **безопасность в облаке** (данные, доступы, конфигурация, ОС, код). Степень ответственности зависит от модели (IaaS больше клиенту, SaaS меньше)."
+        related: ["Что такое IaaS?"]
+      - q: "Что такое регион и availability zone?"
+        keywords: [region, регион, availability zone, az, availability, зона]
+        a: "**Region** — географическая зона (us-east-1); **Availability Zone (AZ)** — отдельный дата-центр внутри региона (изолированное питание/сеть). Размещение приложения в нескольких AZ даёт отказоустойчивость к падению дата-центра; регион — к региональным катастрофам."
+        related: ["Что такое multi-AZ?"]
+      - q: "Чем public cloud отличается от private и hybrid?"
+        keywords: [public cloud, private cloud, hybrid cloud, публичное, приватное]
+        a: "**Public** — ресурсы общего провайдера (AWS/GCP/Azure), плата за использование. **Private** — облако внутри компании (OpenStack, VMware): контроль, но дороже. **Hybrid** — сочетание: чувствительные данные on-prem, пики/новые сервисы в публичном облаке."
+        related: ["Что такое multi-cloud?"]
+      - q: "Что такое CAPEX и OPEX в облаке?"
+        keywords: [capex, opex, капзатраты, опзатраты, модель оплаты]
+        a: "**CAPEX** — капитальные затраты: покупка железа заранее (on-prem). **OPEX** — операционные: плата за использование облака по факту (час, гигабайт). Облако переводит расходы из CAPEX в OPEX: меньше начальных вложений, больше гибкости, но постоянный счёт."
+        related: ["Что такое pricing model?"]
+  - id: compute
+    name: Вычисления
+    blocks:
+      - q: "Что такое VMware и vSphere?"
+        keywords: [vmware, vsphere, esxi, вэмвеа, vcenter, гипервизор, виртуализация, vmotion, ha, drs]
+        a: "**VMware** — платформа виртуализации для дата-центров и частных облаков. Слои: **ESXi** — type-1 гипервизор на железе (bare-metal), **vCenter** — центральное управление хостами и кластерами. Возможности: **vMotion** (живая миграция ВМ без остановки), **HA** (автоперезапуск ВМ на другом хосте при отказе), **DRS** (балансировка ВМ по загрузке). Образ ВМ переносим между хостами."
+        related: ["Чем виртуальная машина отличается от контейнера?"]
+      - q: "Чем виртуальная машина отличается от контейнера?"
+        keywords: [vm, виртуальная машина, контейнер, разница, гипервизор, изоляция]
+        a: "**VM** — полная гостевая ОС поверх гипервизора: тяжёлая, но изолирована на уровне ядра (VMware ESXi, KVM, Hyper-V). **Контейнер** — процесс на общем ядре хоста с namespaces/cgroups (Docker, k8s): стартует за секунды и легче по ресурсам, но изоляция слабее и привязан к ядру хоста. VMware/VMs — для изоляции и legacy, контейнеры — для приложений и масштабирования."
+        related: ["Что такое VMware и vSphere?"]
+      - q: "Что такое виртуальная машина в облаке?"
+        keywords: [vm, виртуальная машина, ec2, instance, gce]
+        a: "**VM/instance** — виртуальная машина в облаке (AWS EC2, GCP Compute Engine): выбирается семейство (general, compute, memory), размер (vCPU/RAM), образ ОС, диск. Тарифицируется посекундно/почасово. Пары: EC2 + EBS, GCE + persistent disk. Управляются через console/CLI/IaC."
+        related: ["Что такое autoscaling?"]
+      - q: "Что такое autoscaling?"
+        keywords: [autoscaling, автоскейлинг, масштабирование, asg, karpenter]
+        a: "**Autoscaling** — автоматическое изменение числа экземпляров по метрикам (CPU, latency, очередь) или расписанию: **AWS ASG**, GCP MIG, Karpenter. Запуск новых VM занимает минуты — поэтому нужны буфер и прогноз. Правило: scale out заранее, in — осторожно."
+        related: ["Что такое HPA?"]
+      - q: "Что такое serverless?"
+        keywords: [serverless, lambda, функции, faas, cold start]
+        a: "**Serverless** — запуск кода без управления серверами: облако масштабирует и тарифицирует по вызовам/памяти (AWS Lambda, GCP Cloud Functions). Плюсы: автоскейлинг до нуля, нет патчей. Минусы: **cold start**, лимиты времени/памяти, привязка к провайдеру."
+        related: ["Что такое cold start?"]
+      - q: "Что такое cold start в serverless?"
+        keywords: [cold start, холодный старт, lambda, init, задержка]
+        a: "**Cold start** — задержка при первом вызове функции: создание среды, загрузка кода, init-фаза (до ~секунд). Митигация: больше памяти, warmup-запросы, provisioned concurrency (дорого), минимум зависимостей. Критично для латентно-чувствительных API."
+        related: ["Что такое serverless?"]
+      - q: "Что такое spot instances?"
+        keywords: [spot, spot instance, прерываемые, дешевле, bid]
+        a: "**Spot instances** — неиспользуемые мощности со скидкой до 90%, которые облако может **забрать в любой момент** (уведомление за 2 минуты). Подходят для batch, тестов, stateless-нагрузок. Для критичных — нет; используют с перезапуском задач и чекпоинтами."
+        related: ["Что такое on-demand?"]
+      - q: "Что такое container-as-a-service?"
+        keywords: [container, ecs, eks, gke, aks, управление контейнерами]
+        a: "**CaaS** — управляемые контейнерные сервисы: **EKS/GKE/AKS** (managed Kubernetes), ECS, Cloud Run. Провайдер обслуживает control plane, клиент — поды/сервисы. Быстрее старт, чем управлять Kubernetes самому, но свои ограничения и цены."
+        related: ["Что такое Kubernetes?"]
+  - id: storage
+    name: Хранилища
+    blocks:
+      - q: "Что такое object storage (S3)?"
+        keywords: [object storage, s3, gcs, azure blob, объектное хранилище]
+        a: "**Object storage** — хранение объектов (файлов) с метаданными и **ключами**: AWS **S3**, GCS, Azure Blob. Практически бесконечная ёмкость, 11 девяток долговечности, версии, lifecycle, шифрование. **Не является файловой системой** — нет произвольных записей в середину, задержка выше."
+        related: ["Чем object storage отличается от block?"]
+      - q: "Чем object storage отличается от block и file?"
+        keywords: [object, block, file, ebs, efs, разница, хранилища]
+        a: "**Block** (EBS, persistent disk) — диск для VM: низкая задержка, но в пределах одной машины. **File** (EFS, NFS) — файловая система для нескольких машин. **Object** (S3) — бесконечный ключ-значение blob: дёшево, доступно из любого места, для больших данных/бэкапов."
+        related: ["Что такое object storage?"]
+      - q: "Что такое lifecycle в object storage?"
+        keywords: [lifecycle, жизненный цикл, transition, expiration, архив]
+        a: "**Lifecycle policies** автоматически переводят объекты между классами хранения (**Standard → Infrequent Access → Glacier**) и удаляют по возрасту. Снижает стоимость хранения холодных данных. Настройка: правила по префиксу/тегу, переходы и сроки."
+        related: ["Что такое object storage?"]
+      - q: "Что такое EBS snapshot?"
+        keywords: [ebs, snapshot, снапшот, бэкап диска, восстановление]
+        a: "**Snapshot** — моментальный бэкап диска в object storage (инкрементальный, сжатый). Используется для бэкапов и создания образов. Восстановление: новый диск из снапшота. Цена/политики управляются lifecycle; снапшоты — базовый уровень DR для VM."
+        related: ["Что такое object storage?"]
+  - id: network
+    name: Сеть
+    blocks:
+      - q: "Что такое VPC и subnet?"
+        keywords: [vpc, subnet, подсеть, virtual private cloud, route table]
+        a: "**VPC** — изолированная виртуальная сеть в облаке с приватным CIDR. **Subnet** — подсеть внутри VPC: **public** (с маршрутом в интернет через Internet Gateway) и **private** (без него). Для доступа приватных подсетей наружу — **NAT gateway**. Маршрутизация — через route tables."
+        related: ["Что такое security group?"]
+      - q: "Что такое security group и NACL?"
+        keywords: [security group, sg, nacl, acl, фильтрация, разница]
+        a: "**Security Group** — stateful firewall **уровня инстанса** (allow-only правила), применяется к ресурсу. **NACL** — stateless фильтр **уровня подсети** (allow/deny, порядок правил). Оба работают, поэтому правила должны не конфликтовать. Stateful: ответный трафик SG разрешает автоматически."
+        related: ["Чем stateful отличается от stateless?"]
+      - q: "Что такое managed load balancer?"
+        keywords: [load balancer, alb, nlb, elb, балансировщик, target group]
+        a: "**Облачный LB**: **ALB** (L7 HTTP: хосты, пути, SSL), **NLB** (L4 TCP/UDP, статические IP), **CLB/GLB** (старые). Связан с **target groups** (серверы) и **health checks**. Облако управляет инфраструктурой LB, но надо правильно настроить таргеты и масштабирование."
+        related: ["Что такое health check?"]
+      - q: "Что такое CDN?"
+        keywords: [cdn, контент, edge, кэш, cloudfront, облачный фронт]
+        a: "**CDN** — сеть edge-серверов, кэширующих контент ближе к пользователю (AWS CloudFront, Cloudflare). Снижает задержку и нагрузку на origin. Кэш управляется заголовками (Cache-Control), инвалидация по требованию. Для статики и API с кэшируемыми ответами."
+        related: ["Что такое edge location?"]
+      - q: "Что такое managed DNS (Route 53)?"
+        keywords: [route53, dns, managed dns, health check, аллокация]
+        a: "**Managed DNS** — облачный DNS-сервис (AWS Route 53, Cloud DNS): хостинг зон, записи A/CNAME/MX, **health checks** и failover, геолокация, интеграция с балансировщиками. Дёшево и надёжно; latency-based routing направляет пользователя к ближайшему ресурсу."
+        related: ["Что такое TTL в DNS?"]
+  - id: cost
+    name: Стоимость и управление
+    blocks:
+      - q: "Что такое pricing models в облаке?"
+        keywords: [pricing, on demand, reserved, spot, тарификация, модели оплаты]
+        a: "**On-demand** — плата по факту, максимальная гибкость, дороже всего. **Reserved** — резервирование на 1-3 года: скидка до ~70%, фиксированные ресурсы. **Spot** — скидка до 90%, но прерываемые. **Savings Plans** — гибкое обязательство по $/час. Выбор по предсказуемости нагрузки."
+        related: ["Что такое spot instances?"]
+      - q: "Как оптимизировать стоимость облака?"
+        keywords: [cost optimization, оптимизация затрат, право, savings, rightsizing]
+        a: "Основные рычаги: **rightsizing** (не переплачивать за неиспользуемые ресурсы), **spot/reserved/savings plans** для предсказуемой нагрузки, автоскейлинг (off-hours), классы хранения для холодных данных, мониторинг cost allocation (теги), выключение dev/стендов на ночь."
+        related: ["Что такое rightsizing?"]
+      - q: "Что такое cost allocation tags?"
+        keywords: [cost allocation, теги, метки, бюджет, биллинг]
+        a: "**Теги** (key=value) на ресурсах для распределения затрат: проект, команда, среда. Облако строит по ним отчёты (Cost Explorer), бюджеты и алерты. Без тегов невозможно понять «кто и зачем тратит». Теги задаются политикой и автоматизируются."
+        related: ["Что такое budget alert?"]
+      - q: "Что такое multi-cloud?"
+        keywords: [multi cloud, мульти облако, несколько провайдеров, плюсы, минусы]
+        a: "**Multi-cloud** — использование нескольких провайдеров одновременно. Плюсы: избегание vendor lock-in, торг за цены, резервирование. Минусы: выше сложность, две плоскости безопасности, двойные навыки. Чаще оправдано для конкретных сервисов, чем «всё везде»."
+        related: ["Что такое vendor lock-in?"]
+  - id: migration
+    name: Миграция
+    blocks:
+      - q: "Что такое lift-and-shift?"
+        keywords: [lift and shift, перенос, миграция, rehost, облако]
+        a: "**Lift-and-shift** — перенос существующего приложения в облако без переписывания (rehost): VM as-is. Быстро и дёшево на старте, но не использует преимущества облака (managed, serverless). Дальше идут стадии: replatform (малые изменения), rearchitect (переделка)."
+        related: ["Чем rehost отличается от rearchitect?"]
+      - q: "Что такое rehost, replatform, rearchitect?"
+        keywords: [rehost, replatform, rearchitect, refactor, стратегии миграции, 6rs]
+        a: "«6 Rs» миграции: **rehost** (перенос как есть), **replatform** (малые изменения: managed БД), **refactor/rearchitect** (переделка под облако: serverless), **repurchase** (переход на SaaS), **retain** (оставить on-prem), **retire** (удалить). Выбор по стоимости и выгоде."
+        related: ["Что такое lift-and-shift?"]
+      - q: "Что такое vendor lock-in?"
+        keywords: [vendor lock in, привязка, провайдер, зависимость]
+        a: "**Vendor lock-in** — зависимость от провайдера из-за фирменных сервисов (Lambda, DynamoDB, BigQuery): уйти сложно и дорого. Снижение: стандарты и открытые технологии (Kubernetes, SQL, OTel, Terraform), абстракция через IaC, стратегия выхода. Полное избегание — компромисс с удобством."
+        related: ["Что такое multi-cloud?"]
+  - id: russian_cloud
+    name: Российские облачные провайдеры
+    blocks:
+      - q: "Что такое Yandex Cloud и какие у него особенности?"
+        keywords: [yandex cloud, яндекс облако, yandex, managed services, object storage, ydb, особенности]
+        a: "**Yandex Cloud** — крупнейшее российское облако. Сервисы: **Managed K8s** (MSK), **Object Storage** (S3-совместимый), **Managed PostgreSQL/ClickHouse/MongoDB**, **YDB** (serverless БД), **Cloud Functions**, **VPC** + security groups, **Certificate Manager**. **Compute Cloud** (VM на KVM), **Identity and Access Management** (IAM, SAML федерация). **Особенности**: zone-based HA (3 зоны в одном регионе), Data Proc (Hadoop/Spark), Machine Learning (DataSphere/Vision/SpeechKit). **Terraform provider** — полный coverage. **152-ФЗ**: данные в РФ."
+        related: ["Чем Yandex Cloud отличается от VK Cloud?", "Что такое 152-ФЗ?"]
+      - q: "Чем VK Cloud и Selectel отличаются?"
+        keywords: [vk cloud, вк клауд, selectel, селектел, сравнение, mks, vmware, bare metal]
+        a: "**VK Cloud** (бывший MCS): **Managed Kubernetes**, **VMware vSphere** (self-service), **S3** (selectel backend), **DBaaS** (PostgreSQL/Redis), **OpenStack**-based. Интеграция с VK сервисами. **Selectel**: **bare-metal** серверы + VMware + OpenStack, **более IaaS-ориентированный**, меньше managed-сервисов, но есть DBaaS и объектное хранилище. **ДЦ**: оба — несколько ДЦ в РФ (Москва, СПб). **Выбор**: VK Cloud — для managed Kubernetes/PaaS; Selectel — для bare-metal, VMware, кастомных схем."
+        related: ["Что такое Cloud.ru?", "Какой российский облако выбрать?"]
+      - q: "Что такое Cloud.ru и его особенности?"
+        keywords: [cloud.ru, клауд ру, сбер облако, huawei, managed, compliance, 152 фз]
+        a: "**Cloud.ru** (бывший SberCloud) — облако от Сбера. Основа — **Huawei Cloud Stack**. Сервисы: **ECS** (elastic cloud server), **RDS** (PostgreSQL/MySQL), **CCE** (Cloud Container Engine — managed K8s), **OBS** (object storage, S3-совместимый), **DCS** (Redis), **DDS** (MongoDB). **Особенности**: высокий compliance (ФЗ-152, ФЗ-149, отечественное ПО, реестр), **GPU** инстансы (Ascend, T4). **Terraform provider** — есть. **Зона покрытия**: Москва (2 региона). **Использование**: корпоративный сектор, enterprise с требованиями к локализации."
+        related: ["Что такое 152-ФЗ?", "Чем Cloud.ru отличается от Yandex Cloud?"]
+      - q: "Что такое 152-ФЗ и как он влияет на облачную инфраструктуру?"
+        keywords: [152 фз, персональные данные, локализация, хранение в рф, compliance, облако, закон]
+        a: "**152-ФЗ «О персональных данных»** — российский закон: персональные данные граждан РФ должны **храниться и обрабатываться на территории РФ**. Влияние на облако: (1) нельзя хранить ПД в AWS/GCP/Azure (зарубежные ДЦ) → нужен **российский провайдер** или on-prem, (2) запись в **реестр** Роскомнадзора о обработке ПД, (3) **уведомление** об инцидентах (утечка ПД). **Реализация**: ПД в Yandex Cloud/VK Cloud/Cloud.ru (ДЦ в РФ); не-ПД (analytics, logs) можно хранить где угодно. **Сертификация**: провайдеры проходят оценку соответствия (ФСТЭК, ФСБ) для гостайны и КИИ. **152-ФЗ ≠ гостайна** — это гражданские ПД."
+        related: ["Что такое КИИ?", "Как выбрать облако под 152-ФЗ?"]
+      - q: "Как мигрировать инфраструктуру в российское облако?"
+        keywords: [миграция, российское облако, import, terraform, re-platform, lift and shift, переход]
+        a: "**Этапы**: (1) **Inventory** — что мигрировать (VM, БД, storage), зависимости. (2) **Архитектура**: какие managed-сервисы использовать (Managed K8s вместо self-managed). (3) **IaC port**: Terraform — сменить provider, переписать модули (cloud-specific ресурсы). (4) **Data migration**: pg_dump/pg_basebackup для БД, rsync/rclone для файлов, S3 cross-region copy. (5) **DNS cutover**: low TTL → переключение поэтапно (canary % → full). (6) **Rollback plan**: возможность откатиться. **Ре-platform vs Lift-and-shift**: первый — переписать под managed-сервисы (дешевле эксплуатация, дороже миграция); второй — как есть (быстрее, но legacy остаётся)."
+        related: ["Что такое lift-and-shift?", "Как мигрировать БД?"]

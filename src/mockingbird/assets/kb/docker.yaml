@@ -1,0 +1,164 @@
+topic: docker
+title: Docker — всё по теме
+keywords: [docker, докер, контейнеры, контейнеризация]
+sections:
+  - id: arch
+    name: Архитектура Docker
+    blocks:
+      - q: "Расскажи про архитектуру Docker."
+        keywords: [архитектура docker, daemon, dockerd, containerd, runc, клиент сервер]
+        a: "**docker client → dockerd (daemon) → containerd → runc**. Изоляция строится на **namespaces** (PID, сеть, монтирование, IPC, UTS) и ограничениях через **cgroups** (CPU, память, IO). Образы состоят из слоёв через **overlayfs**; каждый контейнер — процесс на общем ядре хоста."
+        related: ["Чем docker run отличается от docker create?"]
+      - q: "В чём отличие контейнера от виртуальной машины?"
+        keywords: [контейнер, виртуальная машина, vm, разница, изоляция, гипервизор]
+        a: "**VM** — полная гостевая ОС поверх гипервизора: тяжёлая, но изолированная на уровне ядра. **Контейнер** — процесс на общем ядре с namespaces/cgroups: стартует за секунды, легче по ресурсам, но изоляция слабее и привязан к ядру хоста (Linux-контейнеры на Linux)."
+        related: ["Когда нужна VM, а когда контейнер?"]
+      - q: "Чем namespaces отличаются от cgroups?"
+        keywords: [namespaces, cgroups, изоляция, лимиты, cgroup v2]
+        a: "**Namespaces** — **изоляция видимости**: PID, network, mount, UTS, IPC, user (каждый контейнер «видит» своё). **cgroups** — **лимиты и учёт**: CPU, память, IO, pids. То есть namespaces отвечают «что видно», cgroups — «сколько можно потратить»."
+        related: ["Что такое container escape?"]
+      - q: "Чем docker отличается от containerd и runc?"
+        keywords: [containerd, runc, oci, совместимость, рантайм]
+        a: "**runc** — низкоуровневый OCI-рантайм: создаёт контейнер из OCI-bundle. **containerd** — демон поверх runc с управлением образами и жизненным циклом (используется в k8s). **Docker** — полноценный инструмент: клиент, build, compose, управление. Современные инструменты реализуют тот же OCI-контракт."
+        related: ["Что такое OCI?"]
+      - q: "Что такое container escape и изоляция контейнеров?"
+        keywords: [container escape, безопасность, изоляция, rootless, seccomp, apparmor]
+        a: "**Container escape** — получение доступа к хосту из контейнера (уязвимости ядра, монтирования, привилегированные контейнеры). Снижение риска: **не root** внутри, **--cap-drop=ALL --cap-add=...**, seccomp/AppArmor, read-only FS, **rootless docker**. Контейнер — не «мини-VM», ядро общее."
+        related: ["Что такое rootless docker?"]
+  - id: image
+    name: Образы и Dockerfile
+    blocks:
+      - q: "Что такое Dockerfile и из каких инструкций состоит?"
+        keywords: [dockerfile, from, run, copy, workdir, env, expose, build]
+        a: "**FROM** — базовый образ; **RUN** — команды сборки; **COPY/ADD** — копирование файлов; **WORKDIR** — рабочая директория; **ENV** — переменные; **EXPOSE** — документирование порта; **ENTRYPOINT/CMD** — запуск. Сборка: **docker build -t name .**. Каждая инструкция создаёт слой."
+        related: ["Почему порядок инструкций в Dockerfile важен?"]
+      - q: "В чём отличие ENTRYPOINT от CMD?"
+        keywords: [entrypoint, cmd, отличие, команда по умолчанию]
+        a: "**CMD** задаёт команду и аргументы по умолчанию и легко переопределяется при `docker run`; **ENTRYPOINT** фиксирует исполняемый процесс контейнера и переопределяется только через `--entrypoint`. Если заданы оба, **CMD становится аргументами ENTRYPOINT**. Практика: ENTRYPOINT — сам процесс, CMD — его дефолтные аргументы (например `ENTRYPOINT [\"nginx\"]`, `CMD [\"-g\", \"daemon off;\"]`)."
+        related: ["Как переопределить ENTRYPOINT при запуске?", "Что такое exec vs shell форма?"]
+      - q: "Что такое multi-stage build и зачем он нужен?"
+        keywords: [multi stage, multistage, многоступенчатая сборка, alpine]
+        a: "Несколько блоков **FROM** в одном Dockerfile: в первом собираем приложение (компилятор, зависимости), во втором — копируем только артефакт в лёгкий runtime-образ (`COPY --from=0`). Итог: **маленький образ** без инструментов сборки и лишних слоёв."
+        related: ["Как уменьшить размер образа?"]
+      - q: "Какие best practices для Dockerfile?"
+        keywords: [best practices, практики, не root, healthcheck, слои, dockerignore]
+        a: "Редко меняющееся — раньше в файле (кэш слоёв); **multi-stage**; запускать **не от root** (USER); **HEALTHCHECK**; пинить версии базовых образов (не latest); **.dockerignore**; минимальные базовые образы; `.dockerignore` и лишние слои убирать."
+      - q: "Что такое exec и shell форма в Dockerfile?"
+        keywords: [exec form, shell form, json, интерпретация, sh -c]
+        a: "**Exec-форма** — JSON-массив: `CMD [\"cmd\", \"arg\"]`, запускает процесс **напрямую** (правильные сигналы, нет лишнего sh, PID 1 — сам процесс). **Shell-форма** — строка: `CMD cmd arg`, оборачивается в `sh -c` (доступны переменные, но сигналы ловит sh). Для production предпочитают exec."
+        related: ["Чем ENTRYPOINT отличается от CMD?"]
+      - q: "Как работает кэш слоёв при сборке?"
+        keywords: [кэш слоёв, build cache, invalidation, порядок инструкций]
+        a: "Каждая инструкция — слой; если она и её контекст не менялись, **кэш переиспользуется**. Смена ранней инструкции **инвалидирует всё, что после**. Поэтому порядок: сначала копировать файлы зависимостей и ставить их (`COPY requirements && RUN pip install`), потом код — ускоряет итерации сборки."
+        related: ["Как уменьшить размер образа?"]
+      - q: "Чем COPY отличается от ADD?"
+        keywords: [copy, add, отличие, tar, remote url]
+        a: "**COPY** — просто копирует файлы/директории. **ADD** дополнительно распаковывает локальные **tar-архивы** и умеет тянуть файлы по **URL**. Практика: для копирования — COPY, для распаковки tar — ADD; URL-загрузки избегать (слой не кэшируется по содержимому)."
+        related: ["Что такое .dockerignore?"]
+      - q: "Как уменьшить размер образа?"
+        keywords: [размер образа, alpine, distroless, multi-stage, слои]
+        a: "**Multi-stage** (артефакт без тулчейна), лёгкие базовые образы (**alpine**, distroless), объединение RUN в один слой, очистка кэша пакетов, минимум слоёв и файлов в контексте через **.dockerignore**. Небольшие образы = быстрый pull и меньше поверхность атаки."
+        related: ["Что такое multi-stage build?"]
+      - q: "Что такое .dockerignore?"
+        keywords: [dockerignore, контекст сборки, исключения, .git]
+        a: "**`.dockerignore`** — аналог .gitignore для **build context**: исключает ненужные файлы (node_modules, .git, логи). Быстрее передача контекста демону и меньше риск случайно положить секреты в слой."
+        related: ["Как уменьшить размер образа?"]
+      - q: "Что такое HEALTHCHECK в Dockerfile?"
+        keywords: [healthcheck, проверка здоровья, healthy, unhealthy]
+        a: "**HEALTHCHECK** — команда, которую демон периодически запускает в контейнере: статусы **starting/healthy/unhealthy**. Состояние видно в `docker ps` и переиспользуется orchestration'ом (compose, swarm, перезапуски). Без него контейнер «живой», даже если приложение упало."
+        related: ["Чем restart отличается от healthcheck?"]
+  - id: run
+    name: Запуск и сети
+    blocks:
+      - q: "Как контейнеры общаются между собой?"
+        keywords: [сеть docker, network, bridge, host, overlay, dns по имени]
+        a: "Дефолтная **bridge**-сеть — контейнеры видят друг друга по IP, но **не по имени**. В **user-defined bridge** работает **DNS по имени контейнера**. **host** — сеть хоста напрямую; **overlay** — между хостами (swarm). Подключение: `docker network create` + `--network`."
+        related: ["Чем отличается bridge от host?"]
+      - q: "Как ограничить ресурсы контейнера?"
+        keywords: [лимиты, cpus, memory, cgroups, oom, pids limit]
+        a: "`--memory`, `--cpus`, `--cpuset-cpus`, `--pids-limit`. Реализуются через **cgroups**. Без лимита контейнер может исчерпать память/CPU хоста (OOM). Лимиты обязательны для мультитенантных хостов и стабильности."
+        related: ["Что такое OOM killer?"]
+      - q: "Чем -p отличается от --network host?"
+        keywords: [publish, порт, порт публикация, -p, host network, iptables]
+        a: "**-p host:container** публикует порт через **iptables/DNAT** — контейнер остаётся в bridge-сети, порт виден снаружи на хосте. **--network host** — контейнер **разделяет сетевой стек хоста** без NAT (порты без -p), но теряется изоляция и DNS-имя контейнера. Для одного процесса на порт чаще -p."
+        related: ["Как контейнеры общаются между собой?"]
+      - q: "Как попасть внутрь работающего контейнера?"
+        keywords: [docker exec, exec, bash, sh, в контейнер]
+        a: "**docker exec -it <ctr> bash** — новый процесс внутри контейнера (для отладки). Важно: exec запускает процесс **в текущем контейнере**, а не «смотрит внутрь». Для команд, запущенных при старте, использовать **docker logs**. Если в контейнере нет bash — sh."
+        related: ["Чем docker attach отличается от exec?"]
+      - q: "Как посмотреть логи контейнера?"
+        keywords: [docker logs, логи, журнал, json-file, log driver]
+        a: "**docker logs -f <ctr>** — стандартный вывод контейнера (stdout/stderr). **--since**, **--tail** для фильтрации. Драйверы: **json-file** (по умолчанию), journald, fluentd, splunk, awslogs. Важно: логи из volume/файла приложения так не увидеть — нужен вывод в stdout или log-файл."
+        related: ["Что такое docker log driver?"]
+      - q: "Что такое restart policy?"
+        keywords: [restart, restart always, unless-stopped, политика, "no"]
+        a: "**restart policy** — автоперезапуск контейнера демоном: **no** (дефолт), **on-failure[:N]**, **always**, **unless-stopped**. Отличается от healthcheck: restart следит за **процессом**, healthcheck — за **приложением**. `docker update --restart` меняет без пересоздания."
+        related: ["Что такое HEALTHCHECK?"]
+      - q: "Что такое docker attach и чем отличается от exec?"
+        keywords: [docker attach, attach, exec, разница, stdin stdout]
+        a: "**attach** подключается к **тому же** процессу PID 1 и его потокам (stdin/stdout контейнера) — Ctrl+C может остановить контейнер. **exec** запускает **новый отдельный процесс**. Для отладки почти всегда exec, attach — редкий случай."
+        related: ["Как попасть внутрь контейнера?"]
+      - q: "Чем docker run отличается от docker create?"
+        keywords: [docker run, docker create, разница, start, старт]
+        a: "**create** создаёт контейнер из образа, но **не запускает** его (start позже); **run = create + start**. Полезно знать для понимания жизненного цикла и при отладке падающих контейнеров (создали, посмотрели, не запускали)."
+        related: ["Как посмотреть остановленные контейнеры?"]
+  - id: data
+    name: Данные
+    blocks:
+      - q: "Как работают volumes и bind mounts?"
+        keywords: [volume, bind mount, тома, tmpfs, данные контейнера]
+        a: "**Volume** — управляемое Docker-хранилище (/var/lib/docker/volumes), переживает пересоздание контейнера, рекомендован для данных. **Bind mount** — монтирование папки с хоста (удобно для dev). **tmpfs** — данные в памяти, исчезают при остановке. Без них данные контейнера **эфемерны**."
+        related: ["Как сделать бэкап volume?"]
+      - q: "Как сделать образ иммутабельным и чем опасен latest?"
+        keywords: [latest, digest, теги, иммутабельность, версионирование]
+        a: "**latest** меняется — опасно для воспроизводимости. Использовать конкретные версии (v1.2.3) и **digest** (`repo@sha256:...`) для точного пина. Иммутабельные теги упрощают откаты и аудит."
+      - q: "Куда класть конфигурацию: env или mount?"
+        keywords: [env, переменные, конфиг, mount, config, двенадцать факторов]
+        a: "**Переменные окружения** — для параметров рантайма и секретов (внешние, не в образе); **mount/volume** — для больших файлов и динамических данных. Правило «12-факторного приложения»: конфигурация в окружении, а не в коде. Секреты — через secret manager, не в env-аргументах docker run."
+        related: ["Что такое secrets в Docker?"]
+      - q: "Где в Docker хранить БД и стейт?"
+        keywords: [база данных, state, стейт, pv, volume, постгрес]
+        a: "БД и прочий стейт — **только в volume/томах**, никогда не в слое контейнера (теряется при пересоздании). Для продакшена часто выносят из контейнеров на отдельные управляемые сервисы или **StatefulSet-подход**. Резервное копирование: дамп + снапшоты volume."
+        related: ["Как сделать бэкап volume?"]
+  - id: ops
+    name: Управление контейнерами
+    blocks:
+      - q: "Какие основные команды управления Docker?"
+        keywords: [docker ps, docker stop, docker rm, docker images, prune, system]
+        a: "**docker ps [-a]** — контейнеры; **docker stop/start/restart**; **docker rm** (удалить); **docker images** — образы; **docker rmi** — удалить образ; **docker build**; **docker logs**; **docker inspect** — детали; **docker system df** — занятость; **docker system prune** — чистка висячих данных."
+        related: ["Что такое docker inspect?"]
+      - q: "Чем docker save/load отличается от push/pull?"
+        keywords: [docker save, docker load, docker push, docker pull, tar]
+        a: "**save/load** — экспорт образа в **tar-файл** (офлайн-перенос, инспекция, архивирование). **push/pull** — работа с **реестром** по сети. Пример: `docker save app | gzip > app.tar.gz` → `docker load < app.tar.gz`."
+        related: ["Как хранить образы?"]
+      - q: "Что такое docker inspect?"
+        keywords: [docker inspect, json, метаданные, state, ip адрес]
+        a: "**docker inspect** выводит **JSON-метаданные**: конфигурация, состояние, IP-адрес, сеть, mounts, env, health-статус. Быстрый способ узнать IP: `docker inspect -f '{{.NetworkSettings.IPAddress}}' <ctr>`."
+        related: ["Какие основные команды управления Docker?"]
+      - q: "Что такое orphan-контейнеры и как чистить системы?"
+        keywords: [prune, orphan, чистка, dangling, удалить лишнее]
+        a: "**docker system prune** — удаляет неиспользуемые контейнеры, сети, образы (**dangling** — без тегов) и кэш сборки; **-a** — ещё и неиспользуемые образы. Осторожно: prune по ошибке может удалить нужное (например, контейнеры, созданные не для запуска)."
+        related: ["Какие основные команды управления Docker?"]
+  - id: comp
+    name: Compose и практики
+    blocks:
+      - q: "Что такое Docker Compose?"
+        keywords: [compose, docker-compose, compose.yaml, depends_on, healthcheck]
+        a: "Декларативное описание мульти-контейнерного приложения в **compose.yaml**: сервисы, сети, тома, порты, переменные. `docker compose up -d`, `down`, `ps`, `logs`. **depends_on** + **healthcheck** управляют порядком запуска."
+        related: ["В чём разница между restart и healthcheck?"]
+      - q: "Как хранить и распространять образы?"
+        keywords: [registry, реестр, docker hub, ecr, ghcr, push, pull, приватный]
+        a: "**docker push/pull** работают с реестрами: публичные (Docker Hub, GHCR) и приватные (**ECR, GCR, Nexus**). Образы версионируются тегами и **digest**. Для продакшена — приватный реестр + сканирование образов на уязвимости."
+        related: ["Что такое Docker Registry 2.0?"]
+      - q: "Что такое depends_on и condition в compose?"
+        keywords: [depends_on, condition, service_healthy, порядок запуска]
+        a: "**depends_on** задаёт **порядок старта** сервисов. С **condition: service_healthy** старт ждёт healthcheck зависимого сервиса (без этого — только очерёдность). Пример: app ждёт, пока БД ответит. Используется для локальной разработки и простых стеков."
+        related: ["Что такое HEALTHCHECK?"]
+      - q: "Что такое профили (profiles) в compose?"
+        keywords: [profiles, профили, dev, prod, selective, запуск]
+        a: "**Профили** — группа сервисов, запускаемая по запросу: `docker compose --profile dev up`. Позволяет в одном файле описать dev-инструменты (БД, mailpit, admin) и prod-сервисы, запуская только нужное."
+        related: ["Что такое Docker Compose?"]
+      - q: "Как передавать секреты в контейнеры?"
+        keywords: [secrets, секреты, vault, секрет, файл, не env]
+        a: "Лучшие практики: **не в env и не в образе**. Варианты: **docker secrets** (swarm), файлы-секреты через mount, интеграция с **Vault**/облачными secret manager, чтение при старте из volume. Env часто видна в `docker inspect` и логах — источник утечек."
+        related: ["Куда класть конфигурацию?"]

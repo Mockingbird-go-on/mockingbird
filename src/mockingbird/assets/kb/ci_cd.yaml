@@ -1,0 +1,85 @@
+topic: ci_cd
+title: CI/CD — всё по теме
+keywords: [ci cd, сиди, пайплайн, pipeline, доставка]
+sections:
+  - id: base
+    name: Пайплайны
+    blocks:
+      - q: "Расскажи про этапы CI/CD пайплайна."
+        keywords: [этапы, стадии, pipeline, пайплайн, проверка кода]
+        a: "Классическая цепочка: **checkout → lint → build → unit/integration tests → статический анализ (SAST) → сборка артефакта → публикация в реестр → deploy в среду → smoke-тесты → (опционально) canary/rollback**. Быстрые проверки делаются на каждый PR, тяжёлые и релизные — на main."
+        related: ["Что такое quality gate?"]
+      - q: "Что такое quality gate?"
+        keywords: [quality gate, гейт качества, порог, блокировка релиза]
+        a: "**Quality gate** — условия, при невыполнении которых пайплайн останавливается: покрытие тестами, результаты SAST/SCA, критичные уязвимости, лимиты времени. Цель — не пускать в релиз «грязный» код."
+        related: ["Что такое SAST и SCA?"]
+      - q: "Что такое CI и чем он отличается от CD?"
+        keywords: [ci, cd, continuous integration, continuous delivery, continuous deployment]
+        a: "**CI (continuous integration)** — автоматическая проверка и сборка каждого изменения (частые merge, быстрая обратная связь). **CD** — два толкования: **continuous delivery** — всегда готовый к релизу артефакт, выкатка по кнопке; **continuous deployment** — автоматический выкат в production без ручного шага."
+        related: ["Расскажи про этапы CI/CD пайплайна."]
+      - q: "Что такое Trunk-Based Development?"
+        keywords: [trunk based, тринк, ветки, короткоживущие, feature flags]
+        a: "**Trunk-Based Development** — все работают в одной короткоживущей ветке **main** (или с очень короткими feature-ветками на пару дней), интеграция ежедневная, фичи за feature flags. Плюс — минимум merge-конфликтов и «ад веток»; требует хорошего покрытия тестами."
+        related: ["Что такое feature flags?"]
+      - q: "Что такое feature flags?"
+        keywords: [feature flags, фиче флаги, kill switch, экспозиция]
+        a: "**Feature flag** — переключатель фичи без передеплоя: включить/выключить в рантайме, канареечные выпуски, доля пользователей. Помогает в Trunk-Based, даёт **kill switch** при проблемах. Минус — технический долг (мертвые флаги) и рост конфигураций."
+        related: ["Что такое canary release?"]
+      - q: "Что такое canary release?"
+        keywords: [canary, канарейка, rolling, blue green, стратегии выкатки]
+        a: "**Canary** — выкатка на небольшую долю трафика (5-10%), наблюдение метрик, затем расширение. **Blue/Green** — две полные версии среды и мгновенное переключение (быстрый откат). **Rolling** — поэтапная замена без простоя. Выбор зависит от риска и требований к доступности."
+        related: ["Чем canary отличается от blue-green?"]
+      - q: "Как обеспечить откат (rollback) релиза?"
+        keywords: [rollback, откат, redeploy, restore, фикс, план]
+        a: "Способы: **передеплой предыдущей версии** артефакта/образа, blue/green переключение, **revert в git** для GitOps, восстановление БД из снапшотов. Критично: иммертабельные версии артефактов, тестируемый rollback и время на прогон; откат планируется до релиза, не во время инцидента."
+        related: ["Что такое blue/green?"]
+  - id: tools
+    name: Инструменты
+    blocks:
+      - q: "В чём разница между Jenkins, GitLab CI и GitHub Actions?"
+        keywords: [jenkins, gitlab ci, github actions, сравнение, runner]
+        a: "**Jenkins** — самостоятельный сервер, гибкий через плагины, DSL (Declarative Pipeline); обслуживается сам. **GitLab CI** — встроен в GitLab, YAML (.gitlab-ci.yml), свои раннеры. **GitHub Actions** — облачный, workflows в репозитории, большой marketplace, виртуальные машины/self-hosted."
+        related: ["Что такое runner/agent?"]
+      - q: "Что такое artifact repository и зачем он нужен?"
+        keywords: [артефакты, repository, nexus, artifactory, registry, хранение]
+        a: "Хранилище собранных артефактов: **Nexus, Artifactory**, container registry. Даёт версионирование, политики retention, проксирование зависимостей, безопасность. Артефакт собирается один раз и переносится между средами — воспроизводимость."
+        related: ["Чем артефакт отличается от образа?"]
+      - q: "Что такое Nexus Repository Manager?"
+        keywords: [nexus, нексус, sonatype, hosted, proxy, group, maven, npm, pypi, docker registry, репозиторий]
+        a: "**Nexus (Sonatype)** — саморазмещаемый репозиторий артефактов. Три типа репозиториев: **hosted** (свои артефакты: release/snapshot), **proxy** (кэш до Maven Central/npmjs — тянет один раз и хранит локально), **group** (несколько hosted/proxy за одним URL). Форматы: Maven, npm, PyPI, Docker, NuGet, Raw. Retention — через cleanup policies; клиенты указывают на группу, а не на отдельный репозиторий."
+        related: ["Что такое artifact repository?"]
+      - q: "Как защитить пайплайн и секреты?"
+        keywords: [секреты, безопасность, vault, защита, не хранить в коде]
+        a: "Секреты — в secret manager (**HashiCorp Vault**, облачные провайдеры), **не в коде и не в логах**; подключение через переменные/секреты CI. Встроенные проверки: SAST (статический анализ), SCA (зависимости), подписывание артефактов, проверка PR, лимиты на merges."
+        related: ["Что такое SAST?"]
+      - q: "Что такое runner/agent в CI?"
+        keywords: [runner, agent, воркер, self hosted, executor]
+        a: "**Runner** — среда (машина/контейнер), где выполняются задания пайплайна. Бывают хостированные провайдером и **self-hosted** (свой кластер, специфическое железо/сеть, свои секреты). Executors: shell, docker, kubernetes. Безопасность: self-hosted runner для untrusted-кода — риск."
+        related: ["Что такое docker executor?"]
+      - q: "Что такое SAST и SCA?"
+        keywords: [sast, sca, статический анализ, зависимостей, уязвимости]
+        a: "**SAST (Static Application Security Testing)** — анализ исходников без запуска (поиск типовых уязвимостей, шаблонов). **SCA (Software Composition Analysis)** — проверка **зависимостей** (библиотек, пакетов) на известные CVE. Дополняются DAST — динамическими тестами запущенного приложения."
+        related: ["Что такое DAST?"]
+      - q: "Что такое пайплайн «пирамиды» тестов?"
+        keywords: [пирамида тестов, unit, integration, e2e, тестирование, coverage]
+        a: "**Пирамида** — большая база из **unit-тестов** (быстрые, дёшево), меньше **integration** (с реальными компонентами) и мало **e2e** (медленные, дорогие). Правило: чем выше уровень, тем меньше тестов и тем они дороже; фокус на нижних уровнях для скорости и стабильности CI."
+        related: ["Что такое smoke-тесты?"]
+  - id: gitops
+    name: GitOps
+    blocks:
+      - q: "Что такое GitOps и ArgoCD?"
+        keywords: [gitops, argocd, argo, декларативность, синхронизация]
+        a: "**GitOps** — git как единственный источник правды для инфраструктуры; агент (**ArgoCD**, Flux) непрерывно **синхронизирует** кластер с репозиторием (pull-модель). Откат = revert в git; авто-синк, health-статусы, видимость отклонений (drift)."
+        related: ["Чем GitOps отличается от push-деплоя?"]
+      - q: "Чем GitOps отличается от push-деплоя?"
+        keywords: [gitops, push deploy, pull, агент, права]
+        a: "**Push-модель**: CI деплоит в среду сам (нужны креды на деплой у CI, риск расхождений). **GitOps (pull-модель)**: агент в кластере следит за git и применяет изменения — деплой-доступ минимален, откаты и аудит через git, виден **drift** между git и реальностью."
+        related: ["Что такое GitOps?"]
+      - q: "Что такое drift в GitOps?"
+        keywords: [drift, расхождение, синхронизация, конфигурация]
+        a: "**Drift** — расхождение между желаемым состоянием в git и фактическим в кластере (ручные правки, сбои, изменения извне). Инструменты GitOps его **обнаруживают** и могут авто-возвращать (auto-sync) или только показывать. Постоянный drift — признак плохих процессов."
+        related: ["Что такое ArgoCD?"]
+      - q: "Что такое IaC и чем он связан с CI/CD?"
+        keywords: [iac, инфраструктура как код, terraform, плейбуки]
+        a: "**IaC** — управление инфраструктурой кодом (Terraform, Ansible, CloudFormation, Pulumi): декларативно, версионируемо, воспроизводимо. Интеграция с CI/CD: **plan/validate** в пайплайне, apply после ревью, запрет ручных правок. Идемпотентность и state делают деплой предсказуемым."
+        related: ["Что такое Terraform?"]

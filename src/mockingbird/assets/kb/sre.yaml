@@ -1,0 +1,153 @@
+topic: sre
+title: SRE — всё по теме
+keywords: [sre, эсарэ, надежность, reliability, site reliability engineering, chaos engineering, finops, финопс, incident management, инцидент, postmortem, mttr, on-call, game day]
+sections:
+  - id: core
+    name: Основы SRE
+    blocks:
+      - q: "Что такое SRE?"
+        keywords: [sre, site reliability, надежность, инженер, роль]
+        a: "**SRE (Site Reliability Engineering)** — дисциплина, применяющая инженерные методы (код, автоматизация) к **операциям**: цель — надёжный, масштабируемый и эффективный сервис. Принципы: принятие риска через SLO, устранение **toil**, автоматизация, разработка на инфраструктуре как на продукте."
+        related: ["Чем SRE отличается от DevOps?"]
+      - q: "Чем SRE отличается от DevOps?"
+        keywords: [sre, devops, отличие, культура, инженерная практика]
+        a: "**DevOps** — культура и принципы сотрудничества dev/ops (владение, автоматизация, короткие циклы). **SRE** — конкретная инженерная практика/роль внутри этой культуры: SLO, error budget, мониторинг, on-call. DevOps — «что и зачем», SRE — «как конкретно добиться надёжности»."
+        related: ["Что такое SLO?"]
+      - q: "Что такое SLI, SLO и error budget?"
+        keywords: [sli, slo, error budget, бюджет ошибок, целевой]
+        a: "**SLI** — измеримая метрика качества (доля успешных запросов, latency). **SLO** — целевое значение SLI за период (99.9%/мес). **Error budget** = 100% − SLO: «разрешённый» объём отказов; его исчерпание — повод остановить изменения и заняться надёжностью. Основа управления риском в SRE."
+        related: ["Как считать SLO?"]
+      - q: "Что такое toil и как его устранять?"
+        keywords: [toil, тoil, рутинная работа, автоматизация, ручная работа]
+        a: "**Toil** — рутинная, повторяющаяся, не приносящая длительной ценности ручная работа (ручные деплои, перезапуски, клики). Цель SRE — **устранить/автоматизировать** toil (цель — менее 50% времени). Критерий: если действие повторил N раз — оно кандидат на автоматизацию."
+        related: ["Что такое автоматизация операций?"]
+      - q: "Что такое четырёхглазый принцип в SRE?"
+        keywords: [four eyes, четыре глаза, изменение, approval, принцип]
+        a: "**Four-eyes** — любое производственное изменение должно быть просмотрено вторым человеком (review, approval), чтобы ловить ошибки и распределять ответственность. Применяется к коду, конфигам, деплоям. Компромисс скорости и безопасности изменения."
+        related: ["Что такое change management?"]
+  - id: incidents
+    name: Инциденты
+    blocks:
+      - q: "Как устроен процесс работы с инцидентами?"
+        keywords: [инцидент, incident, on call, triage, респондер, статусы]
+        a: "Цикл: **детекция** (алерт) → **triage** (серьёзность, кто) → **mitigation** (восстановление сервиса, не обязательно «корень») → **post-incident** (разбор). Роли: **IC** (координатор), коммуникаторы, участники. Цель — сначала остановить кровь, потом разбирать причины."
+        related: ["Что такое blameless postmortem?"]
+      - q: "Что такое on-call?"
+        keywords: [on call, дежурство, pager, эскалация, ответственный]
+        a: "**On-call** — дежурство ответственного за алерты: реагировать на срабатывания, триажировать и привлекать команду. Правила хорошего on-call: чёткие playbooks, разумные алерты (без шума), эскалация, компенсация, ограничение нагрузки. Ключ — **алерты только о том, что требует действий**."
+        related: ["Что такое playbook?"]
+      - q: "Что такое blameless postmortem?"
+        keywords: [postmortem, blameless, разбор, ретроспектива, безвинная]
+        a: "**Blameless postmortem** — разбор инцидента без поиска виноватого: фокус на **что случилось, почему, как предотвратить**. Ключевое: «человеческая ошибка» — системная проблема, а не повод для наказания. Итог — action items и улучшения процессов."
+        related: ["Как устроен процесс работы с инцидентами?"]
+      - q: "Что такое playbook в эксплуатации?"
+        keywords: [playbook, плейбук, runbook, runbook, инструкция, runbook]
+        a: "**Playbook/runbook** — заранее написанная инструкция реагирования на инцидент или операцию (что проверять, какие команды, когда эскалировать). Снижает хаос в стрессе и время MTTR. Хорошие playbooks — живые документы, обновляемые после инцидентов."
+        related: ["Что такое on-call?"]
+      - q: "Что такое MTTR и MTBF?"
+        keywords: [mttr, mtbf, метрики инцидентов, время восстановления, время между отказами]
+        a: "**MTTR (Mean Time To Repair/Recover)** — среднее время восстановления сервиса после отказа. **MTBF (Mean Time Between Failures)** — среднее время между отказами. Пара связана с доступностью: MTBF / (MTBF + MTTR). Цели SRE: снижать MTTR (быстрый отклик, playbooks) и частоту отказов."
+        related: ["Как считается доступность?"]
+      - q: "Что такое severity уровни инцидента?"
+        keywords: [severity, серьёзность, sev1, sev2, приоритет, эскалация]
+        a: "Классификация по влиянию: **SEV1** — полная потеря сервиса/данных (мобилизация, эскалация вверх), **SEV2** — деградация без полного простоя, **SEV3** — локальная/незначительная проблема. Уровень определяет скорость реакции и состав вовлечённых. Критерии фиксируются заранее."
+        related: ["Как устроен процесс работы с инцидентами?"]
+      - q: "Что такое war room в инциденте?"
+        keywords: [war room, командная комната, канал, коммуникация, инцидент]
+        a: "**War room** — выделенное пространство (чат/конференция) для работающих над инцидентом: отдельный канал, стенограмма, единые коммуникации. Позволяет не мешать остальной команде и сохранить хронологию для postmortem. Стандарт при SEV1."
+        related: ["Что такое blameless postmortem?"]
+  - id: reliability
+    name: Надёжность
+    blocks:
+      - q: "Как считается доступность сервиса?"
+        keywords: [доступность, availability, nines, аптайм, процент]
+        a: "**Доступность** = uptime / (uptime + downtime). «Девятки»: 99% = ~3.65 дня простоя/год, 99.9% = 8.7 часов, 99.99% = 52 минуты, 99.999% = 5 минут. Важно: считают по **SLO**, а не по идеалу; высокие девятки требуют избыточности и стоят дорого."
+        related: ["Что такое SLI, SLO и error budget?"]
+      - q: "Что такое RTO и RPO?"
+        keywords: [rto, rpo, восстановление, резервная копия, disaster recovery]
+        a: "**RPO (Recovery Point Objective)** — сколько данных можно потерять (частота бэкапов: час → потеряется час). **RTO (Recovery Time Objective)** — как быстро восстановить сервис после аварии. Оба — целевые показатели для плана аварийного восстановления (DR)."
+        related: ["Что такое disaster recovery?"]
+      - q: "Что такое backup и восстановление?"
+        keywords: [backup, бэкап, restore, снапшот, политика, полный]
+        a: "Виды: **полные, инкрементальные, дифференциальные**, снапшоты; стратегия 3-2-1 (3 копии, 2 носителя, 1 вне площадки). Критично: **регулярно тестировать восстановление** (бэкап без restore — не бэкап), политика хранения и шифрование. Восстановление измеряется через RTO/RPO."
+        related: ["Что такое RTO и RPO?"]
+      - q: "Что такое disaster recovery (DR)?"
+        keywords: [disaster recovery, dr, аварийное восстановление, failover, план]
+        a: "**DR** — план восстановления работы при катастрофе (потеря площадки/региона): **backup** + **failover** (запасной регион), цели **RTO/RPO**. Варианты: active-active (обслуживание с обеих), active-passive (горячий резерв), cold (только бэкапы). Тестируется регулярно."
+        related: ["Что такое RTO и RPO?"]
+      - q: "Что такое failover и отказоустойчивость?"
+        keywords: [failover, отказоустойчивость, переключение, redudancy, избыточность]
+        a: "**Failover** — автоматическое переключение на резерв при отказе основного узла (БД, LB, сервиса). Строится на **избыточности** (несколько реплик) и детекции отказа (health checks). Фактор выбора: RPO/RTO переключения; для БД нужны синхронная репликация и консенсус."
+        related: ["Что такое репликация?"]
+      - q: "Что такое chaos engineering?"
+        keywords: [chaos engineering, хаос, fault injection, нарушение, gameday]
+        a: "**Chaos engineering** — намеренное внесение сбоев (убить ноду, задержка сети) в **контролируемой** среде для проверки устойчивости и слабых мест. Инструменты: Chaos Monkey, Litmus, Gremlin. Важно: начинать с малого, в staging, с метриками; это тренировка, а не вредительство."
+        related: ["Что такое fault injection?"]
+      - q: "Что такое capacity planning?"
+        keywords: [capacity planning, планирование ёмкости, масштабирование, рост]
+        a: "**Capacity planning** — прогноз ресурсов (CPU, память, БД, сеть) под ожидаемый рост и пики: запас, автоскейлинг, бенчмарки, исторические метрики. Цель — сервис не «упирается» в потолок и не переплачивает. Регулярный процесс, а не разовая работа."
+        related: ["Что такое load testing?"]
+      - q: "Что такое load testing?"
+        keywords: [load testing, нагрузочное тестирование, k6, jmeter, предел]
+        a: "**Load testing** — проверка поведения под нагрузкой: нахождение предела (где latency/errors ухудшаются), проверка автоскейлинга, ёмкости. Инструменты: **k6, JMeter, Gatling, locust**. Не путать: stress (за пределом), soak (длительная), spike (пики)."
+        related: ["Что такое capacity planning?"]
+  - id: change
+    name: Управление изменениями
+    blocks:
+      - q: "Что такое progressive delivery?"
+        keywords: [progressive delivery, канареечный, прогрессивная доставка, выкатка]
+        a: "**Progressive delivery** — поэтапная выкатка с контролем: **canary** (небольшая доля трафика), **feature flags**, **ring-based rollout** (по группам пользователей), автокатбэк по метрикам. Уменьшает blast radius и риск регресса по сравнению с «всё сразу»."
+        related: ["Что такое canary release?"]
+      - q: "Как автоматически откатить плохой деплой?"
+        keywords: [автооткат, aut rollback, canary, метрики, анализ]
+        a: "Схема: выкатка **canary** (часть трафика) → сравнение метрик с baseline (latency, errors) → при ухудшении **автооткат** к прошлой версии. Реализация: Argo Rollouts, Flagger, Spinnaker. Ключ — быстрые и надёжные индикаторы здоровья, иначе автооткат сам по себе риск."
+        related: ["Что такое progressive delivery?"]
+      - q: "Что такое change management?"
+        keywords: [change management, управление изменениями, approval, риск]
+        a: "**Change management** — процесс контроля производственных изменений: **оценка риска**, review/approval, окна изменений, откат, документация. Цель — снизить число сбоев от изменений, сохранив скорость. Модели: от «всё через RFC» до «high-trust + авто-выкатка с мониторингом»."
+        related: ["Что такое четырёхглазый принцип?"]
+  - id: chaos
+    name: Chaos Engineering
+    blocks:
+      - q: "Что такое Chaos Engineering?"
+        keywords: [chaos engineering, хаос инженерия, resilience, эксперимент, failure injection, antifragile]
+        a: "**Chaos Engineering** — дисциплина **намеренного** внедрения отказов в production для проверки устойчивости системы. Принципы: (1) **гипотеза** — «при отказе узла A сервис продолжит работать», (2) **blast radius** — начать малым (один под, staging), расширять постепенно, (3) **автоматизация** — регулярные эксперименты (не разовые), (4) **наблюдение** — метрики до/во время/после. Цель — найти **скрытые SPOF** и каскадные отказы до реального инцидента. **Anti-fragility** — система становится сильнее от стресса."
+        related: ["Что такое game day?", "Какие инструменты Chaos Engineering?"]
+      - q: "Что такое game day?"
+        keywords: [game day, геймдей, тренировка, drill, инцидент симуляция, team practice]
+        a: "**Game day** — запланированная тренировка команды: моделирование инцидента в production или staging. Сценарии: «упал регион», «БД недоступна», «сеть потеряна». Команда реагирует по **runbooks**, без заранее известного решения. Цели: (1) тест runbooks (работают ли?), (2) тренировка коммуникации (on-call, escalation), (3) выявление пробелов в observability. **Результаты**: обновлённые runbooks, новые алерты, выявленные SPOF. **Регулярность**: раз в квартал-полугодие. **Отличие от chaos**: chaos — автоматизированные эксперименты; game day — человеческая тренировка."
+        related: ["Что такое Chaos Engineering?", "Как написать runbook?"]
+      - q: "Какие инструменты Chaos Engineering существуют?"
+        keywords: [chaos mesh, gremlin, litmus, chaos monkey, netflix, chaos tools, failure injection]
+        a: "**Chaos Mesh** — CNCF, для **k8s**. CRD: `PodChaos` (kill/delay), `NetworkChaos` (loss/delay/duplicate), `IOChaos` (latency/errors), `TimeChaos` (skew). **Gremlin** — commercial, SaaS + agent, сценарии: CPU, memory, disk, network, process, DNS. **Litmus Chaos** — CNCF, GitOps-friendly. **Chaos Monkey** (Netflix) — случайно убивает инстансы (Simian Army). **Stress-ng** — CLI для load testing (CPU, I/O, memory). **Выбор**: Chaos Mesh — для **k8s** (бесплатно), Gremlin — enterprise (безопасные инъекции, scheduled experiments). **Важно**: blast radius control + automatic abort при превышении порогов."
+        related: ["Что такое Chaos Engineering?", "Что такое Chaos Mesh?"]
+  - id: finops
+    name: FinOps и оптимизация затрат
+    blocks:
+      - q: "Что такое FinOps?"
+        keywords: [finops, финопс, cost optimization, cost allocation, cloud spend, бюджет, chargeback]
+        a: "**FinOps** — практика управления облачными расходами (Cloud Financial Operations). Принципы: (1) **Visibility** — кто и сколько тратит (tagging → cost allocation → dashboard), (2) **Optimization** — rightsizing, reserved/spot instances, auto-shutdown, (3) **Accountability** — chargeback/showback (каждая команда видит свой spend). Цикл: **Inform** (метрики) → **Optimize** (действия) → **Operate** (процессы). **Роли**: Engineering (архитектура с учётом cost), Finance (бюджет), Product (ROI). **Инструменты**: нативные (AWS Cost Explorer, Yandex Cloud Billing),第三方 (CloudHealth, Kubecost — для K8s)."
+        related: ["Как уменьшить cloud spend?", "Что такое rightsizing?"]
+      - q: "Как уменьшить облачные расходы?"
+        keywords: [cost reduction, экономия облако, rightsizing, spot, reserved, auto shutdown, scheduled scaling]
+        a: "**Rightsizing**: анализ utilization → уменьшить overprovisioned инстансы (CPU/MEM). **Reserved Instances** — commitment на 1-3 года → скидка 30-70%. **Spot/Preemptible** — спотовые инстансы для batch/stateless (дешевле в 3-5 раз, могут быть отозваны). **Auto-shutdown** — dev/staging выключаются ночью/выходные → экономия 60%+. **Storage tiers** — S3 lifecycle (Hot → Cold → Glacier по возрасту). **K8s**: ResourceQuota + LimitRange → не зарезервировать больше нужного. **Network**: egress между регионами дорого → перенос данных ближе к compute. **Monitoring**: budget alarms → алерт при превышении. **Типичная экономия**: 20-40% без потери функциональности."
+        related: ["Что такое Spot instance?", "Что такое rightsizing?"]
+      - q: "Что такое Spot/Preemptible instances?"
+        keywords: [spot, preemptible, спотовый, приоритетный, дешевый, отзыв, eviction, batch, stateless]
+        a: "**Spot/Preemptible** — избыточные мощности облака со скидкой до 70-90%. Могут быть **отозваны** (preempted) с коротким уведомлением (30 сек в AWS, 60 сек в GCP/Yandex). **Когда использовать**: batch processing, CI/CD workers, stateless web, data analytics — всё что **tolerant к прерыванию**. **Когда НЕ**: БД, in-memory state, latency-sensitive APIs, single-instance. **Архитектура**: Cluster Autoscaler + Spot node group → при eviction под переносится на другой узел. **Spot Fleet / Spot Block** — пул разнотипных инстансов (если один тип отзывают — другие остаются). **Cost**: spot для stateless + reserved для stateful = оптимальный микс."
+        related: ["Как уменьшить cloud spend?", "Что такое Cluster Autoscaler?"]
+  - id: incidents
+    name: Incident Management
+    blocks:
+      - q: "Как управлять инцидентами (incident management)?"
+        keywords: [incident management, инцидент, severity, sev1 sev2 sev3, on-call, escalation, war room]
+        a: "**Severity levels**: **SEV1** (critical) — продакшен недоступен, потеря данных → immediate response + war room + escalation. **SEV2** (high) — деградация, workaround есть → быстрый ответ. **SEV3** (medium) — локальная проблема, нет влияния на пользователей → fix в рабочее время. **SEV4** (low) — косметика/tech debt. **Process**: alert → acknowledge (MTTA) → investigate → mitigate (stop bleeding) → resolve (root cause) → postmortem. **Communication**: status page (внешний), internal Slack channel (команда), stakeholders update каждые 30 мин для SEV1. **Roles**: Incident Commander (координатор), Comms Lead (коммуникация), Ops Lead (техническая работа)."
+        related: ["Что такое postmortem?", "Что такое MTTA/MTTR?"]
+      - q: "Что такое blameless postmortem?"
+        keywords: [postmortem, постмортем, blameless, без обвинений, root cause, 5 whys, action items]
+        a: "**Blameless postmortem** — разбор инцидента **без обвинений**: фокус на **системе**, а не на «кто нажал не ту кнопку». Структура: (1) **Summary** — что произошло, влияние (users impacted, revenue loss), (2) **Timeline** — минуты: события + действия, (3) **Root cause** — 5 Whys (почему? почему? ...), (4) **What went well / badly / lucky**, (5) **Action items** — конкретные задачи с владельцами и сроками (alert, runbook, fix, test). Культура: каждый инцидент — возможность улучшить систему, а не наказать. **Google REACH** / **SRE book** — эталон. **Anti-pattern**: «оператор ошибся» → настоящая причина — процесс/интерфейс позволил ошибку."
+        related: ["Как управлять инцидентами?", "Что такое 5 Whys?"]
+      - q: "Что такое MTTR и MTTA и как их улучшить?"
+        keywords: [mttr, mtta, mean time to recover, mean time to acknowledge, метрики, улучшение, on-call]
+        a: "**MTTA (Mean Time To Acknowledge)** — время от алерта до принятия (on-call нажал «ack»). Цель: < 5 мин. **MTTR (Mean Time To Recover/Resolve)** — время от алерта до восстановления. Цель: < 30-60 мин. **Улучшение MTTA**: (1) правильные алерты (только meaningful), (2) escalation policy (не отвечаешь 5 мин → следующий), (3) PagerDuty/Opsgenie + push notifications. **Улучшение MTTR**: (1) **runbooks** в алерте (ссылка на действия), (2) **observability** (видеть что происходит), (3) **automation** (auto-rollback, auto-scale), (4) **game days** (тренировка), (5) **postmortem action items** (закрывать найденные проблемы). **Измерение**: per-service MTTA/MTTR → dashboard."
+        related: ["Что такое postmortem?", "Как настроить escalation policy?"]
