@@ -1,4 +1,4 @@
-name: Tests
+name: CI
 
 on:
   push:
@@ -7,6 +7,7 @@ on:
     branches: [main]
 
 jobs:
+  # ── Job 1: Unit tests on Ubuntu ──
   test:
     runs-on: ubuntu-latest
 
@@ -44,3 +45,51 @@ jobs:
             --ignore=tests/test_whisper_engine.py \
             --ignore=tests/test_whisper_model.py \
             --deselect=tests/test_model_integrity.py::test_problem_missing_bin
+
+  # ── Job 2: Build .exe on self-hosted Windows runner ──
+  build-windows:
+    needs: test
+    runs-on: self-hosted
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sync project to build directory
+        shell: pwsh
+        run: |
+          $src = "${{ github.workspace }}"
+          $dst = "E:\mockingbird"
+          # Mirror the project — robocopy /MIR deletes files in dst not in src
+          robocopy "$src\src" "$dst\src" /MIR /XD __pycache__ .pytest_cache /NJH /NJS
+          robocopy "$src\scripts" "$dst\scripts" /MIR /NJH /NJS
+          robocopy "$src\tests" "$dst\tests" /MIR /XD __pycache__ /NJH /NJS
+          robocopy "$src\vendor" "$dst\vendor" /MIR /NJH /NJS
+          Copy-Item "$src\pyproject.toml" "$dst\pyproject.toml" -Force
+          # exit code < 8 is success for robocopy
+          if ($LASTEXITCODE -lt 8) { $global:LASTEXITCODE = 0 }
+
+      - name: Build .exe (PyInstaller)
+        shell: pwsh
+        run: |
+          cd E:\mockingbird
+          powershell.exe -ExecutionPolicy Bypass -File scripts\build_windows.ps1
+
+      - name: Smoke test
+        shell: pwsh
+        run: |
+          $exe = "E:\mockingbird\dist\mockingbird\mockingbird-cli.exe"
+          if (Test-Path $exe) {
+            "что такое helm`nexit" | & $exe --cli
+            Write-Host "Smoke test: OK"
+          } else {
+            Write-Host "##[error]mockingbird-cli.exe not found after build"
+            exit 1
+          }
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mockingbird-windows-exe
+          path: E:\mockingbird\dist\mockingbird\
+          retention-days: 30
