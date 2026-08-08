@@ -35,7 +35,7 @@ _ICON = os.path.join(SPECPATH, "logo_mockingbird.ico")
 datas = (
     collect_data_files("mockingbird")
     + [(os.path.join(SPECPATH, "logo_mockingbird.ico"), "mockingbird")]
-    + [(os.path.join(_ROOT, "sound.mp3"), "mockingbird")]
+    + [(os.path.join(_ROOT, "src", "mockingbird", "sound.mp3"), "mockingbird")]
     + collect_data_files("faster_whisper")
     + collect_data_files("ctranslate2")
     + collect_data_files("transformers")

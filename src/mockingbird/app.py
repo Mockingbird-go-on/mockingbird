@@ -192,8 +192,8 @@ class App:
         else:
             here = os.path.dirname(os.path.abspath(__file__))
             candidates = [
-                os.path.normpath(os.path.join(here, "..", "..", "sound.mp3")),
                 os.path.join(here, "sound.mp3"),
+                os.path.normpath(os.path.join(here, "..", "..", "sound.mp3")),
             ]
         sound_path = next((p for p in candidates if os.path.isfile(p)), None)
         if sound_path is None:
