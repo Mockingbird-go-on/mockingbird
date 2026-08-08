@@ -6,8 +6,7 @@ on:
   pull_request:
     branches: [main]
 
-env:
-  PYTHON_DIR: C:\Users\Happy\AppData\Local\Programs\Python\Python312
+# Удалено: PYTHON_DIR – теперь Python глобально доступен
 
 jobs:
   # ── Job 1: Unit tests on Ubuntu ──
@@ -61,7 +60,7 @@ jobs:
       - name: Sync project to build directory
         shell: cmd
         run: |
-          set "PYTHON_DIR=C:\Users\Happy\AppData\Local\Programs\Python\Python312"
+          # Больше не устанавливаем PYTHON_DIR – он не нужен
           robocopy "${{ github.workspace }}\src" "E:\mockingbird\src" /MIR /XD __pycache__ .pytest_cache /NJH /NJS
           robocopy "${{ github.workspace }}\scripts" "E:\mockingbird\scripts" /MIR /NJH /NJS
           robocopy "${{ github.workspace }}\tests" "E:\mockingbird\tests" /MIR /XD __pycache__ /NJH /NJS
@@ -69,18 +68,36 @@ jobs:
           copy /Y "${{ github.workspace }}\pyproject.toml" "E:\mockingbird\pyproject.toml"
           exit /b 0
 
-      - name: Build .exe (PyInstaller)
-        shell: cmd
+      # Опционально: проверить, что Python доступен
+      - name: Check Python availability
+        shell: powershell
         run: |
-          set "PATH=C:\Users\Happy\AppData\Local\Programs\Python\Python312;C:\Users\Happy\AppData\Local\Programs\Python\Python312\Scripts;%PATH%"
-          cd /d E:\mockingbird
-          powershell.exe -ExecutionPolicy Bypass -File scripts\build_windows.ps1
+          Write-Host "Python version:"
+          python --version
+          Write-Host "`nPython location:"
+          Get-Command python | Select-Object -ExpandProperty Source
+          Write-Host "`nPATH entries containing 'python':"
+          $env:Path -split ';' | Select-String python
+
+      - name: Build .exe (PyInstaller)
+        shell: powershell
+        run: |
+          Set-Location -Path E:\mockingbird
+          Write-Host "Building in: $(Get-Location)"
+          # Используем python напрямую – он уже в системном PATH
+          .\scripts\build_windows.ps1
 
       - name: Smoke test
-        shell: cmd
+        shell: powershell
         run: |
-          set "PATH=C:\Users\Happy\AppData\Local\Programs\Python\Python312;C:\Users\Happy\AppData\Local\Programs\Python\Python312\Scripts;%PATH%"
-          E:\mockingbird\dist\mockingbird\mockingbird-cli.exe --cli < NUL
+          Set-Location -Path E:\mockingbird
+          $exe = ".\dist\mockingbird\mockingbird-cli.exe"
+          if (Test-Path $exe) {
+            & $exe --cli < NUL
+          } else {
+            Write-Error "Executable not found at $exe"
+            exit 1
+          }
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
