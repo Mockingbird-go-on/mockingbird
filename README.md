@@ -45,12 +45,13 @@ Whisper and Silero VAD models download to `~/.mockingbird/models` on first run.
 
 ### Configuration
 
-Copy `.env.example` to `.env` and adjust. Everything is also configurable in
-the Settings dialog (mic device, whisper model, compute type, language, LLM
-endpoint/key, glossary path). Model/compute changes need an app restart.
+All settings are configured in the Settings dialog (STT engine, compute type,
+LLM provider/key/model, audio source, glossary path). Model/compute changes
+need an app restart.
 
+Environment variables (optional, override Settings dialog):
 - `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `OPENAI_MODEL` — OpenAI-compatible
-  LLM used only for term explanations (optional; glossary works offline).
+  LLM used for term explanations and interview answers.
 - `MOCKINGBIRD_WHISPER_MODEL` — `tiny|base|small|medium|large-v3`
 - `MOCKINGBIRD_WHISPER_COMPUTE_TYPE` — `int8|float16|float32`
 - `MOCKINGBIRD_WHISPER_WINDOW_SECONDS` / `MOCKINGBIRD_WHISPER_PARTIAL_INTERVAL_MS`
