@@ -63,6 +63,10 @@ def test_throttle_skips_llm_within_interval(explainer):
     llm = _CountingLLM()
     exp = TermExplainer(_FakeGlossary(), _FakeCache(), llm, cfg)
     exp.on_term = lambda d: None
+    # Reset throttle timestamp so the first call is guaranteed to pass
+    # (on fresh CI runners time.monotonic() can be < 100, making
+    # now - 0.0 < min_interval_s true and blocking the first call).
+    exp._last_analysis_ts = -999.0
     exp._process(_make_msg("first question"))
     assert llm.call_count == 1
     exp._process(_make_msg("second question"))
