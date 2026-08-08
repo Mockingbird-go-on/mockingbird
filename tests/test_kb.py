@@ -712,7 +712,8 @@ def test_engine_maybe_answer_llm_always_calls():
 def test_engine_maybe_answer_llm_cooldown_gate():
     llm = _FakeAnswerLlm("Ответ ИИ")
     engine = InterviewEngine(_matcher(), InterviewConfig(answer_cooldown_s=1000.0), llm=llm)
-    engine._maybe_answer_llm(_answer_view(), "первый вопрос")
+    # Force-bypass cooldown on the first call so _last_answer_ts gets set.
+    engine._maybe_answer_llm(_answer_view(), "первый вопрос", force=True)
     ts1 = engine._last_answer_ts
     assert ts1 > 0.0
     engine._maybe_answer_llm(_answer_view(), "второй вопрос")

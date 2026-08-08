@@ -50,17 +50,19 @@ def explainer():
 def test_throttle_skips_llm_within_interval(explainer):
     """First call goes to LLM, second within interval goes to glossary."""
     from mockingbird.terms.explainer import TermExplainer
+
+    class _CountingLLM:
+        available = True
+        call_count = 0
+
+        def analyze_terms(self, context):
+            self.call_count += 1
+            return [{"term": "docker", "explanation": "container runtime"}]
+
     cfg = TermsConfig(llm_primary=True, min_interval_s=100.0)
-    # Override to track calls
-    llm = _FakeLLM()
-    llm.call_count = 0
-    orig = llm.analyze_terms
-    def counting_analyze(ctx):
-        llm.call_count += 1
-        return orig(ctx)
-    llm.analyze_terms = counting_analyze
+    llm = _CountingLLM()
     exp = TermExplainer(_FakeGlossary(), _FakeCache(), llm, cfg)
-    exp.on_term = lambda d: None  # no-op
+    exp.on_term = lambda d: None
     exp._process(_make_msg("first question"))
     assert llm.call_count == 1
     exp._process(_make_msg("second question"))
