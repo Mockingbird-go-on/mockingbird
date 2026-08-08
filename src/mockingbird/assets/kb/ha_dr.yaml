@@ -1,0 +1,57 @@
+topic: ha_dr
+title: High Availability и Disaster Recovery — всё по теме
+keywords: [high availability, ha, отказоустойчивость, disaster recovery, dr, rto, rpo, failover, split brain, quorum, active active, active passive]
+sections:
+  - id: ha_fundamentals
+    name: Основы High Availability
+    blocks:
+      - q: "Что такое High Availability и как его обеспечить?"
+        keywords: [high availability, ha, отказоустойчивость, redundancy, single point of failure, spof, "99.9", "99.99"]
+        a: "**High Availability (HA)** — способность системы работать без простоя при отказе компонентов. Измеряется в **девятках**: 99.9% (8.7ч даунтайма/год), 99.99% (52мин/год), 99.999% (5мин/год). Принципы: (1) **Eliminate SPOF** — нет единой точки отказа (replica, cluster, multi-AZ), (2) **Redundancy** — N+1 узлов (минимум 2 для failover), (3) **Health checks** — автоматическое обнаружение отказов, (4) **Failover** — автоматическое переключение. Каждый слой: балансировщик, приложение, БД, кеш, сеть — должен быть избыточным."
+        related: ["Что такое SPOF?", "Чем active-active отличается от active-passive?"]
+      - q: "Чем active-active отличается от active-passive?"
+        keywords: [active active, active passive, primary secondary, master slave, failover, load balancing, split brain]
+        a: "**Active-Active** — все узлы обрабатывают трафик (load balanced). Плюсы: используемые ресурсы, выше throughput. Минусы: консистентность данных (conflict resolution, split-brain риск). **Active-Passive** (primary-replica): один обрабатывает, второй ждёт (hot/warm standby). Плюсы: проще (нет конфликтов), гарантия порядка. Минусы: 50% ресурсов простаивают, failover занимает время (promote). **БД**: Patroni (active-passive, primary-replica), Galera (active-active, multi-master). **LB**: HAProxy + Keepalived (active-passive VIP), Nginx upstream (active-active). **Выбор**: active-active для stateless (web), active-passive для stateful (БД)."
+        related: ["Что такое split-brain?", "Как работает failover?"]
+      - q: "Как устранить single point of failure (SPOF)?"
+        keywords: [spof, single point of failure, единая точка отказа, redundancy, layer by layer]
+        a: "**SPOF** — компонент, отказ которого роняет всю систему. Анализ **по слоям**: (1) **LB** — HAProxy + Keepalived (VIP), (2) **Application** — N реплик за LB, (3) **БД** — Patroni/Galera (replica + automatic failover), (4) **Cache** — Redis Sentinel/Cluster, (5) **Queue** — Kafka replication factor=3, (6) **Network** — multi-AZ, redundant links, (7) **DNS** — multi-provider, low TTL, (8) **Storage** — replicated, RAID. **Тестирование**: Chaos Engineering — намеренно «выключай» компоненты (chaos monkey, game days). **Подводный камень**: LB + SPOF в DCS (Etcd для Patroni) — Etcd тоже должен быть HA (3 узла)."
+        related: ["Что такое Chaos Engineering?", "Как работает multi-AZ?"]
+      - q: "Что такое health check и как он связан с failover?"
+        keywords: [health check, liveness, readiness, failover, probe, автоматическое переключение, monitoring]
+        a: "**Health check** — периодическая проверка «жив» ли компонент. Типы: **L4** (TCP port open), **L7** (HTTP `/health`, статус 200/503), **app-level** (БД responsive, dependency ok). **LB** (HAProxy/Nginx): проверяет backend → при fail убирает из rotation. **K8s**: liveness probe (перезапуск пода), readiness probe (убирает из Service endpoints). **Orchestrator** (Patroni): DCS-key TTL → при expire → promote replica. **Anti-pattern**: health check = просто TCP open (сервис висит на accept, но не отвечает). **Best practice**: deep health check (dependency chain: can I reach DB + cache?)."
+        related: ["Как работает failover в Patroni?", "Чем liveness отличается от readiness?"]
+  - id: split_brain
+    name: Split-brain и кворум
+    blocks:
+      - q: "Что такое split-brain и как предотвратить?"
+        keywords: [split brain, расщепление мозга, fencing, stonith, quorum, dcs, etcd, split network]
+        a: "**Split-brain** — два узла одновременно считают себя primary (master) из-за разрыва сети между ними. Последствия: двойная запись, потеря/повреждение данных. **Предотвращение**: (1) **Quorum** (большинство) — нужно N/2+1 узлов для голосования; меньшинство «замораживается», (2) **Fencing / STONITH** (Shoot The Other Node In The Head) — выключить проигравший узел аппаратно (IPMI, iLO), (3) **DCS** (Etcd/Consul) — координатор вне кластера БД; Patroni пишет ключ лидерства в Etcd с TTL, (4) **Witness** — третье (нейтральное) хранилище, разделяющее голоса. **В Patroni**: cluster с 3 Etcd узлами — кворум 2/3, partition меньшинства не получит ключ лидерства."
+        related: ["Как работает кворум в Etcd?", "Что такое fencing?"]
+      - q: "Как работает кворум в распределённых системах?"
+        keywords: [quorum, кворум, majority, raft, paxos, leader election, n/2 1, consensus]
+        a: "**Quorum** — минимальное число узлов для принятия решения (обычно `N/2 + 1`). Алгоритмы: **Raft** (Etcd, Consul) — leader election: кандидат получает majority голосов → становится leader; при потере связи с majority — leader step down. **3 узла** — терпят 1 отказ (кворум 2/3). **5 узлов** — терпят 2 (кворум 3/5). **Чётное число узлов** — не рекомендуется (при split 2/2 — нет кворума с обеих сторон, кластер замораживается). **Read quorum / Write quorum** — в Cassandra/DynamoDB: `W + R > N` для strong consistency. **Patroni**: Etcd как DCS → Raft quorum → надёжный leader election."
+        related: ["Что такое Raft?", "Чем Raft отличается от Paxos?"]
+      - q: "Что такое fencing и когда он нужен?"
+        keywords: [fencing, stonith, выключение узла, power off, iLO, IPMI, block device, resource isolation]
+        a: "**Fencing** — принудительная изоляция отказавшего/зависшего узла, чтобы он не продолжал писать данные. **STONITH** — «выстрел» в узел (power off через IPMI/iLO/DRAC). **Storage fencing** — SCSI-3 persistent reservation (узлу отзывают доступ к shared storage). **Network fencing** — port block на свитче. **Когда нужен**: при split-brain, при зависшем primary (якобы жив, но не отвечает). **В Patroni**: fencing через DCS — если primary не может продлить ключ лидерства → он сам отдаёт лидерство (demote). **Без fencing**: старый primary может продолжать принимать запись → diverging data. **Best practice**: всегда test fencing в staging."
+        related: ["Что такое split-brain?", "Как Patroni отдаёт лидерство?"]
+  - id: dr
+    name: Disaster Recovery
+    blocks:
+      - q: "Что такое RTO и RPO и как они влияют на архитектуру?"
+        keywords: [rto, recovery time objective, rpo, recovery point objective, время восстановления, потеря данных]
+        a: "**RTO (Recovery Time Objective)** — допустимое время простоя: сколько бизнес может жить без системы (5 мин? 4 часа?). **RPO (Recovery Point Objective)** — допустимая потеря данных: сколько данных можно потерять (0 = синхронная репликация; 1ч = hourly backup). **Влияние**: низкий RTO → нужна автоматика failover (Patroni, multi-AZ); низкий RPO → частые backup/синхронная репликация. **Примеры**: RTO=15мин + RPO=0 → active-active multi-region + синхронная реплика (дорого). RTO=4ч + RPO=1ч → nightly backup + warm standby (дёшево). **Тестирование**: DR drills — регулярно (раз в квартал) разворачивать из backup, замерять реальный RTO/RPO."
+        related: ["Как рассчитать RTO?", "Что такое DR drill?"]
+      - q: "Что такое правило 3-2-1 для backup?"
+        keywords: [3-2-1, backup strategy, три копии, два носителя, одна вне сайта, правило]
+        a: "**3-2-1**: **3** копии данных (1 production + 2 backup), на **2** разных типах носителей (disk + tape, local + cloud), **1** копия вне сайта (offsite: другой ДЦ, S3). Дополнения: **3-2-1-1-0** — ещё 1 **offline** (air-gapped от ransomware) + **0** ошибок при проверке (verify restore). **Реализация**: PostgreSQL — `pg_basebackup` + WAL archiving (PITR) → S3 (offsite) + snapshot (local). **Immutability**: backup в S3 с Object Lock (WORM — нельзя удалить/изменить даже админом) — защита от ransomware. **Verify**: незапроверенный backup = нет backup'а."
+        related: ["Как тестировать восстановление?", "Что такое immutable backup?"]
+      - q: "Как тестировать планы аварийного восстановления (DR drills)?"
+        keywords: [dr drill, disaster recovery test, game day, chaos, failover test, restore test, runbook]
+        a: "**DR drill** — регулярное (раз в квартал/полугодие) моделирование аварии и восстановления. Этапы: (1) **сценарий** (упал ДЦ, удалена БД, ransomware), (2) **выполнение по runbook** (без «знающих» людей — только документация), (3) **замер** реального RTO/RPO vs целевого, (4) **postmortem** — что сломалось, обновить runbook. **Типы**: tabletop (обсуждение), partial (выключить один сервис), full (полное переключение на DR-сайт). **Автоматизация**: CI pipeline → nightly restore из backup → smoke test. **Anti-pattern**: «мы делаем backup» без единого restore. **Результат**: уверенный restore за RTO + обновлённые runbooks."
+        related: ["Что такое RTO/RPO?", "Как написать runbook?"]
+      - q: "Как спроектировать multi-region отказоустойчивость?"
+        keywords: [multi region, multi az, active active, pilot light, warm standby, data replication, global load balancing]
+        a: "Три паттерна: **(1) Pilot Light** — минимальный DR-сайт (только данные, серверы выключены). При аварии → запустить серверы + переключить DNS. Дёшево, но RTO высокий (запуск + warming). **(2) Warm Standby** — уменьшенная реплика (меньше инстансов). При аварии → scale up. Средний RTO. **(3) Active-Active** — оба региона работают одновременно (global LB: Route53, CloudFlare). RTO ≈ 0, но дорого + консистентность данных (CRDT, eventual consistency). **Данные**: асинхронная репликация (PostgreSQL logical, Cassandra multi-DC). **DNS**: low TTL + health-check routing. **Подводный камень**: network partition между регионами → split-brain."
+        related: ["Что такое pilot light?", "Как работает global DNS failover?"]

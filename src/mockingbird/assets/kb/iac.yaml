@@ -1,0 +1,196 @@
+topic: iac
+title: IaC (Infrastructure as Code) — всё по теме
+keywords: [iac, инфраструктура как код, terraform, ansible, декларативность]
+sections:
+  - id: base
+    name: Основы IaC
+    blocks:
+      - q: "Что такое Infrastructure as Code и какие инструменты бывают?"
+        keywords: [iac, инфраструктура как код, инструменты, terraform, ansible, декларативность]
+        a: "**IaC** — управление инфраструктурой через код: версионирование, review, воспроизводимость, исключение ручных действий. Инструменты: **Terraform/OpenTofu** (декларативное **provisioning** ресурсов), **Ansible** (настройка конфигурации, идемпотентность), **Pulumi** (Python/TS), CloudFormation, CDK."
+        related: ["Чем provisioning отличается от configuration management?"]
+      - q: "Декларативный vs императивный подход."
+        keywords: [декларативный, императивный, подход, desired state]
+        a: "**Декларативный** — описываем желаемое состояние, инструмент сам приводит к нему (Terraform, k8s). **Императивный** — описываем шаги, что делать по очереди (bash, Ansible-задачи). Декларативность удобнее для идемпотентности и drift-анализа."
+      - q: "Чем provisioning отличается от configuration management?"
+        keywords: [provisioning, configuration management, конфигурационное управление, отличие]
+        a: "**Provisioning** — создать инфраструктуру (VM, сети, БД): Terraform, CloudFormation, CDK. **Configuration management** — настроить софт на существующих хостах (установить пакеты, конфиги, сервисы): Ansible, Puppet, Chef, SaltStack. Часто используются вместе."
+        related: ["Чем Ansible отличается от Terraform?"]
+      - q: "Что такое идемпотентность в IaC?"
+        keywords: [идемпотентность, идемпотентный, повторный запуск, drift]
+        a: "**Идемпотентность** — повторное применение конфигурации даёт тот же результат, не создавая дублей и не «ломая» уже настроенное. Terraform сравнивает с state, Ansible — статусы модулей. Без неё пайплайны небезопасно перезапускать."
+        related: ["Что такое drift?"]
+      - q: "Что такое policy as code?"
+        keywords: [policy as code, opa, checkov, sentinel, политики, compliance]
+        a: "**Policy as code** — проверка инфраструктуры кодом политик: **OPA/Rego**, **Checkov**, **tfsec**, **Sentinel**. Примеры: запрет публичных S3-бакетов, требование шифрования, обязательные теги. Проверки встраиваются в CI до apply — безопасность и compliance на этапе кода."
+        related: ["Что такое checkov?"]
+  - id: terraform
+    name: Terraform
+    blocks:
+      - q: "Как работает Terraform?"
+        keywords: [terraform, plan, apply, hcl, provider, init]
+        a: "Жизненный цикл: **init** (провайдеры), **plan** (расчёт diff текущего vs желаемого), **apply** (применение), **destroy**. Конфигурация на **HCL**. State хранит соответствие реальных ресурсов конфигу. Провайдеры — плагины к облакам (AWS, GCP, ...)."
+        related: ["Чем plan отличается от apply?"]
+      - q: "Что такое Terraform state и почему он важен?"
+        keywords: [state, tfstate, блокировка, remote state, lock]
+        a: "**State** — карта между конфигом и реальными ресурсами; без него Terraform не может корректно делать diff/удалять. Хранить в **remote** (S3, backend) с **locking** для параллельной работы. Локальный state — риск потери и конфликтов."
+        related: ["Что делать, если state потерян?"]
+      - q: "Что такое modules в Terraform?"
+        keywords: [modules, модули, переиспользование, переменные, output]
+        a: "**Modules** — переиспользуемые блоки ресурсов с входными переменными и outputs. Бывают локальные и из registry (версионируются). Разбиение на модули — стандарт для структурирования больших проектов."
+        related: ["Как версионировать модули?"]
+      - q: "Что такое drift и как с ним бороться?"
+        keywords: [drift, дрейф, рассинхрон, plan в ci, opa]
+        a: "**Drift** — реальная инфраструктура отличается от кода (ручные правки). Борьба: `terraform plan` в CI/при каждом изменении, запрет ручных правок, политики (**OPA/checkov**), drift detection, модульный подход."
+        related: ["Что такое policy as code?"]
+      - q: "Что такое backend в Terraform?"
+        keywords: [backend, s3, dynamodb, remote, state, локальный]
+        a: "**Backend** определяет, где хранится state. **local** — файл на диске (только для личного использования). **remote** — **S3 + DynamoDB lock**, GCS, Azure Storage, Terraform Cloud: общий state и **блокировка** от параллельных записей. `terraform init -migrate-state` переносит state."
+        related: ["Что такое Terraform state?"]
+      - q: "Что такое workspaces в Terraform?"
+        keywords: [workspaces, воркспейсы, среды, окружения, dev prod]
+        a: "**Workspaces** — отдельные state в одном конфиге для сред (dev/stage/prod): `terraform workspace new prod`. Общий код, разное состояние. Минус — весь код в одном месте; для серьёзных изоляций используют отдельные проекты/backends."
+        related: ["Что такое backend?"]
+      - q: "Чем for_each отличается от count?"
+        keywords: [for_each, count, циклы, список, map]
+        a: "**count** — повтор по числу, создаёт ресурсы с индексами **key = 0,1,2...**; удаление из середины **сдвигает** индексы (риск пересоздания). **for_each** — по **map/set**, ключи — значимые строки, элементы адресуются по ключу. Для стабильных конфигов предпочтителен for_each."
+        related: ["Что такое count в Terraform?"]
+      - q: "Что такое data sources в Terraform?"
+        keywords: [data source, данные, external, чтение, существующий]
+        a: "**Data source** — **чтение существующего** состояния инфраструктуры без управления им: `data \"aws_ami\" \"ubuntu\"`, `data.terraform_remote_state`. Позволяет ссылаться на ресурсы, созданные вне кода, и соединять проекты."
+        related: ["Чем data source отличается от resource?"]
+      - q: "Как хранить секреты в Terraform?"
+        keywords: [секреты, vault, переменные, tfvars, sensitive]
+        a: "Не в .tf и не в git. Варианты: переменные с `sensitive = true` (скрытие в output/plan), **tfvars/env** вне репо, **remote state** или провайдеры секретов (**Vault, AWS SSM/Secrets Manager**) через data sources. Постобработка values из state также требует внимания."
+        related: ["Что такое tfvars?"]
+      - q: "Как устроен remote state и блокировка?"
+        keywords: [locking, блокировка, s3 backend, dynamodb, parallel]
+        a: "При remote backend файл state лежит в объектном хранилище (S3), **блокировка** через DynamoDB: перед apply берётся lock, другие apply ждут. Это защищает от перезаписи при параллельной работе. `terraform apply` падает с \"acquiring lock\" при занятом state."
+        related: ["Что такое backend в Terraform?"]
+      - q: "Что такое Terraform Cloud / OpenTofu?"
+        keywords: [terraform cloud, tofu, opentofu, управление, saas]
+        a: "**Terraform Cloud** — SaaS: remote state, runs в облаке, планы по PR, политики (sentinel), vcs-интеграции. **OpenTofu** — open-source форк Terraform (после лицензионных изменений HashiCorp), совместим с провайдерами и HCL."
+        related: ["Что такое backend в Terraform?"]
+      - q: "Что такое terraform import и refresh?"
+        keywords: [import, refresh, импорт, adopt, существующие ресурсы]
+        a: "**terraform import** — внести **уже существующий** ресурс в state (adopt), чтобы управлять им кодом. **terraform refresh** — обновить state из реальности (без изменений конфига). import — наоборот, добавить в state отсутствующий ресурс."
+        related: ["Что такое Terraform state?"]
+      - q: "Как устроены переменные и tfvars в Terraform?"
+        keywords: [переменные, variable, tfvars, defaults, input, var]
+        a: "**variable** — блок описания входных параметров: тип, default, description, validation. Значения задаются: флаг `-var`, файлы `terraform.tfvars`/`*.auto.tfvars`, переменные окружения `TF_VAR_*`. Порядок приоритета: CLI > .auto.tfvars > terraform.tfvars > defaults. Переменные без значения вызывают prompt."
+        related: ["Что такое tfvars?"]
+      - q: "Что такое outputs в Terraform?"
+        keywords: [output, outputs, вывод, значение, module output]
+        a: "**output** — блок экспорта значений из ресурсов: `output \"ip\" { value = aws_instance.web.public_ip }`. Выводятся после apply, доступны из других проектов через `data.terraform_remote_state` и как модульные outputs. Полезно для передачи данных между стеками без хардкода."
+        related: ["Что такое data sources?"]
+      - q: "Что такое locals в Terraform?"
+        keywords: [locals, local, локальные переменные, выражения, имя]
+        a: "**locals** — локальные именованные выражения для переиспользования внутри конфигурации: `locals { name = \"${var.env}-web\" }`. Считаются один раз, не выводятся в outputs, не видны снаружи. Упрощают читаемость и устраняют дублирование выражений."
+        related: ["Как устроены переменные и tfvars?"]
+      - q: "Как работает зависимость ресурсов в Terraform?"
+        keywords: [dependencies, depends_on, зависимость, implicit, explicit, граф]
+        a: "Terraform строит **граф зависимостей**: неявные (implicit) — по ссылкам на атрибуты `aws_vpc.vpc.id`, явные (explicit) — через `depends_on = [...]`. Зависимости определяют порядок создания/удаления. Неявные предпочтительнее; `depends_on` — только если ссылки нет, но порядок важен."
+        related: ["Что такое terraform graph?"]
+      - q: "Что такое terraform graph и как его читать?"
+        keywords: [graph, граф, dot, зависимости, визуализация]
+        a: "**terraform graph** — выводит граф зависимостей ресурсов в формате **DOT**; визуализируется через Graphviz. Показывает порядок создания/уничтожения, позволяет найти неожиданные зависимости и циклы. Полезно при отладке сложных стэков и ошибках «cycle detected»."
+        related: ["Как работает зависимость ресурсов?"]
+      - q: "Что такое lifecycle в Terraform?"
+        keywords: [lifecycle, create_before_destroy, prevent_destroy, ignore_changes, replace_triggered]
+        a: "**lifecycle** — мета-аргумент ресурса, управляющий поведением при изменениях: `create_before_destroy` (создать новую до удаления старой), `prevent_destroy` (запретить удаление), `ignore_changes` (игнорировать определённые атрибуты), `replace_triggered_by` (пересоздать по изменению другой вещи)."
+        related: ["Как работает Terraform?"]
+      - q: "Что такое provisioners в Terraform и почему их избегают?"
+        keywords: [provisioner, local-exec, remote-exec, file, идемпотентность, best practice]
+        a: "**Provisioners** — запуск команд при создании ресурса: `local-exec`, `remote-exec`, `file`. Их избегают: ломают идемпотентность, не отслеживаются в state, не работают на destroy без настроек. Вместо этого — **user_data/cloud-init**, **Ansible**, кастомные образы (Packer). Provisioners — «последний рубеж»."
+        related: ["Что такое идемпотентность в IaC?"]
+      - q: "Что такое dynamic блоки и for_each в Terraform?"
+        keywords: [dynamic, блок, for_each, повторение, вложенные блоки]
+        a: "**dynamic \"block\"** — генерирует повторяющиеся вложенные блоки ресурса из коллекции: `dynamic \"ingress\" { for_each = var.rules ... }`. В сочетании с **for_each**/**count** позволяет описывать вариативные конфигурации без дублирования кода. Работает только для вложенных блоков, не для top-level ресурсов."
+        related: ["Чем for_each отличается от count?"]
+      - q: "Как устроены провайдеры и required_providers?"
+        keywords: [provider, required_providers, версия, source, alias, плагин]
+        a: "**provider** — конфигурация плагина (aws, google, kubernetes...): region, credentials. **required_providers** в блоке terraform задаёт source и version constraints: `aws = { source = \"hashicorp/aws\", version = \"~> 5.0\" }`. **alias** позволяет несколько конфигураций одного провайдера для разных регионов/проектов."
+        related: ["Что такое Terraform provider?"]
+      - q: "Что такое terraform validate, fmt и console?"
+        keywords: [validate, fmt, console, линт, синтаксис, проверка]
+        a: "**terraform validate** — проверка синтаксиса и валидности конфигурации (без доступа к state), запускается в CI на PR. **terraform fmt** — автоформатирование по стилю HashiCorp. **terraform console** — интерактивная проверка выражений и функций. Эти три инструмента — «хлеб» повседневной работы с Terraform."
+        related: ["Как работает Terraform?"]
+      - q: "Что такое taint, replace и target в Terraform?"
+        keywords: [taint, replace, target, -target, пересоздание, пометка]
+        a: "**terraform taint** (устарел) / **terraform apply -replace=...** — принудительное пересоздание ресурса. **-target=aws_instance.web** — применить только к указанному ресурсу и его зависимостям (для точечных изменений, осторожно в проде). После `-target` state и конфиг могут рассинхронизироваться."
+        related: ["Что такое lifecycle в Terraform?"]
+      - q: "Что такое terragrunt?"
+        keywords: [terragrunt, обертка, обёртка, dry, dry-run, конфигурации, повторение]
+        a: "**Terragrunt** — обёртка над Terraform для устранения дублирования конфигураций: DRY-шаблоны (hcl), автоматический remote state (backend per env), переиспользование модулей, дикая вложенность каталогов для сред. Популярен в мульти-окружениях: одно объявление модуля, много экземпляров."
+        related: ["Что такое workspaces в Terraform?"]
+      - q: "Что такое terraform.lock.hcl?"
+        keywords: [lock, terraform.lock.hcl, dependency lock, версии провайдеров, hash]
+        a: "**terraform.lock.hcl** — файл блокировки версий и хэшей провайдеров: гарантирует, что все разработчики и CI используют одни и те же версии. Обновляется `terraform init -upgrade`. Обязательно коммитится в репозиторий. Защищает от неожиданных обновлений провайдеров."
+        related: ["Как устроены провайдеры?"]
+      - q: "Что такое null_resource и local_file?"
+        keywords: [null_resource, local_file, utility, хелпер, триггеры, trigger]
+        a: "**null_resource** — «пустой» ресурс без реального объекта: полезен как хук для provisioners или триггеров (`triggers = { hash = md5(...) }`) — перезапуск только при изменении данных. **local_file** — запись контента в локальный файл. Утилитарные ресурсы для glue-логики и временных операций."
+        related: ["Что такое provisioners?"]
+      - q: "Что такое conditional expressions и функции Terraform?"
+        keywords: [conditional, тернарный, функции, lookup, merge, file, md5]
+        a: "**Условные выражения** — `cond ? a : b` для выбора значений в зависимости от переменных. **Функции**: `lookup(map, key, default)`, `merge(maps...)`, `file(path)`, `md5()`, `concat`, `join`, `element`. Функции позволяют собирать выражения декларативно, без императивного кода."
+        related: ["Что такое locals в Terraform?"]
+      - q: "Что такое terraform.tfvars и порядок приоритета значений?"
+        keywords: [tfvars, terraform.tfvars, auto.tfvars, порядок, приоритет, var-file]
+        a: "**terraform.tfvars** — файл значений по умолчанию, подхватывается автоматически. `*.auto.tfvars` — тоже автоматически, в алфавитном порядке. `-var-file=prod.tfvars` — явный файл. Приоритет (от высшего): `-var` CLI > `-var-file` > `*.auto.tfvars` > `terraform.tfvars` > `TF_VAR_*` env > default в блоке variable."
+        related: ["Как устроены переменные и tfvars?"]
+      - q: "Как устроен модульный вывод outputs между стеками?"
+        keywords: [module output, outputs модуля, terraform_remote_state, данные, между стеками]
+        a: "Из **outputs модуля** ссылаются `module.vpc.vpc_id` внутри конфигурации. Между **разными стеками/проектами** — через `data \"terraform_remote_state\" \"network\" { backend = \"s3\" ... }`. Альтернативы: SSM Parameter Store, DNS-записи, Vault. Прямое чтение чужих output-ов создаёт связность — держать её минимальной."
+        related: ["Что такое outputs в Terraform?"]
+      - q: "Что такое terraform state rm, mv, list?"
+        keywords: [state rm, state mv, state list, перемещение, удаление из state]
+        a: "**terraform state list** — список ресурсов в state. **terraform state rm** — удалить ресурс из state (без удаления реального объекта) — «бросить управление». **terraform state mv** — переименовать/переместить ресурс в state при рефакторинге (например, в модуль). Операции с state — осторожно: легко потерять соответствие."
+        related: ["Что такое Terraform state?"]
+      - q: "Что такое terraform init и для чего нужен .terraform?"
+        keywords: [init, .terraform, каталог, провайдеры, модули, скачивание]
+        a: "**terraform init** — инициализация: скачивает провайдеров и модули в каталог **.terraform/**, готовит backend. Запускается при первом использовании, смене провайдера/модулей, миграции backend. `.terraform` — локальный кэш, в git не коммитится. `init -upgrade` обновляет версии согласно lock-файлу."
+        related: ["Что такое backend в Terraform?"]
+      - q: "Что такое state locking и зачем нужен DynamoDB?"
+        keywords: [locking, lock, dynamodb, s3, таблица, параллельность, конфликт]
+        a: "При удалённом backend state лежит в хранилище (S3), а **блокировка** — отдельный механизм (DynamoDB): перед операцией Terraform записывает lock-запись, конкурирующий процесс ждёт или падает с «Error acquiring the state lock». Защищает от параллельного apply, ломающего state. Lock обязателен при командной работе."
+        related: ["Как устроен remote state и блокировка?"]
+  - id: ansible
+    name: Ansible
+    blocks:
+      - q: "Как работает Ansible?"
+        keywords: [ansible, плейбук, инвентори, модули, ssh]
+        a: "**Ansible** настраивает хосты по **SSH** (без агента): **inventory** (хосты), **playbook** (YAML-задачи), **modules** (команды), **handlers**. **Идемпотентен** — повторный запуск не меняет уже настроенное состояние."
+        related: ["Что такое handler в Ansible?"]
+      - q: "Чем Ansible отличается от Terraform?"
+        keywords: [ansible, terraform, отличие, когда что]
+        a: "**Terraform** — создание и управление ресурсами (provisioning, declarative). **Ansible** — настройка уже существующих хостов (configuration). Часто работают вместе: Terraform создаёт VM, Ansible настраивает софт на них."
+        related: ["Когда использовать только Ansible?"]
+      - q: "Что такое handler в Ansible?"
+        keywords: [handler, обработчик, notify, перезапуск, only on change]
+        a: "**Handler** — задача, запускаемая **только по notify** и только если изменилось что-то: `notify: restart nginx` при изменении конфига. Выполняется в конце плейбука, один раз, даже если несколько notify. Классика — перезапуск сервисов после изменения конфигов."
+        related: ["Как работает Ansible?"]
+      - q: "Что такое roles в Ansible?"
+        keywords: [roles, роли, структура, defaults, handlers, tasks]
+        a: "**Roles** — структурированные переиспользуемые блоки: каталоги **tasks, handlers, defaults, vars, templates, files, meta**. Дают изоляцию и повторное использование. `ansible-galaxy init role`. Роли — стандарт организации больших плейбуков."
+        related: ["Чем playbook отличается от role?"]
+      - q: "Что такое become в Ansible?"
+        keywords: [become, sudo, привилегии, root, become_user]
+        a: "**become: true** — выполнять задачи с повышением прав (**sudo**, `become_user` для другого пользователя). Переменные `ansible_become_pass` — из vault, не в плейбуках. Без become многие операции с системными пакетами невозможны."
+        related: ["Что такое Ansible Vault?"]
+      - q: "Что такое Ansible Vault?"
+        keywords: [vault, ansible vault, шифрование, секреты, пароли]
+        a: "**Ansible Vault** — шифрование файлов/переменных в репо: `ansible-vault encrypt vars.yml`, `ansible-playbook --ask-vault-pass`. Используется для паролей, ключей, токенов в inventory/roles. Ключ не должен попадать в git."
+        related: ["Как хранить секреты в Ansible?"]
+      - q: "Что такое templates и jinja2 в Ansible?"
+        keywords: [templates, jinja2, шаблоны, переменные, конфиги]
+        a: "**Templates** — файлы-шаблоны (**Jinja2**) для генерации конфигов из переменных: `template: src=nginx.conf.j2 dest=/etc/nginx/nginx.conf`. Условия `{% if %}`, циклы `{% for %}`, фильтры. Изменение шаблона → `notify` handler."
+        related: ["Что такое handler в Ansible?"]
+      - q: "Что такое facts в Ansible?"
+        keywords: [facts, факты, ansible_facts, сбор, discover]
+        a: "**Facts** — собранные о хосте данные (ОС, IP, архитектура, память), доступны как `ansible_facts`. Сбор включается **gather_facts**; `setup` модуль. Используются в условиях: `when: ansible_os_family == \"Debian\"`."
+        related: ["Что такое conditional when?"]
+      - q: "Что такое check mode и dry-run в Ansible?"
+        keywords: [check mode, dry run, --check, diff, симуляция]
+        a: "**--check** — «сухой прогон»: модули сообщают, что **изменят**, ничего не меняя (идемпотентные модули поддерживают). **--diff** показывает изменения файлов. Критично перед продакшеном: проверяем план, как `terraform plan`."
+        related: ["Что такое идемпотентность?"]

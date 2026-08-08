@@ -1,0 +1,72 @@
+topic: mail
+title: Почтовая инфраструктура — всё по теме
+keywords: [почта, mail, smtp, postfix, постфикс, spf, dkim, dmarc, mx, mta, imap, opendkim, sieve]
+sections:
+  - id: fundamentals
+    name: Основы почтовой инфраструктуры
+    blocks:
+      - q: "Что такое MTA и как работает почтовая доставка?"
+        keywords: [mta, mail transfer agent, postfix, exim, smtp, relay, очередь, mx запись]
+        a: "**MTA (Mail Transfer Agent)** — сервер пересылки почты: **Postfix**, **Exim**, **Sendmail**. Pipeline: клиент (MUA) → MTA отправителя → DNS MX-запись домена получателя → MTA получателя → MDA (почтовый ящик) → MUA получателя. **Очередь**: если MTA получателя недоступен — письмо в очередь, ретраи с backoff (15мин → 4ч → bounce). **Relay**: MTA может релеить (пересылать) почту через smart-host (например, через релей провайдера при динамическом IP). **Порты**: 25 (MTA→MTA), 587 (MUA→MTA submission), 465 (SMTPS), 993 (IMAPS), 995 (POP3S). **Auth**: SASL (Dovecot/ Cyrus) для submission."
+        related: ["Что такое MX запись?", "Как работает SMTP relay?"]
+      - q: "Что такое MX запись и как она работает?"
+        keywords: [mx, mx запись, mail exchange, приоритет, backup mx, dns почта]
+        a: "**MX (Mail Exchange)** — DNS-запись, указывающая MTA для домена. Пример: `example.com. MX 10 mail.example.com.`. **Приоритет** — ниже число = выше приоритет (10 > 20). Отправляющий MTA пробует в порядке приоритета. **Backup MX**: `example.com. MX 20 backup.example.com.` — принимает почту если primary недоступен, потом пересылает. **Anti-spam**: низкий приоритет (высокое число) → spam-trap (catch-all). **Подводный камень**: backup MX без валидации получателей → backscatter (bounce на подделанные адреса). **Best practice**: один MX с HA (round-robin), backup только при необходимости."
+        related: ["Что такое MTA?", "Что такое backscatter?"]
+      - q: "Чем SMTP submission (587) отличается от relay (25)?"
+        keywords: [submission, port 587, port 25, smtp relay, auth, sasl, starttls]
+        a: "**Порт 25 (SMTP relay)** — MTA→MTA, для пересылки между серверами. Не требует auth (по RFC), но провайдеры часто блокируют 25 (anti-spam). **Порт 587 (Submission)** — MUA→MTA, для отправки клиентами. **Требует auth** (SASL: LOGIN/PLAIN) + STARTTLS. **Порт 465 (SMTPS)** — устаревший implicit TLS, всё ещё используется. **Best practice**: 25 — только приём от других MTA (с проверкой SPF/DKIM/DMARC), 587 — только отправка клиентами (с auth + TLS), 25 не использовать для исходящей почты через residential ISP (заблокирован)."
+        related: ["Что такое STARTTLS?", "Как настроить SASL auth?"]
+  - id: antispam
+    name: Анти-спам и аутентификация
+    blocks:
+      - q: "Что такое SPF и как его настроить?"
+        keywords: [spf, sender policy framework, разрешённые отправители, txt запись, all, fail]
+        a: "**SPF (Sender Policy Framework)** — DNS TXT-запись, перечисляющая IP/серверы, которым **разрешено** отправлять почту от имени домена. Пример: `example.com. TXT \"v=spf1 ip4:1.2.3.4 include:_spf.google.com -all\"`. **Механизмы**: `ip4`/`ip6`, `a`, `mx`, `include` (включить SPF другого домена). ** qualifiers**: `+` (pass), `~` (softfail — пометить), `-` (fail — отклонить), `?` (neutral). **Best practice**: `~all` (softfail) → мониторинг → `-all` (fail) когда уверен. **Проверка**: `dig TXT example.com`, `mail-tester.com`. **Подводный камень**: забыли include для рассылок (Mailchimp, Google) → помечается как спам."
+        related: ["Что такое DKIM?", "Что такое DMARC?"]
+      - q: "Что такое DKIM и как его настроить?"
+        keywords: [dkim, domainkeys, подпись, opendkim, селектор, публичный ключ, подделка]
+        a: "**DKIM (DomainKeys Identified Mail)** — **цифровая подпись** исходящей почты. MTA подписывает письма приватным ключом; получатель проверяет через **публичный ключ в DNS**. Настройка: (1) **OpenDKIM** генерирует пару ключей, (2) приватный → MTA (Postfix milter), (3) публичный → DNS TXT: `selector._domainkey.example.com. TXT \"v=DKIM1; k=rsa; p=MIGfMA0...\"`. **Селектор** — имя ключа (можно несколько для ротации). **Подводный камень**: ротация ключей — нужно добавлять новый селектор в DNS ДО переключения, ждать TTL. **Проверка**: отправить на `check-auth@verifier.port25.com`. ** relay через сторонний**: нужно подписывать на реле или включить их ключ."
+        related: ["Что такое SPF?", "Что такое DMARC?", "Как ротировать DKIM?"]
+      - q: "Что такое DMARC и как он работает?"
+        keywords: [dmarc, domain-based message authentication, policy, p none, p quarantine, p reject, rua, отчет]
+        a: "**DMARC** — политика проверки SPF + DKIM + отчётность. DNS TXT: `_dmarc.example.com. TXT \"v=DMARC1; p=quarantine; rua=mailto:dmarc@example.com; pct=50; adkim=s; aspf=s\"`. **p=none** — мониторинг (ничего не блокируется), **p=quarantine** — в спам, **p=reject** — отклонять. **pct** — % писем для применения (постепенный rollout). **rua** — агрегированные отчёты (XML по почте). **adkim=s / aspf=s** — strict alignment (From домен = DKIM/SPF домен). **Стратегия**: `p=none` (2 нед) → анализ → `p=quarantine; pct=10` → `pct=100` → `p=reject; pct=10` → `pct=100`. **Подводный камень**: резкий `p=reject` ломает рассылки."
+        related: ["Что такое SPF?", "Что такое DKIM?", "Как читать DMARC отчёты?"]
+      - q: "Как защититься от backscatter?"
+        keywords: [backscatter, обратный рикошет, ndn, non delivery notification, bounce, reject]
+        a: "**Backscatter** — NDN (Non-Delivery Notification), которое ваш MTA генерирует на **подделанное** письмо (спамер отправил от вашего имени на несуществующий адрес → вам приходит bounce). Причины: ваш MTA принимает письма на **любые адреса** домена (catch-all), потом не может доставить → отправляет bounce спамеру (или на подделанный адрес). Защита: **reject на этапе SMTP** (до приёма тела письма) — если получатель не существует, отвечать `550 User unknown` сразу. В Postfix: `reject_unlisted_recipient`, `reject_unknown_recipient_domain`. **Дополнительно**: отключить catch-all, DMARC `p=reject` (получатели отклоняют подделку). **Без reject**: тысячи bounce засоряют очередь."
+        related: ["Что такое catch-all?", "Как настроить Postfix reject?"]
+      - q: "Что такое greylisting и как он работает?"
+        keywords: [greylisting, грейлистинг, серый список, tempfail, "450", retry, anti-spam]
+        a: "**Greylisting** — temporary reject (450 tempfail) при первом письме от нового отправителя. Корректный MTA ретраит через 5-15 мин — письмо проходит. Спам-бототы часто не ретраят → письмо теряется. **Triple**: (IP, sender, recipient). Whitelist для известных MTA (Gmail, Outlook) → без задержки. **Плюсы**: блокирует 80-90% спама бесплатно, нет false positives для корректных MTA. **Минусы**: задержка 5-15 мин для первого письма (неприемлемо для time-sensitive). **В Postfix**: Postfix Policy Daemon (postgrey), sqlgrey. **В 2024**: эффективен против ботов, но спам-сети научились ретраить → использовать как один из слоёв."
+        related: ["Как настроить Postfix anti-spam?", "Что такое RBL?"]
+      - q: "Что такое RBL и DNSBL?"
+        keywords: [rbl, dnsbl, real-time blacklist, spamhaus, barracuda, blacklist, ip репутация]
+        a: "**RBL/DNSBL (Real-time Blackhole List)** — DNS-списки IP-адресов, известных как источники спама. MTA проверяет IP отправителя через DNS-запрос: `4.3.2.1.zen.spamhaus.org` → если A-запись существует → IP в blacklist → reject (554). **Провайдеры**: **Spamhaus** (самый авторитетный, бесплатно до определённого объёма), **Barracuda**, **SORBS**. **Уровни**: SBL (спам), XBL (ботнет/exploit), PBL (residential/dynamic IP), ZEN (всё вместе). **В Postfix**: `reject_rbl_client zen.spamhaus.org`. **Подводный камень**: false positives → легитимный IP в blacklist (shared hosting). Решение: проверять через `dnsbljustification.com`, делалютировать. **Best practice**: использовать 2-3 RBL, но не больше (задержка + false positives)."
+        related: ["Что такое greylisting?", "Как проверить IP в blacklist?"]
+  - id: postfix
+    name: Postfix и конфигурация
+    blocks:
+      - q: "Как настроить Postfix для приёма и отправки почты?"
+        keywords: [postfix, main.cf, mynetworks, mydestination, smtpd_recipient_restrictions, relay, конфигурация]
+        a: "**main.cf** ключевые параметры: `myhostname`, `mydomain`, `myorigin`, `mydestination` (локальные домены), `mynetworks` (IP-сети которым разрешён relay — БЕЗ этого можно стать open relay!). **smtpd_recipient_restrictions**: `permit_mynetworks, permit_sasl_authenticated, reject_unauth_destination` — запретить relay всем кроме своих. **Виртуальные домены**: `virtual_mailbox_domains`, `virtual_mailbox_maps` (LDAP/SQL). **TLS**: `smtpd_tls_cert_file`, `smtpd_tls_key_file`, `smtpd_use_tls=yes`. **DKIM**: milter `smtpd_milters = inet:localhost:8891` (OpenDKIM). **Анти-спам**: `reject_rbl_client`, `check_policy_service inet:127.0.0.1:10023` (postgrey). **master.cf**: сервисы/процессы (smtp, submission, smtps)."
+        related: ["Как настроить OpenDKIM с Postfix?", "Что такое smtpd_recipient_restrictions?"]
+      - q: "Что такое Dovecot и как он работает с Postfix?"
+        keywords: [dovecot, imap, pop3, lda, lmtp, sasl auth, maildir, sieve, фильтры]
+        a: "**Dovecot** — IMAP/POP3 сервер (чтение почты клиентами) + LDA (доставка в ящик) + SASL auth для Postfix. **Интеграция**: Postfix передаёт письмо Dovecot через **LMTP** (или pipe к `dovecot-lda`). **Auth**: Dovecot SASL → Postfix `smtpd_sasl_type = dovecot`, `smtpd_sasl_path = private/auth`. **Maildir**: `mail_location = maildir:~/Maildir` — формат хранения. **Sieve**: язык фильтров (авто-сортировка, vacation/автоответ) — `sieve = ~/.dovecot.sieve`. **TLS**: `ssl = required`, сертификат. **Quota**: плагин quota — лимит ящика + уведомление. **Плюс**: управляемые плюса-адреса (user+tag@example.com → в папку tag)."
+        related: ["Что такое Postfix?", "Что такое Sieve?"]
+      - q: "Как обеспечить отказоустойчивость почтового кластера?"
+        keywords: [ha mail, отказоустойчивость почты, cluster, multi mx, shared storage, drbd, nfs, replica]
+        a: "**Уровни HA**: (1) **MX** — несколько MX-записей с разным приоритетом → backup MX принимает при отказе primary. (2) **Storage** — общий Maildir через NFS/DRBD/распределённое хранилище → любой MTA видит все ящики. (3) **MTA** — round-robin DNS или LB (HAProxy) → несколько Postfix инстансов. (4) **Auth** — Dovecot с общей БД (LDAP/SQL), либо replicated. (5) **Очереди** — общий spool (NFS) ИЛИ очередь-на-узел (при падении — рассмотреть). **Специфика**: Postfix stateless по пользователям (может принять письмо для любого пользователя, если знает домен) → легко scale. Dovecot stateful (хранит ящик) → нужен shared storage ИЛИ per-user affinity. **Anti-pattern**: один Postfix на один Dovecot без shared storage → при отказе письма теряются."
+        related: ["Что такое DRBD?", "Как настроить multi-MX?"]
+  - id: troubleshooting
+    name: Диагностика и мониторинг
+    blocks:
+      - q: "Почему письма попадают в спам и как это исправить?"
+        keywords: [спам, spam folder, не доходят, spamassassin, репутация, warmup, rbl check]
+        a: "**Причины попадания в спам**: (1) нет SPF/DKIM/DMARC → настрой и проверь через `mail-tester.com`. (2) IP в blacklist → проверь `mxtoolbox.com/blacklists`. (3) низкая репутация IP (новый IP без истории) → warmup: постепенно наращивать объём. (4) контент: спам-слова, ссылки на чёрные домены, большой HTML без текста → SpamAssassin score. (5) нет FCrDNS (reverse DNS != домен) → PTR-запись. (6) нестандартные заголовки, отсутствие Message-ID, Date. **Диагностика**: отправить на `check-auth@verifier.port25.com` → отчёт по SPF/DKIM/DMARC. **Решение**: комплекс — SPF+DKIM+DMARC + PTR + чистый IP + контент-фильтры (SpamAssassin/Rspamd)."
+        related: ["Что такое SpamAssassin?", "Как проверить репутацию IP?"]
+      - q: "Как мониторить почтовый сервер?"
+        keywords: [мониторинг почты, mailq, queue, delivery rate, bounce rate, spam score, postqueue]
+        a: "**Ключевые метрики**: `mailq` (длина очереди Postfix) → рост = проблема доставки; `bounce rate` (>5% — проблема с получателями/репутацией); `delivery latency` (сколько до доставки); `spam score` (SpamAssassin/Rspamd средний балл); `IMAP/POP3 connections` (активные пользователи); `auth failures` (brute-force). **Инструменты**: `postqueue -p` (очередь), `pflogsumm` (анализ логов Postfix), **Prometheus + postfix_exporter** (метрики), **Grafana** (дашборд: queue depth, delivery time, bounces per domain). **Алерты**: queue > 1000, bounce rate > 5%, DKIM/SPF fail rate > 1%. **Логи**: Postfix `maillog` → Loki/ELK для корреляции."
+        related: ["Что такое mailq?", "Как анализировать логи Postfix?"]

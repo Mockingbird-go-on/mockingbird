@@ -1,0 +1,92 @@
+topic: message_queues
+title: Message Queues и Event Streaming — всё по теме
+keywords: [kafka, кафка, rabbitmq, кролик, message queue, очередь, broker, consumer, producer, topic, partition, offset, consumer group, exchange, exactly once, at least once]
+sections:
+  - id: kafka_architecture
+    name: Apache Kafka — архитектура
+    blocks:
+      - q: "Что такое Apache Kafka и как она работает?"
+        keywords: [kafka, кафка, broker, partition, topic, producer, consumer, распределённый лог]
+        a: "**Apache Kafka** — распределённая платформа **event streaming**: публикация-подписка на потоки записей, хранение с retention, обработка в реальном времени. Архитектура: **Producer** пишет сообщения в **Topic** (категория), **Consumer** читает. Топик разбит на **Partition** (партиции) — упорядоченные, неделимые логи, распределённые по **Broker** (узлам кластера). Каждая запись имеет **offset** (позиция в партиции). Кластер: несколько брокеров + **Zookeeper / KRaft** (координация, выбор leader-партиции). Kafka хранит сообщения на диске (sequential I/O — быстро), реплицирует между брокерами."
+        related: ["Что такое партиция и offset в Kafka?", "Чем Kafka отличается от RabbitMQ?"]
+      - q: "Что такое партиция и offset в Kafka?"
+        keywords: [partition, партиция, offset, ordering, key, распределение]
+        a: "**Partition** — неделимый упорядоченный лог внутри топика. Сообщения с одинаковым **key** всегда попадают в одну партицию (хеш ключа → номер партиции). **Offset** — монотонно возрастающий номер сообщения внутри партиции. Порядок гарантирован **только внутри одной партиции** — между партициями порядка нет. Больше партиций = больше параллелизма (consumer может читать каждую партицию), но сложнее гарантировать глобальный порядок. **Compaction** — Kafka может оставлять только последнее сообщение по ключу (не по offset)."
+        related: ["Что такое consumer group?", "Как Kafka обеспечивает упорядоченность сообщений?"]
+      - q: "Что такое consumer group и как работает масштабирование в Kafka?"
+        keywords: [consumer group, группа, rebalance, координатор, масштабирование, partition assignment]
+        a: "**Consumer Group** — группа консьюмеров, совместно читающих топик. Kafka гарантирует: **одна партиция читается только одним консьюмером** внутри группы. Если консьюмеров больше, чем партиций — лишние простаивают. **Rebalance** — перераспределение партиций между консьюмерами при добавлении/удалении узла. Координирует **Group Coordinator** (брокер). rebalance может вызвать кратковременную остановку потребления. Для масштабирования: больше партиций → больше параллельных консьюмеров. Разные consumer groups читают независимо (broadcast)."
+        related: ["Что такое партиция?", "Как работает offset commit?"]
+      - q: "Как Kafka обеспечивает репликацию и отказоустойчивость?"
+        keywords: [replication, репликация, isr, in-sync replicas, leader, follower, acks, min.insync.replicas]
+        a: "Каждая партиция имеет **replication factor** (обычно 3): один **leader** + **followers**. Чтение и запись идут через leader. **ISR (In-Sync Replicas)** — follower, которые успевают за leader (отставание в пределах `replica.lag.time.max.ms`). **acks**: `acks=0` (не ждать), `acks=1` (только leader), `acks=all` (все ISR). **min.insync.replicas** — минимальное число ISR для записи (при `acks=all`). Если ISR < min → запись блокируется. При падении leader выбирается новый из ISR. **Under-replicated partitions** — метрика для алерта."
+        related: ["Что такое acks=all?", "Как работает выбор нового leader?"]
+      - q: "Что такое retention и compaction в Kafka?"
+        keywords: [retention, компакшн, compaction, хранение, time based, size based, log cleanup]
+        a: "**Retention** — сколько хранить сообщения: по времени (`retention.ms` — например 7 дней) или по размеру (`retention.bytes`). По истечении — старые сегменты удаляются целиком. **Compaction** — альтернативный режим: для каждого ключа хранится только **последнее значение** (как changelog → snapshot). Полезно для state-данных (current config, user state). Включается через `cleanup.policy=compact` (или `compact,delete`). **Log segment** — файл, удаляется целиком (не по одному сообщению). `segment.ms` / `segment.bytes` управляют размером сегментов."
+        related: ["Как Kafka хранит данные на диске?", "Что такое Kafka Streams?"]
+  - id: kafka_guarantees
+    name: Гарантии доставки и семантика
+    blocks:
+      - q: "Чем at-least-once, at-most-once и exactly-once отличаются?"
+        keywords: [at least once, at most once, exactly once, гарантии доставки, семантика, дубликаты]
+        a: "**At-most-once** — сообщение может быть потеряно, но не дублировано (fire-and-forget, `acks=0`). **At-least-once** — сообщение не теряется, но может дублироваться (типичный случай: consumer обработал, commit offset не дошёл → прочитает заново). **Exactly-once** — ни потерь, ни дублей. В Kafka: **idempotent producer** (`enable.idempotence=true` — дедупликация по PID+sequence) + **транзакции** (atomic write across partitions + offset commit). Exactly-once в Kafka работает только **внутри** Kafka; end-to-end (с внешней БД) требует идемпотентного консьюмера."
+        related: ["Как сделать exactly-once в Kafka?", "Что такое идемпотентный продюсер?"]
+      - q: "Как сделать exactly-once семантику в Kafka?"
+        keywords: [exactly once, транзакция, transactional id, idempotent, atomic, commit offset, consume-transform-produce]
+        a: "Три уровня: (1) **Idempotent producer** — `enable.idempotence=true`, Kafka дедуплицирует ретраи через **PID** (producer ID) + sequence number. (2) **Транзакции** — `transactional.id`, продюсер пишет в несколько топиков + commit offset consumer'а атомарно (`beginTransaction → produce → sendOffsetsToTransaction → commitTransaction`). (3) **Consume-Transform-Produce** — связка: consumer читает из топика-A, обрабатывает, продюсер пишет в топик-B, offset коммитится в той же транзакции. **Подводный камень**: внешняя система (БД) за пределами транзакции → нужен идемпотентный write (unique key, outbox pattern)."
+        related: ["Что такое outbox pattern?", "Чем at-least-once отличается от exactly-once?"]
+      - q: "Что такое идемпотентный продюсер в Kafka?"
+        keywords: [idempotent, идемпотентность, pid, sequence number, дедупликация, retries]
+        a: "**Idempotent producer** (`enable.idempotence=true`): Kafka присваивает продюсеру **PID** (Producer ID). Каждое сообщение получает **sequence number** — если ретрай даёт дубликат (тот же PID + seq), брокер его отбрасывает. Гарантия: **одно сообщение = одна запись** в партиции, даже при retries. Начиная с Kafka 3.0 — включено по умолчанию. Важно: идемпотентность действует **в рамках сессии** (PID жив пока продюсер жив); при рестарте PID меняется → новый PID. Для cross-session дедупликации нужны **транзакции** (`transactional.id`)."
+        related: ["Что такое exactly-once?", "Как работают ретраи в Kafka producer?"]
+  - id: rabbitmq
+    name: RabbitMQ
+    blocks:
+      - q: "Что такое RabbitMQ и как работает?"
+        keywords: [rabbitmq, кролик, amqp, exchange, queue, binding, producer, consumer]
+        a: "**RabbitMQ** — брокер сообщений на базе **AMQP**. Архитектура: **Producer** публикует в **Exchange**, exchange маршрутизирует в **Queue** по правилам **Binding**, **Consumer** подписывается на очередь. В отличие от Kafka, RabbitMQ — **message-oriented** (сообщение удаляется после ack), а не log-oriented. **Features**: гибкая маршрутизация (routing key, headers), DLX (dead-letter exchange), приоритеты, TTL, lazy queues (на диске). Написан на Erlang — устойчив к высокой нагрузке, кластеризация из коробки. Отлично подходит для task distribution, RPC, event notification."
+        related: ["Чем RabbitMQ отличается от Kafka?", "Какие бывают типы exchange в RabbitMQ?"]
+      - q: "Какие бывают типы exchange в RabbitMQ?"
+        keywords: [direct, fanout, topic, headers, exchange, binding, routing key]
+        a: "Четыре типа: **Direct** — сообщение идёт в очередь с **точным совпадением** routing key. **Fanout** — во **все** привязанные очереди (broadcast, игнорирует routing key). **Topic** — по **паттерну** routing key (`logs.error.*`, `#.warning`). **Headers** — по **заголовкам** сообщения (headers matching: any/all), routing key игнорируется. По умолчанию — exchange с пустым именем (`amq.default`), маршрутизация по имени очереди. Exchange + binding = гибкая маршрутизация сообщений."
+        related: ["Что такое RabbitMQ?", "Как работает dead-letter exchange?"]
+      - q: "Что такое dead-letter queue (DLQ) в RabbitMQ?"
+        keywords: [dlq, dead letter, dlx, rejection, ttl, nack, poison message]
+        a: "**Dead-Letter Exchange (DLX)** — exchange, куда попадают сообщения из очереди при: (1) consumer **reject/nack** с `requeue=false`, (2) истечение **TTL** сообщения, (3) превышение **max-length** очереди. Очередь настраивается: `x-dead-letter-exchange: my-dlx`. DLX + обычная очередь = **DLQ**. Назначение: не терять «ядовитые» (poison) сообщения, анализировать причины, повторять обработку. **Anti-pattern**: бесконечный requeue без DLQ → сообщение вечно блокирует consumer."
+        related: ["Как обрабатывать ошибки в consumer?", "Чем RabbitMQ отличается от Kafka?"]
+      - q: "Как RabbitMQ гарантирует доставку сообщений?"
+        keywords: [ack, publisher confirm, delivery mode, persistent, durable, prefetch]
+        a: "**Producer → Broker**: **publisher confirms** (`confirm.select`) — брокер подтверждает приём. **Persistent messages** (`delivery_mode=2`) — пишутся на диск. **Durable queue** (`durable=true`) — очередь переживает рестарт брокера. **Broker → Consumer**: **manual ack** — consumer подтверждает обработку; если consumer падает без ack → сообщение возвращается в очередь. **prefetch_count** — сколько неподтверждённых сообщений consumer может получить (flow control). **Подводный камень**: auto-ack + crash = потеря сообщения; durable=false + restart = потеря очереди."
+        related: ["Что такое publisher confirms?", "Как работает prefetch?"]
+      - q: "Чем RabbitMQ отличается от Kafka?"
+        keywords: [kafka vs rabbitmq, сравнение, pull vs push, log vs queue, smart broker vs dumb broker]
+        a: "**Kafka**: log-oriented (сообщения хранятся, читаются по offset), pull-based (consumer сам читает), высокий throughput (миллионы/сек), горизонтальное масштабирование через партиции, retention по времени/размеру, replay. **RabbitMQ**: message-oriented (удаляется после ack), push-based (брокер толкает), гибкая маршрутизация (exchanges), ниже throughput, ниже задержка (микросекунды), нет replay (по умолчанию). **Выбор**: Kafka — event streaming, log aggregation, CDC, replay. RabbitMQ — task queue, RPC, command distribution, complex routing."
+        related: ["Что такое Kafka?", "Что такое RabbitMQ?", "Когда выбрать Kafka, а когда RabbitMQ?"]
+  - id: patterns
+    name: Паттерны и best practices
+    blocks:
+      - q: "Что такое consumer lag и как его мониторить?"
+        keywords: [consumer lag, отставание, задержка, monitoring, log-end-offset, high watermark, kafka consumer lag]
+        a: "**Consumer lag** — разница между **log-end-offset** (последнее сообщение в партиции) и **committed offset** (позиция consumer). Показывает насколько консьюмер отстаёт от producer. **Мониторинг**: `kafka-consumer-groups --describe`, Kafka exporter для Prometheus (`kafka_consumergroup_lag`), Burrow (LinkedIn). Причины роста: consumer медленный, мало партиций, GC pauses, долгие network I/O. Решения: увеличить параллелизм (больше партиций + consumers), batch processing, оптимизировать handler, scale out consumers."
+        related: ["Как масштабировать consumer?", "Что такое rebalance?"]
+      - q: "Как обрабатывать ошибки и ретраи в consumer?"
+        keywords: [retry, backoff, dlq, dead letter queue, poison message, идемпотентность, error handling]
+        a: "**Anti-pattern**: бесконечный requeue (poison message зацикливается). **Правильный подход**: (1) **retry with backoff** — N попыток с экспоненциальной задержкой (DLX + TTL для задержки), (2) после N ретраев → **DLQ** для ручного разбора, (3) **идемпотентность** — consumer должен безопасно обрабатывать дубликаты (at-least-once → idempotent). В Kafka: `RetryTopic` (Spring Kafka), в RabbitMQ: `x-death` header для подсчёта ретраев. **Логирование**: каждая ошибка + контекст сообщения в лог. **Алерт**: рост DLQ — сигнал к вмешательству."
+        related: ["Что такое DLQ?", "Что такое идемпотентность?"]
+      - q: "Что такое saga pattern и как связаны с очередями?"
+        keywords: [saga, сага, распределённая транзакция, outbox, компенсация, event driven, choreography]
+        a: "**Saga** — последовательность локальных транзакций, где каждый шаг публикует событие через очередь (Kafka/RabbitMQ). Если шаг падает — выполняются **компенсирующие** действия. **Choreography**: каждый сервис слушает события и реагирует автономно (нет центрального координатора). **Orchestration**: есть saga-оркестратор, который вызывает сервисы и управляет откатом. Очередь обеспечивает: доставку событий (at-least-once), развязку сервисов, replay. **Outbox pattern**: событие пишется в БД в той же транзакции, потом публикуется в очередь — гарантия «не потерять событие»."
+        related: ["Что такое outbox pattern?", "Чем saga отличается от 2PC?"]
+      - q: "Когда использовать Kafka, а когда RabbitMQ?"
+        keywords: [выбор, kafka vs rabbitmq, event streaming, task queue, use case, критерии]
+        a: "**Kafka** когда: event streaming (audit, analytics, CDC), high throughput (>100K/sec), replay данных, event sourcing, логирование на масштабе, несколько независимых consumer groups. **RabbitMQ** когда: task queue (воркеры), RPC (request-reply), сложная маршрутизация (topic exchange, header exchange), command distribution, низкие задержки (микросекунды), приоритизация сообщений. **Оба** когда: event-driven микросервисы, но Kafka — для потоков событий, RabbitMQ — для команд. **Anti-pattern**: Kafka как task queue (нет отдельных ack, сложнее DLQ, избыточен)."
+        related: ["Чем Kafka отличается от RabbitMQ?", "Что такое event streaming?"]
+      - q: "Что такое schema registry и зачем он нужен?"
+        keywords: [schema registry, confluent, avro, protobuf, json schema, compatibility, backward forward]
+        a: "**Schema Registry** — центральный репозиторий схем сообщений (Avro/Protobuf/JSON Schema). Producer регистрирует схему → получает ID → пишет его в сообщение. Consumer читает ID → тянет схему → десериализует. **Проверка совместимости**: backward (новая схема читает старые данные), forward (старая читает новые), full (обе). Конфликт (breaking change) → Registry отклоняет. **Без Registry**: изменение формата = сломанные consumer'ы, ручной координации. **Confluent Schema Registry** — де-факто стандарт для Kafka."
+        related: ["Что такое Avro?", "Как менять формат сообщений без даунтайма?"]
+      - q: "Как обеспечить упорядоченность сообщений при масштабировании?"
+        keywords: [ordering, упорядоченность, ordering key, partition key, sequence, строгий порядок]
+        a: "Строгий порядок — только **внутри одной партиции/очереди**. **Kafka**: один partition key для связанных сообщений (например, `order_id`) → все события заказа в одной партиции → порядок гарантирован. Но: параллелизм ограничен числом партиций. **RabbitMQ**: одна очередь → строгий порядок, но один consumer. **Компромисс**: **ordering key** группирует сообщения, каждое поле обрабатывается независимо и по-своему упорядоченно. **Подводный камень**: strict global ordering = одна партиция = ноль параллелизма → не масштабируется."
+        related: ["Что такое партиция в Kafka?", "Как масштабировать consumer?"]

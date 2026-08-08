@@ -1,0 +1,197 @@
+topic: networking
+title: Сети (Networking) — всё по теме
+keywords: [сеть, networking, сети, сетевые протоколы, nginx, haproxy, хапрокси, envoy, балансировщик, load balancer, reverse proxy, rate limiting, upstream]
+sections:
+  - id: tcpip
+    name: TCP/IP и протоколы
+    blocks:
+      - q: "Расскажи про модель OSI и TCP/IP."
+        keywords: [osi, tcp ip, модель, уровни, семь уровней, 7 уровней, osi model]
+        a: "Модель **OSI** — 7 уровней: физический, канальный, сетевой, транспортный, сессионный, представления, приложения. Практичная модель **TCP/IP** — 4 уровня: приложения (HTTP, DNS), транспорт (**TCP/UDP**), сеть (**IP**), доступ к среде. Данные на уровнях называются сегменты → пакеты → кадры."
+        related: ["На каком уровне работает HTTP?"]
+      - q: "В чём разница между TCP и UDP?"
+        keywords: [tcp, udp, разница, протокол транспортный, надёжность]
+        a: "**TCP** — с установкой соединения (**3-way handshake**), гарантирует доставку, порядок и контроль перегрузки; используется для HTTP, SMTP. **UDP** — без соединения и гарантий, быстрый, минимальный overhead; для DNS, VoIP, стриминга, игр."
+        related: ["Когда выбирают UDP, а не TCP?"]
+      - q: "Что такое TCP three-way handshake?"
+        keywords: [three way, handshake, syn, ack, син ак]
+        a: "Клиент → **SYN**; сервер → **SYN+ACK**; клиент → **ACK**. После этого соединение установлено, передача данных, завершение через **FIN** (вежливо) или **RST** (сброс). Это гарантирует, что обе стороны готовы общаться."
+        related: ["Что такое keep-alive?"]
+      - q: "Что такое IP-адрес, маска и шлюз?"
+        keywords: [ip адрес, маска подсети, шлюз, gateway, подсеть, vlsm, ipv4, ipv6]
+        a: "**IPv4** — 32 бита (192.168.1.0/24). **Маска** делит адрес на сеть и хост (255.255.255.0). **Шлюз** — адрес, через который идёт трафик в другие сети. **VLSM** — переменные маски для экономии адресов. **IPv6** — 128 бит, решает исчерпание IPv4."
+        related: ["Что такое CIDR?"]
+      - q: "Что такое CIDR и как делить подсети?"
+        keywords: [cidr, подсеть, маска, vlsm, разбиение, /24]
+        a: "**CIDR** — нотация «адрес/префикс», где префикс — число бит в сетевой части (192.168.1.0/24 = маска 255.255.255.0, 254 хоста). Деление: увеличить префикс на 1 = вдвое меньше подсеть, уменьшить на 1 = вдвое больше."
+        related: ["Что такое IP-адрес?"]
+      - q: "Какие бывают TCP-флаги и зачем они?"
+        keywords: [tcp flags, флаги, syn, ack, fin, rst, push, urgent]
+        a: "**SYN** — установка соединения, **ACK** — подтверждение, **FIN** — вежливое завершение, **RST** — сброс соединения, **PSH** — доставить немедленно, **URG** — срочные данные. По флагам можно диагностировать проблемы: RST = сброс/отказ, повторные SYN = недоступность."
+        related: ["Что такое TCP three-way handshake?"]
+      - q: "Что такое контроль перегрузки TCP?"
+        keywords: [congestion, перегрузка, slow start, cubic, окно, cwnd]
+        a: "**Контроль перегрузки** регулирует окно отправки по состоянию сети. Фазы: **slow start** (быстрый рост), избегание перегрузки (алгоритмы **CUBIC, Reno, BBR**), откат при потере пакетов. Отличается от flow control (приёмник) — это забота о сети."
+        related: ["Чем TCP отличается от UDP?"]
+      - q: "Что такое keep-alive и зачем он нужен?"
+        keywords: [keep alive, keepalive, tcp keepalive, соединение]
+        a: "Два смысла. **TCP keepalive** — периодическая проверка, живо ли соединение (пустые пакеты), чтобы убить мёртвые сокеты. **HTTP keep-alive** — переиспользование TCP-соединения для многих запросов. Оба снижают накладные расходы."
+        related: ["Что такое HTTP/2?"]
+  - id: ip
+    name: Сетевые протоколы L2-L3
+    blocks:
+      - q: "Что такое ARP и зачем он нужен?"
+        keywords: [arp, mac адрес, ip, канальный уровень, arp cache]
+        a: "**ARP** переводит IP в **MAC-адрес** в пределах одной L2-сети (широковещательный запрос «кто имеет 192.168.1.5?»). Результаты кэшируются. Связанная атака — **ARP-spoofing**: подмена MAC, приводящая к MITM. `arp -a` — просмотр таблицы."
+        related: ["Чем MAC отличается от IP?"]
+      - q: "Что такое ICMP и зачем нужен ping?"
+        keywords: [icmp, ping, echo, traceroute, контрольные сообщения]
+        a: "**ICMP** — служебный протокол для диагностики и управления: **ping** (echo request/reply), ошибки (host unreachable, TTL exceeded — на этом построен **traceroute**), parameter problem. ICMP-трафик часто ограничивают, из-за чего ping может не работать, но TCP — работать."
+        related: ["Как traceroute определяет маршрут?"]
+      - q: "Что такое DHCP?"
+        keywords: [dhcp, динамическая адресация, lease, аренда]
+        a: "**DHCP** выдаёт клиентам IP, маску, шлюз и DNS автоматически (протокол DORA: Discover → Offer → Request → Ack). Адрес выдаётся **на время (lease)**, при переподключении продлевается. Альтернатива для серверов — статические адреса."
+        related: ["Что такое IP-адрес?"]
+      - q: "Как работает маршрутизация?"
+        keywords: [маршрутизация, routing, таблица, маршрут по умолчанию, hop]
+        a: "**Маршрутизация** — выбор следующего узла (hop) по **таблице маршрутов**: longest-prefix match (самая длинная маска выигрывает), иначе **default route** (0.0.0.0/0). Для L3-хоста достаточно default-маршрута на шлюз; для сложных сетей — динамические протоколы (OSPF, BGP)."
+        related: ["Что такое шлюз?"]
+      - q: "Чем коммутатор отличается от маршрутизатора?"
+        keywords: [коммутатор, switch, маршрутизатор, router, l2, l3]
+        a: "**Коммутатор (switch)** работает на **L2** — передаёт кадры по MAC между портами в пределах одной сети/VLAN, прозрачен для IP. **Маршрутизатор (router)** работает на **L3** — соединяет разные сети, принимает решения по IP и маршрутной таблице."
+        related: ["Что такое VLAN?"]
+  - id: dns
+    name: DNS
+    blocks:
+      - q: "Что такое DNS и как работает резолвинг?"
+        keywords: [dns, резолвинг, резолвер, a записи, cname, mx, ttl]
+        a: "**DNS** переводит имена в IP. Запрос идёт от приложения → **локальный resolver** → корневые серверы → серверы **TLD** → **авторитативный** сервер домена. Записи: **A/AAAA** (IP), **CNAME** (алиас), **MX** (почта), **TXT**, **NS**. Результаты **кэшируются** с учётом **TTL**."
+        related: ["В чём разница между A и CNAME?"]
+      - q: "Чем recursive resolver отличается от authoritative?"
+        keywords: [recursive, authoritative, резолвер, авторитативный, dns]
+        a: "**Recursive resolver** отвечает клиентам, сам ходит по цепочке серверов и кэширует ответы (уровень ISP/локальной сети). **Authoritative server** — источник правды для зоны (есть NS/A записи), отвечает только за свои имена. Кэш между ними даёт скорость и нагрузку."
+        related: ["Что такое TTL?"]
+      - q: "Что такое TTL в DNS?"
+        keywords: [ttl, время жизни, кэш, dns]
+        a: "**TTL** — время жизни записи в кэше резолверов, в секундах. Маленький TTL — быстрые обновления (важно при миграциях), но больше запросов; большой — меньше нагрузка, но медленное распространение изменений. Перед сменой IP **понижают TTL заранее**."
+        related: ["Что такое DNS?"]
+      - q: "Что такое DNSSEC?"
+        keywords: [dnssec, подпись, dns, безопасность, касперский]
+        a: "**DNSSEC** подписывает DNS-ответы криптографически, защищая от подмены (cache poisoning). Публикуются **DNSKEY/RRSIG/DS** записи; валидатор проверяет цепочку доверия до корневой зоны. Не шифрует, а именно заверяет подлинность."
+        related: ["Что такое DNS cache poisoning?"]
+  - id: http
+    name: HTTP / HTTPS
+    blocks:
+      - q: "Что такое HTTP и чем отличается от HTTPS?"
+        keywords: [http, https, tls, ssl, методы, статус коды, запрос]
+        a: "**HTTP** — протокол «запрос-ответ»: методы **GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS**, статусы **2xx** (успех), **3xx** (редиректы), **4xx** (ошибки клиента), **5xx** (ошибки сервера). **HTTPS = HTTP + TLS**: шифрование трафика, аутентификация сервера по сертификату, forward secrecy."
+        related: ["Чем отличается 401 от 403?", "Что входит в TLS-handshake?"]
+      - q: "Что такое HTTP keep-alive?"
+        keywords: [keep alive, постоянное соединение, http/2, мультиплексирование]
+        a: "**Keep-alive** переиспользует одно TCP-соединение для нескольких запросов — меньше overhead от handshake. **HTTP/2** добавляет мультиплексирование (несколько потоков по одному соединению) и сжатие заголовков."
+        related: ["Что такое HTTP/2?"]
+      - q: "Чем GET отличается от POST, что такое идемпотентность?"
+        keywords: [get, post, put, delete, идемпотентность, идемпотентный, методы]
+        a: "**GET** — чтение без побочных эффектов, кэшируется; **POST** — создание/действие, не идемпотентен; **PUT** — замена ресурса (идемпотентен), **DELETE** — удаление (идемпотентен), **PATCH** — частичное изменение. **Идемпотентность** — повторный запрос даёт тот же результат, критично для ретраев."
+        related: ["Что такое идемпотентность в API?"]
+      - q: "Чем отличается 401 от 403?"
+        keywords: ["401", "403", unauthorized, forbidden, статус коды, авторизация]
+        a: "**401 Unauthorized** — не аутентифицирован: нет/плохие креды, ответ обычно содержит **WWW-Authenticate** (нужен login). **403 Forbidden** — аутентифицирован, но **нет прав** на ресурс. 404 часто используют для скрытия существования ресурсов (безопасность)."
+        related: ["Что такое аутентификация и авторизация?"]
+      - q: "Что такое Cookie, сессии и почему не хранят секреты в них?"
+        keywords: [cookie, сессия, session, jwt, http-only, secure, samesite]
+        a: "**Cookie** — кусочек данных от сервера, хранится у клиента, шлётся с каждым запросом. **Сессия** — состояние на сервере, в cookie — только **session id**. Защита: **HttpOnly** (недоступен JS), **Secure** (только HTTPS), **SameSite** (защита от CSRF). Секреты хранят на сервере, не в cookie."
+        related: ["Что такое CSRF?"]
+      - q: "Что такое TLS-handshake?"
+        keywords: [tls handshake, рукопожатие, ssl, сертификат, шифрование, ecdhe]
+        a: "Клиент → **ClientHello** (версии, ciphers); сервер → **ServerHello** + **сертификат** (публичный ключ); клиент проверяет **цепочку доверия** (CA) и согласовывает ключи (часто **ECDHE** — forward secrecy); затем обмен Finished и симметричное шифрование. TLS 1.3 упростил до 1 RTT."
+        related: ["Что такое CA и цепочка доверия?"]
+      - q: "Чем HTTP/1.1 отличается от HTTP/2 и HTTP/3?"
+        keywords: [http/2, http/3, quic, мультиплексирование, разница]
+        a: "**HTTP/1.1** — одно соединение на запрос (keep-alive), head-of-line blocking. **HTTP/2** — бинарный, **мультиплексирование** и сжатие заголовков (HPACK), но HOL-блокировка осталась на TCP. **HTTP/3** — поверх **QUIC** (UDP): нет HOL на транспортном уровне, мгновенный reconnect, 0-RTT."
+        related: ["Что такое HTTP keep-alive?"]
+      - q: "Что такое WebSocket?"
+        keywords: [websocket, сокет, realtime, двусторонний, ws]
+        a: "**WebSocket** — двусторонний канал поверх одного TCP-соединения после HTTP-апгрейда (**Upgrade: websocket**), для realtime (чаты, биржи, игры). В отличие от HTTP «запрос-ответ», сервер может **пушить данные**. Протокол: ws://, шифрование — wss://."
+        related: ["Чем WebSocket отличается от HTTP?"]
+      - q: "Чем REST отличается от gRPC?"
+        keywords: [rest, grpc, protobuf, http/2, api, rpc]
+        a: "**REST** — ресурсы, методы HTTP, JSON/XML, легко кэшировать и дебажить. **gRPC** — RPC-фреймворк от Google: **protobuf** (бинарный, компактный), поверх **HTTP/2** (мультиплексирование), поддерживает стриминг в обе стороны. gRPC быстрее и строже по контракту, REST — универсальнее."
+        related: ["Что такое protobuf?"]
+  - id: infra
+    name: Сеть и балансировка
+    blocks:
+      - q: "Что такое NAT и для чего он нужен?"
+        keywords: [nat, snat, dnat, port forward, маскарадинг, трансляция]
+        a: "**NAT** транслирует адреса: частные ↔ публичные. **SNAT** — исходящий трафик (несколько машин на один публичный IP), **DNAT / port-forward** — входящий к внутренним сервисам. Решает дефицит IPv4 и скрывает внутреннюю топологию."
+        related: ["В чём отличие NAT от proxy?"]
+      - q: "Что такое load balancer и какие виды бывают?"
+        keywords: [load balancer, балансировка, haproxy, nginx, l4, l7, round robin]
+        a: "Распределяет трафик между серверами. **L4** — по IP/порту (быстро, без чтения контента, HAProxy/nginx в stream-режиме), **L7** — по HTTP (маршрутизация, терминирование TLS, кэш). Методы: **round-robin**, least-connections, по хэшу; обязательны **health checks**."
+        related: ["Что такое sticky sessions?"]
+      - q: "Что такое reverse proxy?"
+        keywords: [reverse proxy, обратный прокси, nginx, терминирование tls]
+        a: "**Reverse proxy** принимает внешние запросы и проксирует их на внутренние сервисы: скрывает топологию, терминирует **TLS**, делает кэширование, сжатие, ограничение и балансировку. Классика — **nginx**."
+        related: ["Чем reverse proxy отличается от forward proxy?"]
+      - q: "Расскажи про VLAN."
+        keywords: [vlan, сегментация, 802.1q, trunk, коммутатор]
+        a: "**VLAN** логически разделяет L2-сеть на изолированные домены вещания (broadcast domain). Теги **802.1Q** помечают кадры; **trunk** — порт коммутатора, передающий несколько VLAN с тегами. Используется для сегментации трафика и безопасности."
+        related: ["Чем VLAN отличается от подсети?"]
+      - q: "Что такое sticky sessions и когда они нужны?"
+        keywords: [sticky, липкие сессии, affinity, балансировка, сессия]
+        a: "**Sticky sessions** — «привязка» клиента к одному серверу (по cookie или хэшу IP), чтобы его сессия жила на одном бэкенде. Нужны для stateful-приложений без общего хранилища сессий. Минус — неравномерная нагрузка и отказоустойчивость; лучше хранить сессии в Redis."
+        related: ["Что такое load balancer?"]
+      - q: "Чем forward proxy отличается от reverse proxy?"
+        keywords: [forward proxy, reverse proxy, разница, клиент, сервер]
+        a: "**Forward proxy** стоит перед клиентом: от его имени ходит в интернет (анонимность, фильтрация, кэш, обход ограничений). **Reverse proxy** стоит перед серверами: принимает входящий трафик и распределяет его (балансировка, TLS, защита)."
+        related: ["Что такое reverse proxy?"]
+  - id: security
+    name: Безопасность сети
+    blocks:
+      - q: "Чем firewall отличается от IDS/IPS?"
+        keywords: [firewall, ids, ips, фильтрация, сенсор, сигнатуры]
+        a: "**Firewall** — превентивная **фильтрация** трафика по правилам (allow/deny по IP/порту/приложению). **IDS** — пассивно **обнаруживает** аномалии и сигнатуры атак (поднимает тревогу), **IPS** — то же, но **активно блокирует**. Вместе дают многоуровневую защиту."
+        related: ["Что такое iptables?"]
+      - q: "Что такое iptables/nftables?"
+        keywords: [iptables, nftables, nf_tables, chains, rules, nat]
+        a: "**iptables** — фильтрация через таблицы (filter, nat, mangle) и **цепочки** (INPUT, OUTPUT, FORWARD). Правило = условия + target (**ACCEPT/DROP/REJECT/LOG**). **nftables** — современная замена с единым синтаксисом и иерархией. Базовое правило: **default-deny** для входящих."
+        related: ["Чем DROP отличается от REJECT?"]
+      - q: "Чем DROP отличается от REJECT?"
+        keywords: [drop, reject, iptables, firewalld, отличие]
+        a: "**DROP** молча выбрасывает пакет — соединение «висит» до таймаута, сканеру сложнее понять, жив ли хост (минус — клиент долго ждёт). **REJECT** отвечает RST/ICMP — быстрая обратная связь клиенту, но раскрывает существование сервиса. Для «не пускать» чаще DROP."
+        related: ["Что такое iptables?"]
+      - q: "Что такое mTLS?"
+        keywords: [mtls, mutual tls, двусторонний, сертификат, клиентская]
+        a: "**mTLS** — взаимная аутентификация: **обе стороны** показывают сертификаты (сервер и клиент), доверие проверяется с двух сторон. Используется в сервисных сетках (**Istio, Linkerd**) и B2B-API для проверки «кто стучится». Это не «сильнее TLS», а другое назначение — аутентификация машин."
+        related: ["Что такое TLS-handshake?"]
+      - q: "Что такое CSRF и как защититься?"
+        keywords: [csrf, кросс-сайт, подделка запроса, сандбокс, sameorigin]
+        a: "**CSRF** — атака: злонамеренный сайт отправляет запросы от имени уже авторизованного пользователя (cookie шлются автоматически). Защита: **SameSite=Strict/Lax**, токены CSRF в формах, проверка **Origin/Referer**. Механизм — abuse доверия браузера к cookie."
+        related: ["Что такое Cookie?"]
+  - id: reverse_proxy
+    name: Реверс-прокси и балансировщики
+    blocks:
+      - q: "Как настроить upstream и балансировку в Nginx?"
+        keywords: [nginx, апстрим, upstream, балансировка, round robin, least conn, ip hash, weight, health check]
+        a: "**Nginx upstream**: `upstream backend { server backend1:8080 weight=3; server backend2:8080; }`. Алгоритмы: **round-robin** (по умолчанию), **least_conn** (меньше активных), **ip_hash** (sticky по IP), **random**. **Weight** — пропорциональное распределение. **Health check**: `max_fails=3 fail_timeout=30s` — Nginx уберёт сервер из rotation при 3 ошибках за 30с. **pass_header / proxy_set_header** — добавляет X-Forwarded-For, Host. **keepalive** в upstream — переиспользование соединений к бэкенду (уменьшает latency). **Backup**: `server backup3:8080 backup` — только когда все основные упали."
+        related: ["Как работает rate limiting в Nginx?", "Чем HAProxy отличается от Nginx?"]
+      - q: "Как настроить rate limiting в Nginx?"
+        keywords: [nginx, rate limit, leaky bucket, limit_req, nodelay, burst, zone]
+        a: "`limit_req_zone $binary_remote_addr zone=mylimit:10m rate=10r/s` — 10 запросов/сек по IP. В `location`: `limit_req zone=mylimit burst=20 nodelay` — burst=20 (очередь), nodelay (немедленно, но не больше очереди). **Leaky bucket**: излишки уходят в очередь, потом 503. **zone** — shared memory (10MB ≈ 160K IP). **Каскад**: разные limits для разных location (`/api` — жёстче, `/static` — мягче). **Подводный камень**: за NAT один IP → лимит на весь офис. Решение: комбинировать с JWT (rate per user). **map** — кастомные ключи (limit по role, не IP)."
+        related: ["Что такое leaky bucket?", "Как работает Nginx upstream?"]
+      - q: "Чем HAProxy отличается от Nginx для балансировки?"
+        keywords: [haproxy, хапрокси, nginx, сравнение, l4, l7, health check, acl, статистика]
+        a: "**HAProxy**: специализированный **load balancer** — мощный L4/L7, богатые ACL (routing по заголовкам/путям/SNI), детальные health checks (expect string, httpchk), встроенный stats UI (`stats uri /haproxy?stats`), соединения до 100K+. **Nginx**: web-server + reverse proxy + LB. Универсальный, но LB-функции проще (less granular health checks, нет built-in stats). **Выбор**: HAProxy — production LB-узел (L4 VIP, high-throughput L7), Nginx — когда нужен и web-server, и LB в одном (кэш, static files, SSL termination). **Комбинация**: HAProxy (L4/L7 LB) → Nginx (reverse proxy + static) → app."
+        related: ["Как настроить HAProxy?", "Что такое ACL в HAProxy?"]
+      - q: "Что такое Envoy proxy и когда его использовать?"
+        keywords: [envoy, анвой, sidecar, istio data plane, xds, filter chain, l7 proxy]
+        a: "**Envoy** — L7 proxy от Lyft (CNCF). Фишки: **xDS API** (динамическая конфигурация без reload — control plane пушит конфиг), **filter chain** (цепочка фильтров: auth, rate limit, RBAC, WASM), **observability** (metric/stats на каждый cluster/route), **outlier detection** (circuit breaker). **Где**: sidecar в **Istio** (data plane), **Ambassador** (API GW), standalone edge proxy. **vs Nginx**: Envoy — динамический (API-driven), Nginx — статический (config file + reload). Envoy мощнее для mesh/gateway, Nginx — проще для classic reverse proxy."
+        related: ["Что такое Istio?", "Что такое xDS?"]
+      - q: "Как настроить TLS termination в Nginx/HAProxy?"
+        keywords: [tls termination, ssl offloading, сертификат, ocsp stapling, session cache, http2]
+        a: "**TLS termination** — LB/прокси расшифровывает TLS, к бэкенду — plain HTTP. Nginx: `listen 443 ssl; ssl_certificate /path/fullchain.pem; ssl_certificate_key /path/privkey.pem;`. **Оптимизация**: `ssl_protocols TLSv1.2 TLSv1.3; ssl_ciphers HIGH:!aNULL:!MD5; ssl_session_cache shared:SSL:10m; ssl_session_timeout 10m;` — reuse sessions. **OCSP stapling**: `ssl_stapling on` — сервер прикладывает OCSP-ответ (клиенту не нужно проверять). **HTTP/2**: `listen 443 ssl http2;`. **HSTS**: `add_header Strict-Transport-Security \"max-age=31536000\"`. **Backend over TLS**: `proxy_pass https://backend` + `proxy_ssl_verify on`."
+        related: ["Что такое OCSP stapling?", "Как настроить HTTPS в Nginx?"]
+      - q: "Что такое connection draining (graceful shutdown)?"
+        keywords: [connection draining, graceful shutdown, zero downtime, drain, SIGQUIT, in flight requests]
+        a: "**Connection draining** — аккуратное завершение: старый процесс/под перестаёт принимать **новые** соединения, но дорабатывает **текущие** (in-flight). **Nginx**: `worker_shutdown_timeout` + SIGQUIT (graceful). **HAProxy**: ` draining` состояние (сервер помечен, новые connection не идут, старые dorабатывают). **K8s**: `preStop` hook + `terminationGracePeriodSeconds` — под получает SIGTERM → app перестаёт принимать → дорабатывает → SIGKILL через grace period. **LB health check**: при SIGTERM под начинает fail health check → LB убирает из rotation → in-flight дорабатывают. **Без draining**: LB посылает запрос → под уже убит → 502."
+        related: ["Как обеспечить zero-downtime деплой?", "Что такое preStop hook?"]

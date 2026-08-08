@@ -1,0 +1,68 @@
+topic: service_mesh
+title: Service Mesh — всё по теме
+keywords: [service mesh, istio, linkerd, consul connect, mtls, sidecar, envoy, traffic management, circuit breaker, canary, zero trust]
+sections:
+  - id: fundamentals
+    name: Основы Service Mesh
+    blocks:
+      - q: "Что такое Service Mesh и зачем он нужен?"
+        keywords: [service mesh, истмо, сайдкар, sidecar, traffic management, observability, security, микросервисы]
+        a: "**Service Mesh** — инфраструктурный слой для управления межсервисным взаимодействием в микросервисах. Решает: **traffic management** (routing, retries, timeout, canary), **security** (mTLS, авторизация), **observability** (метрики, трейсы, логи). Реализация: **sidecar proxy** (Envoy) рядом с каждым подом — перехватывает весь трафик. **Control plane** (Istiod) управляет конфигурацией sidecar'ов; **data plane** (sidecar) выполняет правила. Альтернатива без sidecar — **Cilium Service Mesh** (eBPF, ядро). Нужен когда: много сервисов (>20), сложные правила трафика, требуется zero-trust security."
+        related: ["Чем Istio отличается от Linkerd?", "Что такое sidecar proxy?"]
+      - q: "Чем Istio отличается от Linkerd?"
+        keywords: [istio, linkerd, сравнение, envoy, rust, performance, complexity, features]
+        a: "**Istio**: control plane — Istiod (Pilot + Citadel + Galley), data plane — **Envoy** (C++). Богатый функционал: virtual services, destination rules, gateways, telemetry, RBAC, SPIFFE. Сложный в настройке (много CRD), тяжелый (ресурсы control plane). **Linkerd**: control plane — Rust, data plane — **Linkerd2-proxy** (Rust, легкий). Проще в установке и эксплуатации, меньше overhead, но меньше фич. **Выбор**: Istio — для сложных enterprise-сценариев (mTLS + canary + circuit breaker + RBAC); Linkerd — для простого L7-маршрутизации и mTLS с минимальным overhead."
+        related: ["Что такое Envoy?", "Какой overhead даёт sidecar?"]
+      - q: "Что такое sidecar proxy и как он работает?"
+        keywords: [sidecar, сайдкар, envoy, перехват трафика, iptables, transparent proxy, pod injection]
+        a: "**Sidecar proxy** — контейнер в том же поде, что и приложение, перехватывающий весь входящий и исходящий трафик. **Istio** использует **Envoy**, **Linkerd** — собственный Rust-proxy. Перехват через **iptables** (transparent proxy): трафик перенаправляется на sidecar до приложения. **Внедрение**: automatic injection (namespace label `istio-injection=enabled` → mutating webhook добавляет sidecar при создании пода). Плюсы: приложение не знает о mesh (transparent). Минусы: +1 контейнер на под (ресурсы, задержка ~1-2мс на hop), сложность отладки."
+        related: ["Что такое Envoy?", "Как Istio внедряет sidecar в под?"]
+  - id: security
+    name: Безопасность в Service Mesh
+    blocks:
+      - q: "Что такое mTLS в Service Mesh?"
+        keywords: [mtls, mutual tls, zero trust, шифрование, сертификаты, spiffe, spire, identity]
+        a: "**mTLS (mutual TLS)** — двустороннее TLS-шифрование: обе стороны (клиент и сервер) аутентифицируют друг друга сертификатами. В Service Mesh — **автоматически** между всеми подами. **SPIFFE** (Secure Production Identity Framework for Everyone) — стандарт идентификации: каждый под получает **SPIFFE ID** (`spiffe://cluster.local/ns/default/sa/my-sa`). Сертификаты выпускаются и **ротируются автоматически** (короткий TTL, обычно 24ч). **Authorization** — RBAC/AuthorizationPolicy: разрешить/запретить трафик между сервисами по идентичности. **Zero Trust**: нет неявного доверия внутри сети — всё зашифровано и авторизовано."
+        related: ["Что такое Zero Trust?", "Как работает ротация сертификатов в Istio?"]
+      - q: "Что такое Zero Trust и как Service Mesh его реализует?"
+        keywords: [zero trust, нулевое доверие, beyondcorp, trust boundary, identity based, network segmentation]
+        a: "**Zero Trust** — модель безопасности без неявного доверия (в отличие от традиционного castle-and-moat, где внутренняя сеть «свободна»). Принципы: (1) **Identity-based access** — каждый запрос аутентифицируется и авторизуется, (2) **Least privilege** — минимальные права, (3) **Continuous verification** — регулярные проверки. **Service Mesh** реализует Zero Trust: mTLS (шифрование + идентификация), AuthorizationPolicy (доступ по принципу least-privilege), deny-by-default (ничего не разрешено пока явно не разрешено). Сетевая сегментация (NetworkPolicy) — дополнение на L3/L4."
+        related: ["Что такое mTLS?", "Как настроить AuthorizationPolicy в Istio?"]
+      - q: "Как настроить authorization policy в Istio?"
+        keywords: [authorizationpolicy, rbac, deny allow, principal, source, operation, istio security]
+        a: "**AuthorizationPolicy** — CRD Istio для контроля доступа между сервисами. Структура: `selector` (на какие поды действует), `rules` (условия: `from` — кто, `to` — куда, `when` — условия). Пример: разрешить только сервису `frontend` обращаться к `backend` по `/api/*`. **Deny-by-default**: если есть хоть одна политика — всё остальное запрещено. **ALLOW** и **DENY** действия. Принцип: `source.principals` (SPIFFE ID), `operation.hosts`/`methods`/`paths`, `when` (key-value условия). **Подводный камень**: слишком гранулярные политики → сложность поддержки."
+        related: ["Что такое SPIFFE?", "Как работает mTLS в Istio?"]
+  - id: traffic
+    name: Управление трафиком
+    blocks:
+      - q: "Как Service Mesh реализует canary deployment?"
+        keywords: [canary, канарейка, traffic splitting, virtual service, destination rule, weighted routing, rollout]
+        a: "**Canary через Istio**: `VirtualService` с `weight` — направляет % трафика на разные версии. Например: 90% → `v1`, 10% → `v2`. Переключение — изменение weight в манифесте (или через Argo Rollouts автоматически по метрикам). **Преимущество** над Kubernetes-native canary: Istio управляет **L7 traffic** (HTTP headers, cookies) — точнее, чем replicas ratio (Deployment replicas). **Retry/timeout** — задаются в `VirtualService` (per-route). **Circuit breaker** — в `DestinationRule` (connection pools, outlier detection)."
+        related: ["Что такое circuit breaker?", "Как настроить weighted routing?"]
+      - q: "Что такое circuit breaker в Service Mesh?"
+        keywords: [circuit breaker, предохранитель, outlier detection, connection pool, trip, half open, closed]
+        a: "**Circuit breaker** в Istio: `DestinationRule` → `trafficPolicy.outlierDetection`. Если под начинает возвращать ошибки (5xx) или таймауты — Istio **исключает** его из балансировки на время (`consecutive5xxErrors` → `baseEjectionTime`). Когда время проходит — под возвращается (half-open). Параметры: `consecutive5xxErrors` (порог ошибок), `interval` (частота проверок), `baseEjectionTime` (длительность исключения), `maxEjectionPercent` (какую часть endpoint'ов можно исключить). Дополнительно: `connectionPool` (tcp/http — max connections, pending requests). **Преимущество**: предотвращает cascade failure."
+        related: ["Что такое outlier detection?", "Как предотвратить cascading failure?"]
+      - q: "Как настроить retries и timeouts в Istio?"
+        keywords: [retries, ретраи, timeout, VirtualService, attempts, perTryTimeout, retryOn]
+        a: "**VirtualService** → `http.retryPolicy`: `attempts` (количество попыток), `perTryTimeout` (лимит на попытку), `retryOn` (условия retry — `5xx,reset,connect-failure,refused-stream`). **Timeout** → `http.timeout` (общий на запрос). Пример: `attempts: 3, perTryTimeout: 2s, retryOn: 5xx` + `timeout: 10s`. **Подводный камень**: retry на POST/PUT без идемпотентности → дубликаты (используйте идемпотентные ключи). Слишком много attempts → cascade load. **Best practice**: retry только для GET и идемпотентных операций, timeout > чем upstream timeout."
+        related: ["Что такое circuit breaker?", "Как предотвратить thundering herd?"]
+      - q: "Что такое outlier detection в Istio?"
+        keywords: [outlier detection, обнаружение выбросов, unhealthy, eviction, consecutive errors, health check]
+        a: "**Outlier detection** — механизм circuit breaker в Istio: автоматически исключает нездоровые endpoint'ы (поды) из балансировки. Триггеры: `consecutive5xxErrors` (N подряд ошибок 5xx), `consecutiveGatewayErrors` (502/503/504). Исключённый под возвращается через `baseEjectionTime` (обычно 30с). **Отличие от K8s probes**: K8s liveness перезапускает под, Istio outlier — просто убирает из LB (быстрее, без простоя). Параметры: `minHealthPercent` — если здоровых эндпоинтов меньше порога, ejection отключается (чтобы не остаться без бэкендов)."
+        related: ["Что такое circuit breaker?", "Как работает балансировка в Istio?"]
+  - id: observability
+    name: Observability через Service Mesh
+    blocks:
+      - q: "Как Service Mesh помогает с distributed tracing?"
+        keywords: [distributed tracing, distributed, трейсы, jaeger, zipkin, opentelemetry, otel, span, trace context]
+        a: "Sidecar proxy (Envoy) **автоматически** генерирует trace spans для каждого hop. **Trace context propagation** — Envoy добавляет заголовки (`traceparent` для W3C, `x-b3-traceid` для B3) и пробрасывает их. **Сбор**: Envoy отправляет spans в Jaeger/Zipkin/OTLP collector. **Без mesh**: трейсинг требует ручной инструментации в каждом сервисе (HTTP client libs). **С mesh**: прозрачный трейсинг — даже legacy-приложения без инструментации получают spans. **Готовые дашборды**: Kiali (service graph — карта взаимодействий сервисов из метрик/трейсов), Jaeger UI (timeline)."
+        related: ["Что такое Kiali?", "Как настроить трейсинг в Istio?"]
+      - q: "Что такое Kiali и как оно работает с Istio?"
+        keywords: [kiali, киали, service graph, topology, visualization, istio observability]
+        a: "**Kiali** — UI для визуализации Service Mesh (в первую очередь Istio). Показывает **граф сервисов** (service topology) — кто к кому обращается, latency, error rates, traffic volume. Источник данных — метрики Envoy (через Prometheus). Возможности: визуальный редактор VirtualService/DestinationRule, health indicators (зелёный/жёлтый/красный), trace integration (прыжок в Jaeger), traffic animation. **Сценарий**: «почему сервис A не достучаться до B?» → смотришь Kiali graph → видишь mTLS mismatch или 503. Поставляется в составе Istio addon'ов."
+        related: ["Как настроить observability в Istio?", "Что такое distributed tracing?"]
+      - q: "Какой overhead даёт Service Mesh (sidecar)?"
+        keywords: [overhead, накладные расходы, latency, memory, cpu, sidecar, benchmark, performance]
+        a: "**Latency**: +1-2мс на hop (Envoy sidecar) для L7, +0.5мс для L4. Для большинства приложений незаметно, но в high-frequency trading критично. **CPU/Memory**: Envoy sidecar ~50-100MB RAM + 0.1-0.5 CPU на под. Для 100 подов — +5-10GB RAM + 10-50 CPU. **Linkerd2-proxy** (Rust) — в 2-3 раза легче Envoy. **Alternatives**: sidecarless mesh (Cilium + eBPF — overhead в ядре, без per-pod proxy), Ambient Mesh (Istio Ambient — ztunnel L4 + waypoint L7 по запросу). **Рекомендация**: benchmark на своей нагрузке; для latency-critical —考虑 eBPF/ambient."
+        related: ["Что такое Ambient Mesh?", "Чем Linkerd легче Istio?"]

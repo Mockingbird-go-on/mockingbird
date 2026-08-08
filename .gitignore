@@ -1,0 +1,43 @@
+# ─── Python ──────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+.pytest_cache/
+
+# ─── Окружение и секреты ─────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ─── IDE / редакторы ────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ─── Данные и логи ───────────────────────────────────────
+*.db
+*.db-wal
+*.db-shm
+logs/
+
+# ─── Инструкции агентам / AI-ассистентам ────────────────
+AGENTS.md
+.opencode/
+.copilot/
+
+# ─── Рабочие планы и черновики (dev-only) ───────────────
+HIDE_FROM_CAPTURE_PLAN.md
+RAG_DEVOPS_FIX_PLAN.md
+REMOVE_SELF_HIGHLIGHT_PLAN.md
+SIMPLE_MODE_PLAN.md
+STABILITY_PLAN.md
+*_PLAN.md
+
+# ─── Прочее ─────────────────────────────────────────────
+.cache/

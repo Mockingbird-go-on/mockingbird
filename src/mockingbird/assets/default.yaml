@@ -1,0 +1,84 @@
+audio:
+  sample_rate: 16000
+  channels: 1
+  block_ms: 100
+  device: null
+  mode: mic
+  loopback_device: null
+vad:
+  threshold: 0.5
+  min_speech_ms: 250
+  min_silence_ms: 1000
+  stop_hint_delay_ms: 240
+  model_path: null
+stt:
+  backend: gigaam
+  end_ahead: true
+  mic_backend: whisper
+  mic_model_size: base
+  mic_device: cpu
+  mic_compute_type: int8
+gigaam:
+  model_id: ai-sage/GigaAM-v3
+  revision: e2e_rnnt
+  device: auto
+  model_dir: null
+  window_seconds: 3.5
+  partial_interval_ms: 250
+whisper:
+  model_size: small
+  device: auto
+  compute_type: int8
+  beam_size: 1
+  final_beam_size: 1
+  language: null
+  window_seconds: 3.5
+  partial_interval_ms: 250
+  model_dir: null
+llm:
+  base_url: null
+  api_key: null
+  model: gpt-4o-mini
+  timeout_s: 20.0
+terms:
+  explanation_language: ru
+  llm_fallback: true
+  llm_primary: true
+  context_segments: 8
+  cache_ttl_days: 30
+  max_terms_per_segment: 5
+  glossary_path: null
+topics:
+  enabled: false
+  llm_primary: true
+  debounce_s: 3.0
+  max_topics: 8
+  max_questions_per_topic: 4
+interview:
+  enabled: true
+  kb_path: null
+  min_match_score: 0.25
+  max_blocks: 6
+  use_partials: true
+  partial_stability_rounds: 2
+  highlight: true
+  cooldown_s: 20.0
+  subject_llm: true
+  answer_llm: true
+  predict_llm: true
+  predict_cooldown_s: 20.0
+  max_next: 5
+  context_tracker_llm: true
+  context_refresh_s: 5.0
+  context_window_segments: 10
+  llm_primary: true
+  answer_cooldown_s: 7.0
+  answer_stream: true
+  answer_cache: true
+  answer_restart_min_similarity: 0.5
+window:
+  width: 1440
+  height: 900
+storage:
+  db_path: null
+  log_dir: null

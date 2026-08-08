@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  PYTHON_DIR: C:\Users\Happy\AppData\Local\Programs\Python\Python312
+
+jobs:
+  # ── Job 1: Unit tests on Ubuntu ──
+  test:
+    runs-on: ubuntu-latest
+
+    env:
+      QT_QPA_PLATFORM: offscreen
+      MOCKINGBIRD_HOME: /tmp/mockingbird-test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install system dependencies for Qt
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libxcb-xinerama0 libxcb-cursor0 libxcb-icccm4 \
+            libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
+            libxcb-render-util0 libxcb-shape0 libxcb-xkb1 \
+            libxkbcommon-x11-0 libegl1 libgl1
+
+      - name: Install Python dependencies
+        run: |
+          pip install --quiet PySide6 numpy pydantic PyYAML python-dotenv httpx
+          pip install --quiet pytest pytest-asyncio pypdf onnxruntime huggingface_hub
+          pip install --quiet -e . --no-deps
+
+      - name: Run tests
+        run: |
+          mkdir -p /tmp/mockingbird-test
+          pytest tests/ -q \
+            --ignore=tests/test_whisper_engine.py \
+            --ignore=tests/test_whisper_model.py \
+            --deselect=tests/test_model_integrity.py::test_problem_missing_bin
+
+  # ── Job 2: Build .exe on self-hosted Windows runner ──
+  build-windows:
+    needs: test
+    runs-on: self-hosted
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sync project to build directory
+        shell: cmd
+        run: |
+          set "PYTHON_DIR=C:\Users\Happy\AppData\Local\Programs\Python\Python312"
+          robocopy "${{ github.workspace }}\src" "E:\mockingbird\src" /MIR /XD __pycache__ .pytest_cache /NJH /NJS
+          robocopy "${{ github.workspace }}\scripts" "E:\mockingbird\scripts" /MIR /NJH /NJS
+          robocopy "${{ github.workspace }}\tests" "E:\mockingbird\tests" /MIR /XD __pycache__ /NJH /NJS
+          robocopy "${{ github.workspace }}\vendor" "E:\mockingbird\vendor" /MIR /NJH /NJS
+          copy /Y "${{ github.workspace }}\pyproject.toml" "E:\mockingbird\pyproject.toml"
+          exit /b 0
+
+      - name: Build .exe (PyInstaller)
+        shell: cmd
+        run: |
+          set "PATH=C:\Users\Happy\AppData\Local\Programs\Python\Python312;C:\Users\Happy\AppData\Local\Programs\Python\Python312\Scripts;%PATH%"
+          cd /d E:\mockingbird
+          powershell.exe -ExecutionPolicy Bypass -File scripts\build_windows.ps1
+
+      - name: Smoke test
+        shell: cmd
+        run: |
+          set "PATH=C:\Users\Happy\AppData\Local\Programs\Python\Python312;C:\Users\Happy\AppData\Local\Programs\Python\Python312\Scripts;%PATH%"
+          E:\mockingbird\dist\mockingbird\mockingbird-cli.exe --cli < NUL
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mockingbird-windows-exe
+          path: E:\mockingbird\dist\mockingbird\
+          retention-days: 30
