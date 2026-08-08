@@ -58,6 +58,8 @@ jobs:
       - name: Sync project to build directory
         shell: powershell
         run: |
+          # Add Python to PATH for the runner's service account
+          $env:PATH = "C:\Users\Happy\AppData\Local\Programs\Python\Python312;C:\Users\Happy\AppData\Local\Programs\Python\Python312\Scripts;" + $env:PATH
           $src = "${{ github.workspace }}"
           $dst = "E:\mockingbird"
           # Mirror the project — robocopy /MIR deletes files in dst not in src
@@ -72,12 +74,14 @@ jobs:
       - name: Build .exe (PyInstaller)
         shell: powershell
         run: |
+          $env:PATH = "C:\Users\Happy\AppData\Local\Programs\Python\Python312;C:\Users\Happy\AppData\Local\Programs\Python\Python312\Scripts;" + $env:PATH
           cd E:\mockingbird
           powershell.exe -ExecutionPolicy Bypass -File scripts\build_windows.ps1
 
       - name: Smoke test
         shell: powershell
         run: |
+          $env:PATH = "C:\Users\Happy\AppData\Local\Programs\Python\Python312;C:\Users\Happy\AppData\Local\Programs\Python\Python312\Scripts;" + $env:PATH
           $exe = "E:\mockingbird\dist\mockingbird\mockingbird-cli.exe"
           if (Test-Path $exe) {
             "что такое helm`nexit" | & $exe --cli
