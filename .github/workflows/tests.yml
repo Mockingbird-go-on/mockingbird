@@ -1,0 +1,46 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    env:
+      QT_QPA_PLATFORM: offscreen
+      MOCKINGBIRD_HOME: /tmp/mockingbird-test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install system dependencies for Qt
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libxcb-xinerama0 libxcb-cursor0 libxcb-icccm4 \
+            libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
+            libxcb-render-util0 libxcb-shape0 libxcb-xkb1 \
+            libxkbcommon-x11-0 libegl1 libgl1
+
+      - name: Install Python dependencies
+        run: |
+          pip install --quiet PySide6 numpy pydantic PyYAML python-dotenv httpx
+          pip install --quiet pytest pytest-asyncio pypdf onnxruntime huggingface_hub
+          pip install --quiet -e . --no-deps
+
+      - name: Run tests
+        run: |
+          mkdir -p /tmp/mockingbird-test
+          pytest tests/ -q \
+            --ignore=tests/test_whisper_engine.py \
+            --ignore=tests/test_whisper_model.py \
+            --deselect=tests/test_model_integrity.py::test_problem_missing_bin
