@@ -34,15 +34,20 @@ class Profile:
     source_path: Path | None = field(default=None, repr=False)
 
 
+@dataclass
+class BrokenProfile:
+    """A user YAML that failed validation — shown in the editor with its error."""
+
+    path: Path
+    error: str
+
+
 def _parse_profile(data: dict, *, user_defined: bool, source_path: Path | None) -> Profile | None:
     try:
         missing = [f for f in REQUIRED_FIELDS if not str(data.get(f) or "").strip()]
         if missing:
             raise ValueError(f"missing fields: {', '.join(missing)}")
         pid = str(data["id"]).strip()
-        if user_defined and pid in BUNDLED_LOCKED_IDS:
-            # user file may override bundled ids EXCEPT reserved ones below
-            pass
         return Profile(
             id=pid,
             title=str(data["title"]).strip(),
@@ -57,10 +62,6 @@ def _parse_profile(data: dict, *, user_defined: bool, source_path: Path | None) 
     except Exception as exc:  # noqa: BLE001
         log.warning("profiles: skipped invalid profile %s: %s", source_path or "?", exc)
         return None
-
-
-# Bundled ids that user profiles may not shadow (they map to tuned glossaries).
-BUNDLED_LOCKED_IDS: frozenset[str] = frozenset({"devops"})
 
 
 def profiles_dir() -> Path:
@@ -98,6 +99,31 @@ def load_profiles() -> dict[str, Profile]:
                 if prof is not None:
                     result[prof.id] = prof
     return result
+
+
+def load_broken_profiles() -> list[BrokenProfile]:
+    """User YAML files that failed validation, with the reason.
+
+    Lets the editor surface them (fix or delete) instead of silently
+    disappearing from the list.
+    """
+    broken: list[BrokenProfile] = []
+    user_dir = profiles_dir()
+    if not user_dir.is_dir():
+        return broken
+    for path in sorted(user_dir.glob("*.y*ml")):
+        try:
+            data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except Exception as exc:  # noqa: BLE001
+            broken.append(BrokenProfile(path=path, error=f"YAML: {exc}"))
+            continue
+        if not isinstance(data, dict):
+            broken.append(BrokenProfile(path=path, error="не является YAML-словарём"))
+            continue
+        missing = [f for f in REQUIRED_FIELDS if not str(data.get(f) or "").strip()]
+        if missing:
+            broken.append(BrokenProfile(path=path, error=f"нет полей: {', '.join(missing)}"))
+    return broken
 
 
 def get_profile(profile_id: str | None) -> Profile:

@@ -172,11 +172,15 @@ def test_new_profile_id_collision_blocked(driver, user_profiles):
         Profile(id="dup", title="Dup", persona="p", persona_senior="ps", stack="s")
     )
     drv = driver()
+    drv.select("dup")
+    prev_row = drv.d._list.currentRow()
     drv.dialog_answers = ["dup"]
     drv.d._on_new()
     assert any("уже существует" in m for m in drv.message_boxes)
-    # still exactly one dup profile, selection unchanged from it
-    assert drv.selected_id() != "dup" or True
+    # no duplicate was created and the selection did not jump to a new profile
+    assert "dup" in loader.load_profiles()
+    assert len([p for p in loader.load_profiles() if p == "dup"]) == 1
+    assert drv.d._list.currentRow() == prev_row
 
 
 def test_new_profile_id_normalized(driver, user_profiles):
@@ -334,3 +338,116 @@ def test_user_profiles_sort_before_bundled(driver, user_profiles):
     drv = driver()
     ids = [drv.d._list.item(i).data(0x0100) for i in range(drv.d._list.count())]
     assert ids.index("aardvark") < ids.index("devops")
+
+
+# --- broken profile visibility -------------------------------------------------
+
+
+def _make_broken(user_profiles, name="broken", content=None):
+    (user_profiles / f"{name}.yaml").write_text(
+        content or "id: broken\ntitle: B\n", encoding="utf-8"
+    )
+
+
+def test_broken_profile_listed_with_error_marker(driver, user_profiles):
+    _make_broken(user_profiles)
+    drv = driver()
+    labels = [drv.d._list.item(i).text() for i in range(drv.d._list.count())]
+    assert any("⚠" in l and "нет полей" in l for l in labels)
+
+
+def test_broken_profile_selection_shows_error_fields_locked(driver, user_profiles):
+    _make_broken(user_profiles)
+    drv = driver()
+    drv.select("broken")
+    assert not drv.d._title.isEnabled()
+    assert not drv.d._btn_save.isEnabled()
+    assert "Ошибка" in drv.d._persona_senior.toPlainText()
+    # deletion is offered for broken files
+    assert drv.d._btn_delete.isEnabled()
+
+
+def test_broken_profile_delete_removes_file(driver, user_profiles):
+    _make_broken(user_profiles)
+    drv = driver()
+    drv.select("broken")
+    drv.question_answers = [True]
+    drv.d._on_delete()
+    assert not (user_profiles / "broken.yaml").exists()
+    labels = [drv.d._list.item(i).text() for i in range(drv.d._list.count())]
+    assert not any("broken" in l for l in labels)
+
+
+def test_broken_profile_delete_declined(driver, user_profiles):
+    _make_broken(user_profiles)
+    drv = driver()
+    drv.select("broken")
+    drv.question_answers = [False]
+    drv.d._on_delete()
+    assert (user_profiles / "broken.yaml").exists()
+
+
+def test_broken_yaml_syntax_listed(driver, user_profiles):
+    _make_broken(user_profiles, name="badsyntax", content="id: [unclosed")
+    drv = driver()
+    labels = [drv.d._list.item(i).text() for i in range(drv.d._list.count())]
+    assert any("badsyntax" in l and "⚠" in l for l in labels)
+
+
+# --- glossary validation -------------------------------------------------------
+
+
+def test_pick_glossary_rejects_bad_yaml(driver, user_profiles, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QFileDialog
+
+    bad = tmp_path / "bad.yaml"
+    bad.write_text("entries: [unclosed", encoding="utf-8")
+    monkeypatch.setattr(
+        QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: (str(bad), ""))
+    )
+    drv = driver()
+    drv.d._glossary.setText("")
+    drv.d._pick_glossary()
+    assert drv.d._glossary.text() == ""
+    assert any("YAML" in m for m in drv.message_boxes)
+
+
+def test_pick_glossary_rejects_non_dict(driver, user_profiles, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QFileDialog
+
+    bad = tmp_path / "list.yaml"
+    bad.write_text("- a\n- b\n", encoding="utf-8")
+    monkeypatch.setattr(
+        QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: (str(bad), ""))
+    )
+    drv = driver()
+    drv.d._glossary.setText("")
+    drv.d._pick_glossary()
+    assert drv.d._glossary.text() == ""
+
+
+def test_pick_glossary_accepts_valid(driver, user_profiles, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QFileDialog
+
+    good = tmp_path / "good.yaml"
+    good.write_text("entries: []\n", encoding="utf-8")
+    monkeypatch.setattr(
+        QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: (str(good), ""))
+    )
+    drv = driver()
+    drv.d._pick_glossary()
+    assert drv.d._glossary.text() == str(good)
+
+
+def test_save_validates_handtyped_glossary_path(driver, user_profiles, tmp_path):
+    bad = tmp_path / "broken-gloss.yaml"
+    bad.write_text("a: [x", encoding="utf-8")
+    drv = driver()
+    drv.dialog_answers = ["gl2"]
+    drv.d._on_new()
+    drv.d._stack.setPlainText("s")
+    drv.d._glossary.setText(str(bad))
+    drv.d._on_save()
+    assert any("YAML" in m for m in drv.message_boxes)
+    # invalid glossary not persisted
+    assert loader.load_profiles()["gl2"].glossary != str(bad)

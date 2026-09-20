@@ -25,8 +25,10 @@ from PySide6.QtWidgets import (
 )
 
 from mockingbird.profiles.loader import (
+    BrokenProfile,
     Profile,
     delete_profile,
+    load_broken_profiles,
     load_profiles,
     profiles_dir,
     save_profile,
@@ -68,6 +70,7 @@ class ProfilesDialog(QDialog):
         self._btn_close.clicked.connect(self.accept)
 
         self._list.currentItemChanged.connect(self._on_select)
+        self._broken: dict[str, BrokenProfile] = {}
         self._reload()
 
         # left: list + actions; right: form
@@ -120,12 +123,18 @@ class ProfilesDialog(QDialog):
 
     def _reload(self, select_id: str | None = None) -> None:
         profiles = load_profiles()
+        self._broken = {str(b.path.stem): b for b in load_broken_profiles()}
         self._list.clear()
         ids = sorted(profiles, key=lambda i: (not profiles[i].user_defined, profiles[i].title))
         for pid in ids:
             prof = profiles[pid]
             label = prof.title + ("" if prof.user_defined else " 🔒")
             item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, pid)
+            self._list.addItem(item)
+        # invalid user YAMLs — visible so the user can fix or delete them
+        for pid in sorted(self._broken):
+            item = QListWidgetItem(f"⚠ {pid} — ошибка: {self._broken[pid].error}")
             item.setData(Qt.ItemDataRole.UserRole, pid)
             self._list.addItem(item)
         target = select_id or self.current_id
@@ -140,12 +149,23 @@ class ProfilesDialog(QDialog):
         item = self._list.currentItem()
         if item is None:
             return None
+        pid = item.data(Qt.ItemDataRole.UserRole)
+        if pid in self._broken:
+            return None
         profiles = load_profiles()
-        return profiles.get(item.data(Qt.ItemDataRole.UserRole))
+        return profiles.get(pid)
 
     # --- slots ---
 
     def _on_select(self, current, _previous) -> None:
+        pid = (
+            current.data(Qt.ItemDataRole.UserRole) if current is not None else None
+        )
+        broken = self._broken.get(pid) if pid else None
+        if broken is not None:
+            # invalid YAML: show the reason, allow only deletion
+            self._set_broken_mode(broken)
+            return
         prof = self._current()
         self._set_editable(prof is not None and prof.user_defined)
         if prof is None:
@@ -155,6 +175,15 @@ class ProfilesDialog(QDialog):
         self._persona_senior.setPlainText(prof.persona_senior)
         self._stack.setPlainText(prof.stack)
         self._glossary.setText(prof.glossary or "")
+
+    def _set_broken_mode(self, broken: BrokenProfile) -> None:
+        for w in (self._title, self._persona, self._persona_senior, self._stack, self._glossary, self._glossary_btn, self._btn_save):
+            w.setEnabled(False)
+        self._title.setText(broken.path.name)
+        self._persona.setPlainText(f"Файл: {broken.path}")
+        self._persona_senior.setPlainText(f"Ошибка: {broken.error}")
+        self._stack.setPlainText("Профиль не загружен. Исправьте YAML вручную или удалите.")
+        self._btn_delete.setEnabled(True)
 
     def _set_editable(self, editable: bool) -> None:
         for w in (self._title, self._persona, self._persona_senior, self._stack, self._glossary, self._glossary_btn):
@@ -226,6 +255,24 @@ class ProfilesDialog(QDialog):
         return pid
 
     def _on_delete(self) -> None:
+        item = self._list.currentItem()
+        pid = item.data(Qt.ItemDataRole.UserRole) if item else None
+        if pid is None:
+            return
+        broken = self._broken.get(pid)
+        if broken is not None:
+            # invalid YAML — offer deletion of the broken file
+            if QMessageBox.question(
+                self, "Удалить битый профиль", f"Удалить файл {broken.path.name}?"
+            ) != QMessageBox.StandardButton.Yes:
+                return
+            try:
+                broken.path.unlink()
+            except OSError:
+                QMessageBox.warning(self, "Профиль", "Не удалось удалить файл.")
+                return
+            self._reload()
+            return
         prof = self._current()
         if prof is None or not prof.user_defined:
             return
@@ -253,6 +300,12 @@ class ProfilesDialog(QDialog):
                 self, "Профиль", "Персона (оба поля) и стек обязательны."
             )
             return
+        if glossary:
+            from pathlib import Path as _P
+
+            p = _P(glossary)
+            if p.is_absolute() and p.exists() and not self._validate_glossary(glossary):
+                return
         prof.title = title
         prof.persona = persona
         prof.persona_senior = persona_senior
@@ -266,5 +319,28 @@ class ProfilesDialog(QDialog):
         path, _ = QFileDialog.getOpenFileName(
             self, "Выбрать глоссарий", str(profiles_dir().parent), "YAML (*.yaml *.yml)"
         )
-        if path:
-            self._glossary.setText(path)
+        if not path:
+            return
+        if not self._validate_glossary(path):
+            return
+        self._glossary.setText(path)
+
+    def _validate_glossary(self, path: str) -> bool:
+        """The glossary must be a readable YAML dict — catch typos here,
+        not as a silent runtime fallback to the default glossary."""
+        import yaml as _yaml
+
+        try:
+            data = _yaml.safe_load(open(path, encoding="utf-8"))
+        except OSError:
+            QMessageBox.warning(self, "Глоссарий", "Файл не читается.")
+            return False
+        except _yaml.YAMLError as exc:
+            QMessageBox.warning(self, "Глоссарий", f"Некорректный YAML: {exc}")
+            return False
+        if not isinstance(data, dict):
+            QMessageBox.warning(
+                self, "Глоссарий", "Файл должен быть YAML-словарём (как glossary.yaml)."
+            )
+            return False
+        return True

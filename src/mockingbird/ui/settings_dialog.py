@@ -390,6 +390,11 @@ class SettingsDialog(QDialog):
         wrap = QWidget()
         wrap.setLayout(profile_row)
         profile_form.addRow("", wrap)
+        hint = QLabel(
+            "Приоритет глоссария: явный путь (вкладка «База знаний») → глоссарий профиля → встроенный по умолчанию."
+        )
+        hint.setWordWrap(True)
+        profile_form.addRow("", hint)
         tabs.addTab(self._wrap_scroll(profile_form), "Профиль")
 
         # --- Tab 4: Интервью ---

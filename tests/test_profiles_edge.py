@@ -146,3 +146,36 @@ def test_user_override_shows_user_defined_flag(user_profiles):
     assert prof.title == "QA Custom"
     # calibrated flag is NOT inherited from the overridden bundled profile
     assert prof.calibrated is False
+
+
+# --- broken profile discovery ----------------------------------------------------
+
+
+def test_load_broken_profiles_reports_missing_fields(user_profiles):
+    (user_profiles / "bad.yaml").write_text(
+        "id: bad\ntitle: B\n", encoding="utf-8"
+    )
+    broken = loader.load_broken_profiles()
+    assert len(broken) == 1
+    assert "нет полей" in broken[0].error
+    assert broken[0].path.name == "bad.yaml"
+
+
+def test_load_broken_profiles_reports_yaml_errors(user_profiles):
+    (user_profiles / "syn.yaml").write_text("x: [1,", encoding="utf-8")
+    broken = loader.load_broken_profiles()
+    assert len(broken) == 1
+    assert broken[0].error.startswith("YAML:")
+
+
+def test_load_broken_profiles_reports_non_dict(user_profiles):
+    (user_profiles / "scalar.yaml").write_text("just text\n", encoding="utf-8")
+    broken = loader.load_broken_profiles()
+    assert any("словар" in b.error for b in broken)
+
+
+def test_load_broken_profiles_empty_when_all_valid(user_profiles):
+    from mockingbird.profiles.loader import Profile
+
+    loader.save_profile(Profile(id="ok", title="O", persona="p", persona_senior="ps", stack="s"))
+    assert loader.load_broken_profiles() == []
