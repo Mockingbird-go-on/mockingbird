@@ -457,7 +457,10 @@ def _linux_list_loopback_devices() -> list[str]:
 
 def _linux_resolve_monitor(device: str | None):
     """Resolve a configured monitor to a sounddevice device index (or None)."""
-    import sounddevice as sd
+    try:
+        import sounddevice as sd
+    except Exception:  # noqa: BLE001 - not bundled / broken install
+        return None
 
     monitors = _linux_monitor_devices()
     try:
@@ -516,7 +519,12 @@ class _LinuxLoopbackCapture:
         with self._lock:
             if self._stream is not None:
                 return
-            import sounddevice as sd
+            try:
+                import sounddevice as sd
+            except Exception as exc:  # noqa: BLE001
+                raise RuntimeError(
+                    "sounddevice unavailable (Linux loopback requires PortAudio)"
+                ) from exc
 
             idx = _linux_resolve_monitor(self.device)
             try:
@@ -573,32 +581,6 @@ class _LinuxLoopbackCapture:
 def _is_linux() -> bool:
     return sys.platform.startswith("linux")
 
-
-
-class LoopbackCapture:
-    """Platform-dispatching loopback capture (WASAPI on win, PA monitor on linux)."""
-
-    def __new__(cls, *args, **kwargs):
-        if _is_linux():
-            return _LinuxLoopbackCapture(*args, **kwargs)
-        return super().__new__(cls)
-
-    def __init__(self, sample_rate: int = _DEFAULT_RATE, block_ms: int = 100,
-                 device: str | None = None, agc_enabled: bool = True):
-        self._impl = _WasapiLoopbackCapture(sample_rate, block_ms, device, agc_enabled)
-
-    @property
-    def active(self) -> bool:
-        return self._impl.active
-
-    def set_callback(self, callback) -> None:
-        self._impl.set_callback(callback)
-
-    def start(self) -> None:
-        self._impl.start()
-
-    def stop(self) -> None:
-        self._impl.stop()
 
 
 class LoopbackCapture:

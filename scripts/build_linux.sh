@@ -94,10 +94,10 @@ if [[ $MAKE_DEB -eq 1 ]]; then
     else
         DEBDIR=build/deb
         rm -rf "$DEBDIR"
-        mkdir -p "$DEBDIR/usr/bin" "$DEBDIR/usr/share/applications" \
+        mkdir -p "$DEBDIR/usr/bin" "$DEBDIR/usr/lib/mockingbird" \
+                 "$DEBDIR/usr/share/applications" \
                  "$DEBDIR/usr/share/icons/hicolor/scalable/apps" "$DEBDIR/DEBIAN"
         cp -r dist/mockingbird/. "$DEBDIR/usr/lib/mockingbird/"
-        mkdir -p "$DEBDIR/usr/lib"
         ln -s /usr/lib/mockingbird/mockingbird "$DEBDIR/usr/bin/mockingbird"
         ln -s /usr/lib/mockingbird/mockingbird-cli "$DEBDIR/usr/bin/mockingbird-cli"
 

@@ -128,3 +128,13 @@ def test_build_linux_appimage_icon_fallback():
     sh = _read("build_linux.sh")
     assert "mockingbird.svg" in sh
     assert os.path.isfile(os.path.join(ROOT, "src", "mockingbird", "assets", "icons", "mockingbird.svg"))
+
+
+def test_deb_stage_mkdirs_before_copy():
+    # Regression: usr/lib/mockingbird must exist before `cp -r dist/...` into
+    # it (cp without parents fails on a fresh build dir).
+    sh = _read("build_linux.sh")
+    mkdirs = sh.index('mkdir -p "$DEBDIR/usr/bin" "$DEBDIR/usr/lib/mockingbird"')
+    cp = sh.index('cp -r dist/mockingbird/. "$DEBDIR/usr/lib/mockingbird/"')
+    assert mkdirs < cp
+    assert 'mkdir -p "$DEBDIR/usr/lib"$' not in sh  # stale standalone mkdir gone

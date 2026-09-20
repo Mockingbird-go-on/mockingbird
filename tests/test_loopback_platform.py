@@ -306,3 +306,30 @@ def test_linux_capture_identity_rate_no_resampler(monkeypatch):
     cap.start()
     assert cap._resampler is None
     cap.stop()
+
+
+def test_linux_capture_start_no_sounddevice(monkeypatch):
+    _reload(monkeypatch, "linux")
+    monkeypatch.setitem(sys.modules, "sounddevice", None)  # forces ImportError
+    cap = lb._LinuxLoopbackCapture()
+    with pytest.raises(RuntimeError):
+        cap.start()
+    assert cap._stream is None
+
+
+def test_resolve_monitor_no_sounddevice(monkeypatch):
+    _reload(monkeypatch, "linux")
+    monkeypatch.setitem(sys.modules, "sounddevice", None)
+    assert lb._linux_resolve_monitor("foo") is None
+
+
+def test_single_loopbackcapture_class():
+    # Regression: a stale duplicate dispatcher class used to shadow the real
+    # one depending on definition order.
+    import inspect
+    classes = [
+        m[0] for m in inspect.getmembers(lb, inspect.isclass)
+        if m[1].__module__ == lb.__name__ and m[0] == "LoopbackCapture"
+    ]
+    src = inspect.getsource(lb)
+    assert src.count("class LoopbackCapture:") == 1
