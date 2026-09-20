@@ -38,7 +38,10 @@ class _FakeModel:
 def _patch_automodel(fake_model: _FakeModel):
     """Return a context manager that swaps AutoModel.from_pretrained."""
     fake_module = types.ModuleType("transformers")
-    fake_module.AutoModel = mock.MagicMock(return_value=fake_model)
+    automodel = mock.MagicMock()
+    # The engine calls AutoModel.from_pretrained(...), not AutoModel(...).
+    automodel.from_pretrained.return_value = fake_model
+    fake_module.AutoModel = automodel
     return mock.patch.dict(sys.modules, {"transformers": fake_module})
 
 
@@ -146,7 +149,9 @@ def test_load_model_passes_low_cpu_mem_usage_false(monkeypatch):
     )
     fake = _FakeModel()
     engine = _new_engine(device="cpu")
-    with _patch_automodel(fake) as patched:
+    with _patch_automodel(fake):
         engine._load_model()
-    _, kwargs = patched["transformers"].AutoModel.from_pretrained.call_args
+        # patch.dict removes the fake on exit; grab it while inside.
+        automodel = sys.modules["transformers"].AutoModel
+    _, kwargs = automodel.from_pretrained.call_args
     assert kwargs.get("low_cpu_mem_usage") is False

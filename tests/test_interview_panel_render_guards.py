@@ -32,7 +32,7 @@ def _assert_guard_present(pattern: str, *, where: str) -> None:
         rf"def {where}\(.*?(?=\n    def |\nclass )", _SRC, re.DOTALL
     )
     assert body_match, f"method {where!r} not found in interview_panel.py"
-    assert re.search(pattern, body_match.group(0)), (
+    assert re.search(pattern, body_match.group(0), re.DOTALL), (
         f"expected /{pattern}/ inside {where}(); guard missing or refactored away"
     )
 

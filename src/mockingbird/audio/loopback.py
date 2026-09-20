@@ -1,18 +1,22 @@
-"""Speaker loopback capture via pyaudiowpatch (WASAPI loopback, Windows).
+"""Speaker loopback capture: WASAPI loopback (Windows) or PulseAudio monitor (Linux).
 
 Unlike the microphone stream (sounddevice) the loopback stream runs at the
 device's native rate (typically 48 kHz) and in the device's channel layout, so
 we resample to the app's mono 16 kHz float32 pipeline before handing audio to
 the VAD.
 
-pyaudiowpatch bundles its own PortAudio build, so it is imported lazily: on
-non-Windows hosts (WSL, CI) the module degrades to empty device lists and
-``LoopbackCapture.start()`` raising a RuntimeError.
+``LoopbackCapture`` is a platform dispatcher: on Windows it wraps the
+pyaudiowpatch WASAPI implementation, on Linux a sounddevice/PulseAudio monitor
+implementation. On unsupported hosts (macOS, WSL without PulseAudio, CI)
+the module degrades to empty device lists and ``LoopbackCapture.start()``
+raising a RuntimeError.
 """
 from __future__ import annotations
 
 import logging
 import math
+import subprocess
+import sys
 import threading
 
 import numpy as np
@@ -221,7 +225,7 @@ class _LinearResampler:
         return out.astype(np.float32)
 
 
-class LoopbackCapture:
+class _WasapiLoopbackCapture:
     """Capture the system's default (or selected) playback as an input stream."""
 
     def __init__(
@@ -337,6 +341,8 @@ class LoopbackCapture:
 
 def list_loopback_devices() -> list[str]:
     """Human-readable loopback device names for the settings dialog."""
+    if _is_linux():
+        return _linux_list_loopback_devices()
     try:
         import pyaudiowpatch as pa
     except Exception:  # noqa: BLE001
@@ -395,3 +401,217 @@ def resolve_loopback_device(pa_instance, device: str | None) -> dict | None:
             return info
     log.warning("configured loopback device %r not found, using default", device)
     return next(iter(loopbacks.values()))
+
+
+# --- Linux: PulseAudio/PipeWire monitor capture via sounddevice -------------
+
+
+def _linux_monitor_devices() -> list[dict]:
+    """PulseAudio/PipeWire monitor sources via pactl (name + description)."""
+    try:
+        out = subprocess.run(
+            ["pactl", "--format=json", "list", "sources"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except Exception:  # noqa: BLE001 - pactl missing / DBus session absent
+        return []
+    if out.returncode != 0 or not out.stdout.strip():
+        return []
+    import json
+
+    try:
+        sources = json.loads(out.stdout)
+    except Exception:  # noqa: BLE001
+        return []
+    monitors = [s for s in sources if s.get("monitor_of_sink") is not None or ".monitor" in str(s.get("name", ""))]
+    return [
+        {"name": m.get("name", ""), "description": m.get("description", m.get("name", ""))}
+        for m in monitors
+    ]
+
+
+def _linux_list_loopback_devices() -> list[str]:
+    """Human-readable monitor device names for the settings dialog."""
+    try:
+        import sounddevice as sd
+    except Exception:  # noqa: BLE001
+        return []
+    try:
+        monitors = _linux_monitor_devices()
+    except Exception:  # noqa: BLE001 - pactl missing / bad output must not crash the UI
+        return []
+    if not monitors:
+        return []
+    try:
+        devices = sd.query_devices()
+    except Exception:  # noqa: BLE001
+        return []
+    names = {str(d.get("name", "")) for d in devices if d.get("max_input_channels", 0) > 0}
+    out = []
+    for i, m in enumerate(monitors):
+        # PortAudio (ALSA-pulse plugin) surfaces monitors under their description.
+        if m["description"] in names or m["name"] in names:
+            out.append(f"{i}: {m['description']}")
+    return out
+
+
+def _linux_resolve_monitor(device: str | None):
+    """Resolve a configured monitor to a sounddevice device index (or None)."""
+    try:
+        import sounddevice as sd
+    except Exception:  # noqa: BLE001 - not bundled / broken install
+        return None
+
+    monitors = _linux_monitor_devices()
+    try:
+        devices = sd.query_devices()
+    except Exception:  # noqa: BLE001
+        return None
+    wanted_desc = None
+    if device:
+        for m in monitors:
+            if device == m["name"] or device == m["description"] or device.endswith(m["name"]):
+                wanted_desc = m["description"]
+                break
+    for i, d in enumerate(devices):
+        if d.get("max_input_channels", 0) <= 0:
+            continue
+        name = str(d.get("name", ""))
+        if wanted_desc is not None:
+            if wanted_desc == name or wanted_desc in name:
+                return i
+        elif "monitor" in name.lower():
+            return i
+    if wanted_desc is not None:
+        log.warning("configured monitor %r not found, using default monitor", device)
+    return None
+
+
+class _LinuxLoopbackCapture:
+    """Capture a PulseAudio monitor (system playback) via sounddevice.
+
+    Same contract as the WASAPI LoopbackCapture: 16 kHz mono float32 blocks
+    delivered to the registered callback. The monitor delivers whatever the
+    sink plays at its native rate; we reuse the band-limited resampler and AGC.
+    """
+
+    def __init__(self, sample_rate: int = _DEFAULT_RATE, block_ms: int = 100,
+                 device: str | None = None, agc_enabled: bool = True):
+        self.sample_rate = sample_rate
+        self.block_size = max(int(sample_rate * block_ms / 1000), 1)
+        self.device = device
+        self._agc_enabled = agc_enabled
+        self._stream = None
+        self._callback = None
+        self._lock = threading.Lock()
+        self._resampler = None
+        self._agc: _LoopbackAgc | None = None
+        self._native_rate = 0
+
+    @property
+    def active(self) -> bool:
+        return self._stream is not None
+
+    def set_callback(self, callback) -> None:
+        self._callback = callback
+
+    def start(self) -> None:
+        with self._lock:
+            if self._stream is not None:
+                return
+            try:
+                import sounddevice as sd
+            except Exception as exc:  # noqa: BLE001
+                raise RuntimeError(
+                    "sounddevice unavailable (Linux loopback requires PortAudio)"
+                ) from exc
+
+            idx = _linux_resolve_monitor(self.device)
+            try:
+                info = sd.query_devices(idx if idx is not None else sd.default.device[0])
+            except Exception:  # noqa: BLE001
+                raise RuntimeError("no PulseAudio monitor device available") from None
+            if info is None or info.get("max_input_channels", 0) <= 0:
+                raise RuntimeError("no PulseAudio monitor device available")
+            self._native_rate = int(info.get("default_samplerate") or 48000)
+            if self._native_rate != self.sample_rate:
+                self._resampler = _BandLimitedResampler(self._native_rate, self.sample_rate)
+            else:
+                self._resampler = None
+            self._agc = _LoopbackAgc() if self._agc_enabled else None
+            self._stream = sd.InputStream(
+                samplerate=self._native_rate,
+                blocksize=max(int(self._native_rate * self.block_size / self.sample_rate), 1),
+                channels=1,
+                dtype="float32",
+                device=idx,
+                callback=self._on_audio,
+            )
+            self._stream.start()
+            log.info("linux loopback capture started: %s @%dHz", info.get("name"), self._native_rate)
+
+    def stop(self) -> None:
+        with self._lock:
+            stream, self._stream = self._stream, None
+            self._resampler = None
+            self._agc = None
+            if stream is not None:
+                try:
+                    stream.stop()
+                    stream.close()
+                except Exception:  # noqa: BLE001
+                    log.exception("error closing linux loopback stream")
+
+    def _on_audio(self, indata, frames, time_info, status) -> None:
+        if self._stream is None:
+            return
+        if status:
+            log.debug("linux loopback status: %s", status)
+        audio = np.ascontiguousarray(indata[:, 0])
+        resampled = self._resampler.process(audio) if self._resampler is not None else audio
+        if self._agc is not None:
+            resampled = self._agc.process(resampled)
+        if self._callback is not None:
+            self._callback(resampled, float(getattr(time_info, "currentTime", 0.0) or 0.0))
+
+
+# --- Platform dispatch ---
+
+
+def _is_linux() -> bool:
+    return sys.platform.startswith("linux")
+
+
+
+class LoopbackCapture:
+    """Platform-dispatching loopback capture.
+
+    Windows: WASAPI loopback via pyaudiowpatch. Linux: PulseAudio/PipeWire
+    monitor via sounddevice. The dispatcher is a stable class so app.py's
+    ``isinstance(self.capture, LoopbackCapture)`` mode marker works on every
+    platform; the platform implementation lives in ``_impl``.
+    """
+
+    def __init__(self, sample_rate: int = _DEFAULT_RATE, block_ms: int = 100,
+                 device: str | None = None, agc_enabled: bool = True):
+        if _is_linux():
+            self._impl = _LinuxLoopbackCapture(sample_rate, block_ms, device, agc_enabled)
+        else:
+            self._impl = _WasapiLoopbackCapture(sample_rate, block_ms, device, agc_enabled)
+
+    @property
+    def active(self) -> bool:
+        return self._impl.active
+
+    @property
+    def impl(self):
+        return self._impl
+
+    def set_callback(self, callback) -> None:
+        self._impl.set_callback(callback)
+
+    def start(self) -> None:
+        self._impl.start()
+
+    def stop(self) -> None:
+        self._impl.stop()
