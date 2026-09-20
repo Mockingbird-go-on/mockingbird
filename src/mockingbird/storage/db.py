@@ -55,8 +55,17 @@ class SQLiteStore:
         self._conn = sqlite3.connect(self._path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL;")
+        # NORMAL sync in WAL mode: commits no longer fsync the WAL on every
+        # write (only at checkpoints). Safe for a desktop app — durability is
+        # lost only on an OS crash, not on app failure — and removes fsync
+        # latency from the GUI-thread save_segment path.
+        self._conn.execute("PRAGMA synchronous=NORMAL;")
         with self._lock:
             self._conn.executescript(_SCHEMA)
+            # Migration: add speaker column to segments (idempotent).
+            cols = {row["name"] for row in self._conn.execute("PRAGMA table_info(segments)")}
+            if "speaker" not in cols:
+                self._conn.execute("ALTER TABLE segments ADD COLUMN speaker TEXT")
             self._conn.commit()
 
     def close(self) -> None:
@@ -89,14 +98,45 @@ class SQLiteStore:
         end: float | None,
         confidence: float | None,
         created_at: float,
+        speaker: str | None = None,
     ) -> None:
         with self._lock:
             self._conn.execute(
-                "INSERT OR REPLACE INTO segments(id, session_id, text, start, end, confidence, created_at)"
-                " VALUES (?,?,?,?,?,?,?)",
-                (segment_id, session_id, text, start, end, confidence, created_at),
+                "INSERT OR REPLACE INTO segments(id, session_id, text, start, end, confidence, created_at, speaker)"
+                " VALUES (?,?,?,?,?,?,?,?)",
+                (segment_id, session_id, text, start, end, confidence, created_at, speaker),
             )
             self._conn.commit()
+
+    def update_segment_text(self, segment_id: str, text: str) -> None:
+        """Overwrite a segment's text (LLM post-correction of long finals)."""
+        with self._lock:
+            self._conn.execute(
+                "UPDATE segments SET text=? WHERE id=?",
+                (text, segment_id),
+            )
+            self._conn.commit()
+
+    def get_segments(self, session_id: str) -> list[dict]:
+        """Return all segments for a session, ordered by creation time."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM segments WHERE session_id=? ORDER BY created_at",
+                (session_id,),
+            ).fetchall()
+        return [
+            {
+                "id": row["id"],
+                "session_id": row["session_id"],
+                "text": row["text"],
+                "start": row["start"],
+                "end": row["end"],
+                "confidence": row["confidence"],
+                "created_at": row["created_at"],
+                "speaker": row["speaker"] if "speaker" in row.keys() else "unknown",
+            }
+            for row in rows
+        ]
 
     # -- term cache --
     def get_term_cache(self, term: str) -> dict | None:

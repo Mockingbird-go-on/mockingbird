@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 
-from PySide6.QtCore import QSettings, QSize, Qt, QTimer
+from PySide6.QtCore import QSettings, QSize, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -19,16 +19,16 @@ from PySide6.QtWidgets import (
 from mockingbird.app import App
 from mockingbird.ui.interview_panel import InterviewPanel
 from mockingbird.ui.log_panel import LogPanel
-from mockingbird.ui.modules_panel import ModulesPanel
+from mockingbird.ui.modules_panel import ResumePanel
 from mockingbird.ui.settings_dialog import SettingsDialog
 from mockingbird.ui import theme
+from mockingbird.ui.icons import icon as lucide_icon
 from mockingbird.ui.widgets import (
     ActivityBar,
     BackgroundWidget,
     DeviceBadge,
     LogoBadge,
     SourceBadge,
-    StatusDot,
     StatusPill,
 )
 
@@ -43,6 +43,11 @@ def _format_elapsed(seconds: int) -> str:
 
 
 class MainWindow(QMainWindow):
+    # Bridge: session-stop worker thread → GUI thread completion callback.
+    # A plain Signal on the instance-level won't marshal; class-level Signals
+    # with a bound-slot connection deliver via the owning (GUI) thread.
+    _stop_done = Signal()
+
     def __init__(self, app: App):
         super().__init__()
         self._app = app
@@ -72,55 +77,34 @@ class MainWindow(QMainWindow):
         self._interview = InterviewPanel(
             resolve=self._app.kb_matcher.resolve,
             answer_query=self._app.interview.answer_query,
+            regenerate_callback=self._app.interview.regenerate_answer,
+            concept_callback=self._app.interview.ask_concept,
             llm_primary=self._app.config.interview.llm_primary,
             llm_available=self._app.llm.available,
         )
         self._tabs.addTab(self._interview, "Интервью")
-        self._modules_panel = ModulesPanel(self._app)
-        self._tabs.addTab(self._modules_panel, "Модули")
+        self._modules_panel = ResumePanel(self._app)
+        self._tabs.addTab(self._modules_panel, "Резюме")
         self._log_panel = LogPanel(log_file=self._app.config.storage.log_dir)
         self._tabs.addTab(self._log_panel, "Лог")
-        # Hot-zone (reveal-on-hover for Simple Mode) above the toolbar.
-        from mockingbird.ui.hot_zone import TopHotZone, _FadeGroup
-
-        self._hotzone = TopHotZone(self)
-        self._hide_timer = QTimer(self)
-        self._hide_timer.setSingleShot(True)
-        self._hide_timer.setInterval(800)
-        self._hide_timer.timeout.connect(self._hide_simple)
-        self._hotzone.hover_enter.connect(self._reveal_simple)
-        self._hotzone.hover_leave.connect(self._schedule_hide_simple)
         self._toolbar = self._build_toolbar()
-        layout.addWidget(self._hotzone)
         layout.addWidget(self._toolbar)
         layout.addWidget(self._tabs, stretch=1)
         self.setCentralWidget(central)
 
-        # Fade groups for Simple Mode.
-        self._fade_group = _FadeGroup([self._toolbar, self.statusBar()])
-        # Minimal status dot (top-left of the central widget) — visible only
-        # in Simple Mode.
-        self._status_dot = StatusDot(self._bg)
-        self._status_dot.move(12, 12)
-        self._status_dot.setVisible(False)
-        self._simple_mode = False
-
         self._connect_signals()
+        # Logging is on by default; the user can turn it off from the tab.
+        # Must run AFTER _connect_signals: set_enabled notifies this window
+        # (self.window()) — before the window is constructed the notification
+        # would be lost and the log handler never installed.
+        self._log_panel.set_enabled(True)
         self._set_running(False)
         self._sig.status.emit("idle", "")
 
     def closeEvent(self, event) -> None:
         self._session_timer.stop()
-        if self._hide_timer.isActive():
-            self._hide_timer.stop()
         self._settings.setValue("window/geometry", self.saveGeometry())
         super().closeEvent(event)
-
-    def resizeEvent(self, event) -> None:
-        super().resizeEvent(event)
-        # Keep the status dot anchored to the top-left of the central widget.
-        self._status_dot.move(12, 12)
-        self._status_dot.raise_()
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
@@ -135,27 +119,20 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(10, 8, 10, 8)
         layout.setSpacing(8)
         self._start_btn = QPushButton()
-        self._start_btn.setIcon(self._make_play_icon())
+        self._start_btn.setIcon(lucide_icon("play", color=theme.LIGHT))
         self._start_btn.setIconSize(QSize(18, 18))
         self._start_btn.setProperty("primary", True)
         self._start_btn.setToolTip("Старт")
         self._stop_btn = QPushButton()
-        self._stop_btn.setIcon(self._make_stop_icon())
+        self._stop_btn.setIcon(lucide_icon("square", color=theme.current.status_error))
         self._stop_btn.setIconSize(QSize(18, 18))
         self._stop_btn.setToolTip("Стоп")
         self._mute_btn = QPushButton()
-        self._mute_btn.setIcon(self._make_mute_icon(False))
+        self._mute_btn.setIcon(self._mute_icon(False))
         self._mute_btn.setIconSize(QSize(18, 18))
         self._mute_btn.setToolTip("Мьют")
-        self._simple_btn = QPushButton()
-        self._simple_btn.setIcon(self._make_simple_icon())
-        self._simple_btn.setIconSize(QSize(18, 18))
-        self._simple_btn.setCheckable(True)
-        self._simple_btn.setChecked(self._app.config.window.simple_mode)
-        self._simple_btn.setToolTip("Simple Mode — скрыть лишние элементы UI")
-        self._simple_btn.clicked.connect(self._on_toggle_simple)
         self._settings_btn = QPushButton()
-        self._settings_btn.setIcon(self._make_settings_icon())
+        self._settings_btn.setIcon(lucide_icon("settings-2"))
         self._settings_btn.setIconSize(QSize(18, 18))
         self._settings_btn.setToolTip("Настройки")
         self._start_btn.clicked.connect(self._on_start)
@@ -175,7 +152,6 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._start_btn)
         layout.addWidget(self._stop_btn)
         layout.addWidget(self._mute_btn)
-        layout.addWidget(self._simple_btn)
         layout.addSpacing(12)
         layout.addWidget(self._activity)
         layout.addWidget(self._timer_label)
@@ -222,221 +198,23 @@ class MainWindow(QMainWindow):
                 else:
                     capture_guard.clear(wh)
 
-    # -- Simple Mode -------------------------------------------------------
-
-    def _on_toggle_simple(self) -> None:
-        enabled = self._simple_btn.isChecked()
-        self.set_simple_mode(enabled)
-        self._app.save_settings()
-
-    def set_simple_mode(self, enabled: bool) -> None:
-        """Toggle the minimal UI: hide chrome, keep only the answer pane.
-
-        Reveal-on-hover is driven by the top hot-zone; an 800 ms delay avoids
-        flicker when the cursor grazes the zone edge.
-        """
-        self._simple_mode = enabled
-        self._app.config.window.simple_mode = enabled
-        self._simple_btn.setChecked(enabled)
-        if enabled:
-            # Stop the activity-bar animation (avoids wasted repaints of a
-            # hidden widget) and let InterviewPanel hide its own chrome.
-            self._activity.set_idle()
-            self._interview.set_simple_mode(True)
-            self._fade_group.fade_to(0.0, on_finished=lambda: self._fade_group.set_visible_immediate(False))
-            self._status_dot.setVisible(True)
-            self._status_dot.set_state("running" if self._app.session_id else "idle")
-        else:
-            self._hide_timer.stop()
-            self._fade_group.set_visible_immediate(True)
-            self._fade_group.fade_to(1.0)
-            self._interview.set_simple_mode(False)
-            self._status_dot.setVisible(False)
-            if self._app.session_id is not None:
-                self._activity.set_live()
-
-    def _reveal_simple(self) -> None:
-        """Cursor entered the hot-zone: show the chrome (if simple mode is on)."""
-        if not self._simple_mode:
-            return
-        self._hide_timer.stop()
-        self._fade_group.set_visible_immediate(True)
-        self._fade_group.fade_to(1.0)
-        self._interview.set_simple_mode(False)
-
-    def _schedule_hide_simple(self) -> None:
-        """Cursor left the hot-zone: hide the chrome after a short delay."""
-        if not self._simple_mode:
-            return
-        self._hide_timer.start(800)
-
-    def _hide_simple(self) -> None:
-        """Timer expired: re-hide the chrome (still in simple mode)."""
-        if not self._simple_mode:
-            return
-        self._activity.set_idle()
-        self._interview.set_simple_mode(True)
-        self._fade_group.fade_to(0.0, on_finished=lambda: self._fade_group.set_visible_immediate(False))
-
     # -- icon helpers --
 
     @staticmethod
-    def _make_play_icon():
-        from PySide6.QtCore import QRectF
-        from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPixmap
+    def _mute_icon(muted: bool):
+        """Volume / volume-off Lucide icon; muted renders in the secondary colour."""
+        if muted:
+            return lucide_icon("volume-x", color=theme.current.text_secondary)
+        return lucide_icon("volume-2")
 
-        from mockingbird.ui import theme
-
-        pix = QPixmap(18, 18)
-        pix.fill(QColor(0, 0, 0, 0))
-        p = QPainter(pix)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(theme.current.text))
-        # Rounded triangle (play)
-        path = QPainterPath()
-        path.moveTo(13, 9)
-        path.lineTo(5, 4)
-        path.lineTo(5, 14)
-        path.closeSubpath()
-        p.drawPath(path)
-        p.end()
-        return QIcon(pix)
-
-    @staticmethod
-    def _make_stop_icon():
-        from PySide6.QtCore import QRectF
-        from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
-
-        from mockingbird.ui import theme
-
-        pix = QPixmap(18, 18)
-        pix.fill(QColor(0, 0, 0, 0))
-        p = QPainter(pix)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(theme.current.text))
-        p.drawRoundedRect(QRectF(4, 4, 10, 10), 2.0, 2.0)
-        p.end()
-        return QIcon(pix)
-
-    @staticmethod
-    def _make_settings_icon():
-        """Vector gear icon painted in the current text colour."""
-        from PySide6.QtCore import QPointF
-        from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
-
-        from mockingbird.ui import theme
-
-        pix = QPixmap(18, 18)
-        pix.fill(QColor(0, 0, 0, 0))
-        p = QPainter(pix)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        color = QColor(theme.current.text)
-        p.setBrush(color)
-        p.setPen(Qt.PenStyle.NoPen)
-        # Gear body: outer toothed ring + inner hub hole.
-        path = QPainterPath()
-        cx, cy, r_out, r_in, r_hub = 9.0, 9.0, 7.5, 5.0, 2.4
-        import math
-
-        teeth = 8
-        pts: list[QPointF] = []
-        for i in range(teeth * 2):
-            angle = math.pi / teeth * i - math.pi / 2
-            radius = r_out if i % 2 == 0 else r_in
-            pts.append(QPointF(cx + radius * math.cos(angle), cy + radius * math.sin(angle)))
-        path.moveTo(pts[0])
-        for pt in pts[1:]:
-            path.lineTo(pt)
-        path.closeSubpath()
-        # Hub hole (even-odd fill leaves it transparent).
-        hole = QPainterPath()
-        hole.addEllipse(QPointF(cx, cy), r_hub, r_hub)
-        path = path.subtracted(hole)
-        p.drawPath(path)
-        p.end()
-        return QIcon(pix)
-
-    @staticmethod
-    def _make_mute_icon(muted: bool):
-        """Vector speaker icon; crossed-out when muted."""
-        from PySide6.QtCore import QPointF, QRectF
-        from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
-
-        from mockingbird.ui import theme
-
-        pix = QPixmap(18, 18)
-        pix.fill(QColor(0, 0, 0, 0))
-        p = QPainter(pix)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        color = QColor(theme.current.text)
-        muted_color = QColor(theme.TEXT_SECONDARY)
-        p.setBrush(color if not muted else muted_color)
-        p.setPen(Qt.PenStyle.NoPen)
-        # Speaker body: small rectangle (horn throat) + trapezoid (cone).
-        p.drawRoundedRect(QRectF(2.5, 6.5, 3.5, 5.0), 0.8, 0.8)
-        path = QPainterPath()
-        path.moveTo(5.5, 6.0)
-        path.lineTo(10.0, 3.0)
-        path.lineTo(10.0, 15.0)
-        path.lineTo(5.5, 12.0)
-        path.closeSubpath()
-        p.drawPath(path)
-        if not muted:
-            # Sound waves (two arcs to the right of the speaker).
-            p.setBrush(Qt.BrushStyle.NoBrush)
-            wave_pen = QPen(color, 1.4)
-            wave_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-            p.setPen(wave_pen)
-            p.drawArc(QRectF(11.5, 5.0, 6.0, 8.0), -45 * 16, 90 * 16)
-            p.drawArc(QRectF(11.5, 3.0, 10.0, 12.0), -45 * 16, 90 * 16)
-        else:
-            # Diagonal strike-through line (muted).
-            p.setBrush(Qt.BrushStyle.NoBrush)
-            strike = QPen(muted_color, 1.6)
-            strike.setCapStyle(Qt.PenCapStyle.RoundCap)
-            p.setPen(strike)
-            p.drawLine(QPointF(3.0, 3.0), QPointF(15.0, 15.0))
-        p.end()
-        return QIcon(pix)
-
-    @staticmethod
-    def _make_simple_icon():
-        """Four-point sparkle (minimalist focus/minimise-mode glyph)."""
-        from PySide6.QtCore import QPointF
-        from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPixmap
-
-        from mockingbird.ui import theme
-
-        pix = QPixmap(18, 18)
-        pix.fill(QColor(0, 0, 0, 0))
-        p = QPainter(pix)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        color = QColor(theme.current.accent)
-        p.setBrush(color)
-        p.setPen(Qt.PenStyle.NoPen)
-        # Four-point sparkle centred at (9, 9).
-        cx, cy = 9.0, 9.0
-        path = QPainterPath()
-        # Main sparkle (large).
-        path.moveTo(cx, cy - 6.0)
-        path.cubicTo(cx + 1.6, cy - 2.0, cx + 2.0, cy - 1.6, cx + 6.0, cy)
-        path.cubicTo(cx + 2.0, cy + 1.6, cx + 1.6, cy + 2.0, cx, cy + 6.0)
-        path.cubicTo(cx - 1.6, cy + 2.0, cx - 2.0, cy + 1.6, cx - 6.0, cy)
-        path.cubicTo(cx - 2.0, cy - 1.6, cx - 1.6, cy - 2.0, cx, cy - 6.0)
-        path.closeSubpath()
-        # Small sparkle (top-right).
-        sx, sy = cx + 4.2, cy - 4.2
-        path.moveTo(sx, sy - 2.4)
-        path.cubicTo(sx + 0.6, sy - 0.8, sx + 0.8, sy - 0.6, sx + 2.4, sy)
-        path.cubicTo(sx + 0.8, sy + 0.6, sx + 0.6, sy + 0.8, sx, sy + 2.4)
-        path.cubicTo(sx - 0.6, sy + 0.8, sx - 0.8, sy + 0.6, sx - 2.4, sy)
-        path.cubicTo(sx - 0.8, sy - 0.6, sx - 0.6, sy - 0.8, sx, sy - 2.4)
-        path.closeSubpath()
-        p.drawPath(path)
-        p.end()
-        return QIcon(pix)
+    def _refresh_toolbar_icons(self) -> None:
+        """Re-render toolbar icons in the colours of the active theme."""
+        self._start_btn.setIcon(lucide_icon("play", color=theme.LIGHT))
+        self._stop_btn.setIcon(
+            lucide_icon("square", color=theme.current.status_error)
+        )
+        self._mute_btn.setIcon(self._mute_icon(self._app.muted))
+        self._settings_btn.setIcon(lucide_icon("settings-2"))
 
     def _apply_theme(self, name: str) -> None:
         theme.apply_theme(QApplication.instance(), name)
@@ -454,18 +232,13 @@ class MainWindow(QMainWindow):
         self._interview.retheme()
         self._log_panel.update_theme()
         self._modules_panel.update_theme()
-        self._status_dot.update_theme()
-        # Re-assert Simple Mode visibility after a theme switch (some widgets
-        # may have been re-shown by their update_theme callbacks).
-        if self._simple_mode:
-            self.set_simple_mode(True)
+        self._refresh_toolbar_icons()
 
     def _connect_signals(self) -> None:
         self._sig.partial.connect(self._interview.on_partial)
         self._sig.question.connect(self._interview.on_question)
         self._sig.final.connect(self._interview.on_final)
         self._sig.answer.connect(self._interview.on_answer)
-        self._sig.predictions.connect(self._interview.on_predictions)
         self._sig.llm_answer.connect(self._interview.on_llm_answer)
         self._sig.context.connect(self._interview.on_context)
         self._sig.mic_level.connect(self._activity.set_level)
@@ -474,8 +247,10 @@ class MainWindow(QMainWindow):
         self._sig.source.connect(self._source_badge.set_source)
         self._sig.speech.connect(self._activity.flash_speech)
         self._sig.error.connect(self._on_error)
-        self._sig.log_line.connect(self._log_panel.append_line)
+        # log_line is wired lazily — see _on_log_panel_toggled.
         self._sig.model_load.connect(self._activity.set_loading)
+        # Async session stop completion (marshalled from the stop worker).
+        self._stop_done.connect(self._on_stop_done)
 
     def _on_start(self) -> None:
         try:
@@ -488,7 +263,18 @@ class MainWindow(QMainWindow):
         self._log_label.setText(self._log_path_text(session=self._app.session_id))
 
     def _on_stop(self) -> None:
-        self._app.stop_session()
+        """Stop the session without freezing the GUI.
+
+        ``stop_session`` can block up to ~8 s on the engine join, so it runs
+        in a background thread; the buttons stay disabled ("stopping") until
+        the completion signal fires on the GUI thread. The signal is wired
+        once in ``_connect_signals`` — no per-click connect accumulation.
+        """
+        self._set_stopping(True)
+        self._app.stop_session_async(on_done=self._stop_done.emit)
+
+    def _on_stop_done(self) -> None:
+        """GUI-thread slot: session teardown finished (success or failure)."""
         self._session_timer.stop()
         # Reset the elapsed counter so the next session starts from 00:00
         # rather than accumulating across sessions.
@@ -497,9 +283,16 @@ class MainWindow(QMainWindow):
         self._set_running(False)
         self._log_label.setText(self._log_path_text())
 
+    def _set_stopping(self, stopping: bool) -> None:
+        """Intermediate state while the session is being torn down."""
+        self._start_btn.setEnabled(not stopping)
+        self._stop_btn.setEnabled(not stopping)
+        self._mute_btn.setEnabled(not stopping)
+        if stopping:
+            self._status.set_state("loading", "остановка…")
+
     def _on_status(self, state: str, detail: str) -> None:
         self._status.set_state(state, detail)
-        self._status_dot.set_state(state)
         if state == "loading":
             self._activity.set_loading(detail or "Загрузка модели…", -1)
         elif state == "running":
@@ -526,18 +319,57 @@ class MainWindow(QMainWindow):
     def _on_toggle_mute(self) -> None:
         self._app.toggle_mute()
         muted = self._app.muted
-        self._mute_btn.setIcon(self._make_mute_icon(muted))
+        self._mute_btn.setIcon(self._mute_icon(muted))
         self._mute_btn.setToolTip("Снять мьют" if muted else "Мьют")
         self._sig.status.emit("muted" if muted else "running", "")
 
     def _on_settings(self) -> None:
         dialog = SettingsDialog(self._app.config, self)
         if dialog.exec():
+            prev_profile = self._app.config.profile_id
             dialog.apply()
+            # The dialog swaps the global palette itself; re-apply through
+            # MainWindow so every widget re-reads theme colours (labels with
+            # baked stylesheets, toolbar icons, panels' update_theme).
+            # NB: _theme_choice is set inside apply() — read it AFTER the call.
+            theme_choice = getattr(dialog, "_theme_choice", None)
+            if isinstance(theme_choice, str):
+                self._apply_theme(theme_choice)
+            if self._app.config.profile_id != prev_profile:
+                try:
+                    self._app.apply_profile(self._app.config.profile_id)
+                except Exception:
+                    log.exception("apply_profile failed")
             self._app.save_settings()
             self._apply_capture_affinity()
             if dialog.restart_required:
                 self._prompt_restart()
+
+    def _on_log_panel_toggled(self, enabled: bool) -> None:
+        """Bridge: user toggled logging in the LogPanel.
+
+        When enabling, attach a fresh ``QtLogHandler`` to the root logger and
+        start forwarding ``log_line`` signals to the panel. When disabling,
+        reverse both — the panel keeps zero overhead while hidden.
+        """
+        if enabled:
+            try:
+                self._app.install_log_handler()
+            except Exception:
+                log.exception("install_log_handler failed")
+            try:
+                self._sig.log_line.connect(self._log_panel.append_line)
+            except (RuntimeError, TypeError):
+                pass  # already connected
+        else:
+            try:
+                self._sig.log_line.disconnect(self._log_panel.append_line)
+            except (RuntimeError, TypeError):
+                pass
+            try:
+                self._app.remove_log_handler()
+            except Exception:
+                log.exception("remove_log_handler failed")
 
     def _prompt_restart(self) -> None:
         box = QMessageBox(self)
@@ -553,8 +385,7 @@ class MainWindow(QMainWindow):
         if box.clickedButton() is restart:
             self._restart_app()
 
-    @staticmethod
-    def _restart_app() -> None:
+    def _restart_app(self) -> None:
         import os
         import subprocess
         import sys
@@ -565,6 +396,15 @@ class MainWindow(QMainWindow):
             argv = [sys.executable]
         else:
             argv = [sys.executable, "-m", "mockingbird"]
+        # Tear the session down BEFORE spawning the new process: the old
+        # instance holds the SQLite DB and GPU memory, and a fresh copy
+        # starting concurrently risks "database is locked" and VRAM conflicts.
+        try:
+            self._app.stop_session()
+        except Exception:  # noqa: BLE001
+            log.exception("stop before restart failed")
+        # Flush QSettings so window geometry survives the restart.
+        self._settings.sync()
         try:
             subprocess.Popen(argv, cwd=os.getcwd())
         except Exception as exc:  # noqa: BLE001
@@ -576,6 +416,11 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(message, 8000)
         self._activity.set_error(message)
         self._sig.status.emit("error", "")
+        # If the session never actually started (engine load failed, capture
+        # error), return the buttons to the idle state — otherwise Start stays
+        # disabled forever with no live session behind it.
+        if self._app.session_id is None:
+            self._set_running(False)
 
     def _set_running(self, running: bool) -> None:
         self._start_btn.setEnabled(not running)

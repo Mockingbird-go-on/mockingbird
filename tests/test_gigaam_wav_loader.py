@@ -79,3 +79,18 @@ def test_direct_wav_loader_rejects_wrong_sample_rate(tmp_path):
 
 def test_install_direct_wav_loader_no_match_returns_false():
     assert install_direct_wav_loader() is False
+
+
+def test_direct_wav_loader_device_param(tmp_path):
+    """The ``device`` parameter controls the returned tensor's device."""
+    torch = pytest.importorskip("torch")
+    mod = _fake_gigaam_module()
+    sys.modules["modeling_gigaam"] = mod
+    try:
+        install_direct_wav_loader(device="cpu")
+        wav = tmp_path / "in.wav"
+        _make_wav(wav)
+        tensor = mod.load_audio(str(wav))
+    finally:
+        sys.modules.pop("modeling_gigaam", None)
+    assert tensor.device.type == "cpu"

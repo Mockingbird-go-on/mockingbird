@@ -20,6 +20,8 @@ class TermEntry:
         examples: list[str] | None = None,
         category: str | None = None,
         related: list[dict] | None = None,
+        priority: bool = False,
+        keywords: list[str] | None = None,
     ):
         self.term = term
         self.aliases = [str(a).strip().lower() for a in (aliases or [])]
@@ -27,6 +29,8 @@ class TermEntry:
         self.explanation = explanation
         self.examples = examples or []
         self.category = category
+        self.priority = priority
+        self.keywords = [str(k).strip() for k in (keywords or [])]
         self.related = [
             {
                 "question": str(r.get("question") or "").strip(),
@@ -73,6 +77,8 @@ class Glossary:
                     examples=item.get("examples", []),
                     category=item.get("category"),
                     related=item.get("related"),
+                    priority=item.get("priority", False),
+                    keywords=item.get("keywords", []),
                 )
             )
         patterns: list[tuple[re.Pattern, TermEntry]] = []

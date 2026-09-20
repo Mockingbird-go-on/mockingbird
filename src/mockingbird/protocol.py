@@ -25,8 +25,6 @@ class MessageType(str, Enum):
     TERM_DETECTED = "term_detected"
     QUESTION_DETECTED = "question_detected"
     KNOWLEDGE_VIEW = "knowledge_view"
-    TOPIC_BLOCK = "topic_block"
-    PREDICTIONS = "predictions"
     LLM_ANSWER = "llm_answer"
     DISCUSSION_STATE = "discussion_state"
     ERROR = "error"
@@ -80,6 +78,8 @@ class FinalTranscript(BaseMessage):
     start: float = 0.0
     end: float = 0.0
     confidence: float | None = None
+    speaker: str = "unknown"  # "me" (mic), "them" (loopback), "unknown"
+    speaker_id: str = ""  # diarization label: "them_1", "them_2", etc. (empty = not set)
 
 
 class TermSource(str, Enum):
@@ -99,26 +99,10 @@ class TermDetected(BaseMessage):
     session_id: str | None = None
 
 
-class TopicSource(str, Enum):
-    GLOSSARY = "glossary"
-    LLM = "llm"
-    KB = "kb"
-
-
 class RelatedQuestion(BaseModel):
     question: str
     answer: str
     topic: str = ""
-
-
-class TopicBlock(BaseMessage):
-    type: MessageType = MessageType.TOPIC_BLOCK
-    block_id: str
-    theme: str
-    category: str | None = None
-    terms: list[str] = Field(default_factory=list)
-    questions: list[RelatedQuestion] = Field(default_factory=list)
-    source: TopicSource
 
 
 class QuestionDetected(BaseMessage):
@@ -179,13 +163,6 @@ class DiscussionState(BaseMessage):
     confident: bool = False
 
 
-class Predictions(BaseMessage):
-    type: MessageType = MessageType.PREDICTIONS
-    query: str = ""
-    topic: str = ""
-    questions: list[RelatedQuestion] = Field(default_factory=list)
-
-
 class LlmAnswer(BaseMessage):
     type: MessageType = MessageType.LLM_ANSWER
     query: str = ""
@@ -196,6 +173,15 @@ class LlmAnswer(BaseMessage):
     done: bool = False  # True on the final message carrying the full answer
     context_summary: str = ""
     segment_id: str = ""  # latency trace correlation key
+    stream_id: str = ""  # identifies a single streaming response (concurrent-stream guard)
+    # Non-answer status notice while the worker is still running, e.g.
+    # "retry" after a broken/empty stream — the UI shows a visible
+    # placeholder instead of silent waiting. Not set on done=True.
+    status: str = ""
+    # KB fallback shown in the primary pane when the LLM returned an empty
+    # answer (failure/timeout) but the KB matched a topic. Populated only on
+    # the final (done=True) message; empty when no KB blocks are available.
+    kb_fallback: str = ""
 
 
 class ErrorMessage(BaseMessage):
@@ -210,3 +196,6 @@ class StatusMessage(BaseMessage):
     adapter: str = ""
     model: str | None = None
     session_id: str | None = None
+
+
+

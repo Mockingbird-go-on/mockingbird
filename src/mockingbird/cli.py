@@ -99,9 +99,9 @@ class _CliAssistant:
         def on_answer(view: protocol.KnowledgeView) -> None:
             if view.title:
                 _print_block(f"  [KB] Тема: {view.title}")
-            # Variant A: the LLM is the primary answerer. The KB blocks are
-            # reference material for the model, not the user-facing answer.
-            # Print only a short topic hint + block titles so the user knows
+            # The LLM is the primary answerer — it answers from its own
+            # expertise. The KB blocks are a manual reference sidebar, not
+            # context for the model. Print topic hints so the user knows
             # what was matched, then wait for the LLM streaming answer.
             for b in view.blocks[:3]:
                 _print_block(f"    [{b.section}] {b.question}")
@@ -111,13 +111,6 @@ class _CliAssistant:
             # for: release the REPL prompt immediately.
             if not getattr(self._llm, "available", False):
                 self._done.set()
-
-        def on_predictions(msg) -> None:
-            qs = getattr(msg, "questions", None) or []
-            if qs:
-                _print_block("  [->] Дальше могут спросить:")
-                for q in qs[:5]:
-                    _print_block(f"    — {q.question}")
 
         def on_llm_answer(msg: protocol.LlmAnswer) -> None:
             if msg.delta:
@@ -132,7 +125,6 @@ class _CliAssistant:
         e.on_question = on_question
         e.on_context = on_context
         e.on_answer = on_answer
-        e.on_predictions = on_predictions
         e.on_llm_answer = on_llm_answer
 
     def start(self) -> None:

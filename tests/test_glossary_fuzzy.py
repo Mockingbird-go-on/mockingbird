@@ -75,3 +75,42 @@ def test_find_nexus_and_vmware_terms_present():
     vmware = next(e for e in g.entries if e.term == "VMware")
     helm = next(e for e in g.entries if e.term == "Helm")
     assert nexus.related and vmware.related and helm.related
+
+
+# --- Phase 3: post-correction ---
+
+def test_normalize_kubernetes():
+    g = Glossary.load()
+    text = g._matcher.normalize_text("расскажи про кубернетес")
+    assert "Kubernetes" in text
+
+
+def test_normalize_no_false_positive():
+    g = Glossary.load()
+    text = "обычные русские слова без терминов"
+    assert g._matcher.normalize_text(text) == text
+
+
+def test_normalize_preserves_case():
+    """Normalisation preserves the case of words not being rewritten."""
+    g = Glossary.load()
+    text = "Кубернетес — это Оркестратор"
+    result = g._matcher.normalize_text(text)
+    assert "Kubernetes" in result
+
+
+def test_priority_terms_loaded():
+    """Glossary loads priority: true from YAML."""
+    g = Glossary.load()
+    priority_terms = {e.term for e in g.entries if e.priority}
+    assert "Kubernetes" in priority_terms
+    assert "Docker" in priority_terms
+    assert "CI/CD" in priority_terms
+
+
+def test_keywords_loaded():
+    """Glossary loads keywords from YAML."""
+    g = Glossary.load()
+    k8s = next(e for e in g.entries if e.term == "Kubernetes")
+    assert k8s.keywords
+    assert "cluster" in k8s.keywords or "pod" in k8s.keywords

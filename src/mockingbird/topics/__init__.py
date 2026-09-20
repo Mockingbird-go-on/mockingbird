@@ -1,1 +1,0 @@
-"""Proactive thematic topic cloud."""

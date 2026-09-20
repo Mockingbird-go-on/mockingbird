@@ -1,0 +1,5 @@
+id: backend
+title: "Backend-разработчик (Java/Python/Go)"
+persona: "Backend-разработчик с 5-летним опытом"
+persona_senior: "Backend-разработчик 6+ лет, проектировал высоконагруженные сервисы, проводит системный дизайн-ревью, менторит"
+stack: "Java/Spring, Python/Django/FastAPI, Go, PostgreSQL, Redis, Kafka/RabbitMQ, микросервисы, REST/gRPC, Docker/Kubernetes"

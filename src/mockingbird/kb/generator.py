@@ -256,8 +256,12 @@ class KbGenerator:
         self._temperature = temperature
         self._max_tokens = max_tokens
 
-    def generate_from_text(self, text: str) -> list[dict]:
-        """Generate merged topic documents from a full book text."""
+    def generate_from_text(self, text: str, context_hint: str = "") -> list[dict]:
+        """Generate merged topic documents from a full text.
+
+        ``context_hint`` is passed to the LLM to orient it (e.g. document
+        type/source).
+        """
         documents: list[dict] = []
         for chunk in split_chunks(text, self._chunk_chars, self._overlap_chars):
             raw = self._llm.generate_kb_topics(
@@ -266,6 +270,7 @@ class KbGenerator:
                 max_blocks=self._max_blocks,
                 temperature=self._temperature,
                 max_tokens=self._max_tokens,
+                context_hint=context_hint,
             )
             for item in raw:
                 doc = normalize_topic(item, self._max_blocks)

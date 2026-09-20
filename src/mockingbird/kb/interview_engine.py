@@ -18,14 +18,33 @@ from mockingbird.config import InterviewConfig
 from mockingbird.kb import detector
 from mockingbird.kb.context import ConversationContext
 from mockingbird.kb.context_tracker import ContextTracker
+from mockingbird.kb.index import has_topical_signal
 from mockingbird.kb.matcher import KbMatcher
 from mockingbird.kb.predict import next_questions_from_view
+from mockingbird.kb.question_ledger import (
+    C_DEDUP,
+    C_EMPTY_ANSWER,
+    C_MERGE,
+    C_WEAK_MATCH,
+    QuestionLedger,
+)
+from mockingbird.kb.question_queue import QuestionQueue
 
 log = logging.getLogger(__name__)
 
 _STOP = object()
 
 _ANSWER_CONTEXT_LIMIT = 2400
+# Minimum chars for a streamed answer to be considered complete. DeepSeek
+# occasionally drops the stream after a couple of chunks (P-015: 65 chars
+# painted as "no answer") — anything shorter triggers one retry.
+_LLM_MIN_ANSWER_CHARS = 200
+# How long after an answer completes we still treat the primary pane as
+# "answered" for the purpose of background view emissions. The context
+# tracker's async LLM pass can fire a topic "shift" on the very utterance that
+# was just answered; without this grace the theory preview (preview=True)
+# re-renders the pane as «Ответ ИИ недоступен» and wipes a valid answer.
+_PREVIEW_ANSWER_GRACE_S = 15.0
 # When the KB coverage is low we surface more blocks (see ``_llm_answer_context``)
 # so the model has extra angles to expand on — give those answers more room.
 _ANSWER_CONTEXT_LIMIT_WIDE = 4200
@@ -36,6 +55,104 @@ _ANSWER_CONTEXT_LIMIT_WIDE = 4200
 # использовал?»).
 _ACCUM_WINDOW_S = 0.2
 _ACCUM_MAX_GAP_S = 1.5
+# A trailing connective/question word means the utterance is mid-question
+# and the next segment completes it («…инфраструктура как код какие» +
+# «инструменты вы использовали?»). Extend the merge window for those.
+_ACCUM_MAX_GAP_HANGING_S = 4.0
+_HANGING_TAIL_WORDS = frozenset(
+    (
+        "какие", "какая", "какое", "какие", "что", "чем", "как", "где", "когда",
+        "почему", "зачем", "сколько", "кто", "кому", "чем", "и", "или", "а",
+        "для", "в", "на", "при", "между", "про", "об", "о", "если", "тобы",
+        "чтобы", "каком", "какой", "какая", "какую", "какие",
+    )
+)
+
+
+def _has_hanging_tail(text: str) -> bool:
+    """True when the utterance ends on a connective/question word.
+
+    Such a segment is almost certainly a mid-question cut — the interviewer
+    paused right after «…инфраструктура как код какие» and finished with
+    «инструменты вы использовали?» a moment later. The accumulation window
+    is extended for these so the pieces merge into one question.
+    """
+    words = (text or "").strip().lower().split()
+    return bool(words) and words[-1] in _HANGING_TAIL_WORDS
+
+
+# An implicit question: a SHORT final with no question markers at all
+# («Prometheus.», «про Zabbix») — an interviewer naming a topic expects an
+# answer. Only short finals qualify: a long markerless utterance is either
+# narration (handled by the context tracker) or the Tier 3 rescue.
+_IMPLICIT_QUESTION_MAX_WORDS = 7
+
+# Narrative markers: a short sentence about past experience («мы использовали
+# docker», «у нас был kubernetes») mentions a topic but is NOT a request —
+# it stays on the topical preview path instead of the question path.
+_NARRATIVE_MARKERS = (
+    "мы ", "у нас", "я ", "у меня", "был", "была", "были", "делали",
+    "использовали", "внедряли", "настроили", "стали", "работал",
+)
+
+
+def _is_narrative_sentence(text: str) -> bool:
+    """True when a markerless utterance is a statement, not a term request."""
+    t = " " + (text or "").strip().lower() + " "
+    return any(marker in t for marker in _NARRATIVE_MARKERS)
+
+
+# A segment STARTING with a connective («и DevOps.», «или деплой?») is the
+# tail of a question whose beginning the VAD clipped or split off — it must
+# be glued to the last processed utterance and re-asked as one question.
+_LEADING_CONNECTIVE_WORDS = frozenset(("и", "или", "а", "но"))
+_TAIL_MERGE_MAX_GAP_S = 20.0
+
+# STT often mangles single-letter DNS record names in Russian speech:
+# «А-запись» → «о записи»/«а записи», «NS-запись» → «N-запись». The advisory
+# maps the distorted fragment to the likely canonical record so the LLM does
+# not latch onto a phantom reading (e.g. treating «о записи» as SOA).
+_DNS_RECORD_ADVISORIES: tuple[tuple[str, str], ...] = (
+    (r"[оа]\s+запис", "А-запись (A record)"),
+    (r"(?:^|[\s«(])(?:н|n|ns|нс)[\s-]?запис|эн\s+эс\s+запис", "NS-запись (NS record)"),
+    (r"(?:^|\s)(?:soa|соу|соа)(?:\s|$|[\s-]?запис)", "SOA-запись (Start of Authority)"),
+    (r"(?:^|[\s(])(?:мх|mx)[\s-]?запис", "MX-запись (MX record)"),
+)
+
+
+def _dns_record_advisory(query: str) -> str:
+    """Return an LLM context hint when the query mentions a DNS record name.
+
+    Best-effort, advisory-only: the query text is never rewritten; the hint
+    merely warns the model that the transcription of the record name may be
+    distorted and names the most likely intended record. Returns "" when the
+    query mentions neither DNS nor any recognizable record fragment.
+    """
+    q = (query or "").lower()
+    if not q:
+        return ""
+    mentions_dns = "dns" in q or "днс" in q
+    for pattern, record in _DNS_RECORD_ADVISORIES:
+        if re.search(pattern, q):
+            if mentions_dns or "запис" in q:
+                return (
+                    f"Примечание распознавания: вероятно, речь о DNS-записи "
+                    f"{record} — транскрипция названия записи могла быть искажена. "
+                    f"Если по смыслу подходит, отвечай про {record}."
+                )
+    return ""
+
+
+def _starts_with_connective(text: str) -> bool:
+    """True for a short segment starting with a conjunction («и DevOps.»).
+
+    Such segments appear when the VAD misses the start of an utterance
+    (triggered mid-phrase) — the text alone is meaningless, but appended to
+    the previous utterance it completes the question. Only short tails
+    qualify: a long sentence starting with «и» is a legitimate new thought.
+    """
+    words = (text or "").strip().lower().split()
+    return bool(words) and len(words) <= 6 and words[0] in _LEADING_CONNECTIVE_WORDS
 
 _QUESTION_STOP_WORDS = {
     "что", "как", "где", "когда", "почему", "зачем", "сколько", "какой",
@@ -79,7 +196,10 @@ def _coverage_score(view: protocol.KnowledgeView) -> float:
     Returns a value in ``[0.0, 1.0]`` combining:
     - ``best_score`` (matcher confidence, normalised against the configured
       ``min_match_score`` threshold);
-    - the number of matched blocks (more blocks → more angles on the topic);
+    - the number of *positively scored* blocks (more hits → more angles on
+      the topic). Sibling/intro blocks appended without a match score must
+      not inflate the coverage — they are reference material, not evidence
+      the question was actually answered;
     - a miss penalty.
 
     Heuristic by design: it steers the LLM prompt between "answer from the
@@ -88,11 +208,14 @@ def _coverage_score(view: protocol.KnowledgeView) -> float:
     """
     if view is None or not view.blocks:
         return 0.0
-    # Normalise the best matcher score against the active threshold (clip to 1).
+    # Only real matcher hits count; unscored context blocks (score 0.00) are
+    # deliberately excluded so coverage=1.0 always reflects actual matches.
+    scored = [b for b in view.blocks if getattr(b, "score", 0.0) > 0.0]
+    best = max((b.score for b in scored), default=0.0)
     threshold = max(0.05, getattr(view, "_min_match_score", 0.25))
-    score_norm = min(1.0, view.best_score / max(threshold, 0.25))
-    # Block-count bonus: 1 block → +0, 2 → +0.1, 3 → +0.18, capped at +0.25.
-    block_bonus = min(0.25, (max(0, len(view.blocks) - 1)) * 0.09)
+    score_norm = min(1.0, best / max(threshold, 0.25))
+    # Block-count bonus: 1 hit → +0, 2 → +0.1, 3 → +0.18, capped at +0.25.
+    block_bonus = min(0.25, (max(0, len(scored) - 1)) * 0.09)
     coverage = score_norm * 0.75 + block_bonus
     if view.miss:
         coverage *= 0.55
@@ -128,6 +251,11 @@ class _AnswerCache:
         with self._lock:
             self._data.clear()
 
+    def delete(self, key: str) -> None:
+        with self._lock:
+            if key in self._data:
+                del self._data[key]
+
 
 class InterviewEngine:
     def __init__(
@@ -139,12 +267,14 @@ class InterviewEngine:
         context_tracker: ContextTracker | None = None,
         dialog_context=None,
         trace=None,
+        ledger: QuestionLedger | None = None,
     ):
         self._matcher = matcher
         self._cfg = config
         self._context = context or ConversationContext()
         self._llm = llm
         self._trace = trace
+        self._ledger = ledger if ledger is not None else QuestionLedger()
         self._queue: queue.Queue = queue.Queue()
         self._thread: threading.Thread | None = None
         self._last_query = ""
@@ -158,11 +288,13 @@ class InterviewEngine:
         self._partial_text = ""
         self._partial_stable = 0
         self._provisional_query = ""
-        self._answer_thread: threading.Thread | None = None
+        self._pending_segment: protocol.FinalTranscript | None = None
+        self._last_final_text = ""
+        self._last_final_ts = 0.0
         self._answer_cache = _AnswerCache()
         self._generation = 0
-        self._pending_segment: protocol.FinalTranscript | None = None
         self._current_answer_mode: str = "technical"
+        self._mode_lock = threading.Lock()
         self._subject_cache: dict[str, list[str]] = {}
         self._tracker = context_tracker or ContextTracker(
             matcher,
@@ -174,23 +306,25 @@ class InterviewEngine:
         )
         self.on_question = None
         self.on_answer = None
-        self.on_predictions = None
         self.on_context = None
         self.on_llm_answer = None
         self._tracker.on_state = self._on_tracker_state
         self._dialog = dialog_context
+        self._question_queue = QuestionQueue(name="interview-question-queue")
 
     def start(self) -> None:
         if self._thread is not None:
             return
         self._thread = threading.Thread(target=self._run, name="interview-worker", daemon=True)
         self._thread.start()
+        self._question_queue.start()
 
     def stop(self) -> None:
         self._queue.put(_STOP)
         if self._thread is not None:
             self._thread.join(timeout=3)
             self._thread = None
+        self._question_queue.stop()
 
     def reset_session(self) -> None:
         self._generation += 1
@@ -203,7 +337,14 @@ class InterviewEngine:
         self._partial_text = ""
         self._partial_stable = 0
         self._provisional_query = ""
+        self._last_final_text = ""
+        self._last_final_ts = 0.0
         self._answer_cache.clear()
+        self._question_queue.stop()
+        self._question_queue = QuestionQueue(name="interview-question-queue")
+        if self._thread is not None:
+            self._question_queue.start()
+        self._ledger.reset_session()
 
     def on_final(self, msg: protocol.FinalTranscript) -> None:
         self._queue.put(msg)
@@ -243,11 +384,45 @@ class InterviewEngine:
 
         Bypasses the accumulation deferral in ``_process`` — the window has
         already expired, so the segment must be processed immediately.
+        A hanging-tail segment gets ONE extra window: the speaker paused
+        mid-question and the completing tail often arrives just after the
+        first expiry («расскажи про … [4s pause] …Kubernetes?»).
         """
         seg = self._pending_segment
         self._pending_segment = None
-        if seg is not None:
-            self._process_immediate(seg)
+        if seg is None:
+            return
+        if (
+            seg is not getattr(self, "_flush_extended_once", None)
+            and _has_hanging_tail(seg.text)
+            and not getattr(self, "_pending_flush_extended", False)
+        ):
+            self._pending_flush_extended = True
+            self._flush_extended_once = seg
+            self._pending_segment = seg
+            return
+        self._pending_flush_extended = False
+        self._flush_extended_once = None
+        self._process_immediate(seg)
+
+    def _is_implicit_question(self, text: str) -> bool:
+        """Short markerless final that names a KB topic («Prometheus.»).
+
+        An interviewer uttering just a term (or «про Zabbix») expects an
+        answer about it. Requires a real KB match so filler words («ага»,
+        «понятно») and non-topical chatter never trigger a question path.
+        Narrative sentences («мы использовали docker») are excluded: they
+        mention a topic but are not a request — those stay on the topical
+        preview path.
+        """
+        words = (text or "").strip().split()
+        if len(words) > _IMPLICIT_QUESTION_MAX_WORDS:
+            return False
+        if detector.is_question(text) or detector.is_shift(text):
+            return False
+        if _is_narrative_sentence(text):
+            return False
+        return self._strong_topic(text) is not None
 
     @staticmethod
     def _is_short_followup(text: str) -> bool:
@@ -258,13 +433,66 @@ class InterviewEngine:
         if not self._cfg.enabled or not msg.text:
             return
         text = msg.text.strip()
+        # --- Tail-merge: a clipped segment starting with a connective ------
+        # («и DevOps.» — the VAD missed the start of «в чем связь между
+        # Agile и DevOps?») is appended to the recent previous utterance and
+        # re-processed as one question, instead of being handled as a
+        # meaningless topical fallback. When the engine's own last final has
+        # aged out of the window, fall back to the dialog history's last
+        # opponent utterance — the question's beginning often lives there.
+        # A connective is not required when the new segment is a bare short
+        # fragment («Kubernetes?»): the previous final was a hanging
+        # question start («расскажи про») — the fragment completes it.
+        _merge_tail = _starts_with_connective(text) or (
+            len(text.split()) <= 4
+            and self._last_final_text
+            and _has_hanging_tail(self._last_final_text)
+            and (msg.ts - self._last_final_ts) <= _TAIL_MERGE_MAX_GAP_S
+        )
+        if _merge_tail:
+            base = ""
+            if self._last_final_text and (msg.ts - self._last_final_ts) <= _TAIL_MERGE_MAX_GAP_S:
+                base = self._last_final_text
+            elif self._dialog is not None:
+                base = self._dialog.last_opponent_utterance()
+                if base and base.strip() == text.strip():
+                    base = ""
+            if base:
+                merged = f"{base} {text}".strip()
+                log.info(
+                    "tail-merge: %r + %r -> re-ask merged question",
+                    base[:60], text[:60],
+                )
+                self._ledger.record(
+                    "merged", id=msg.segment_id, kind="tail",
+                    utter_len=len(merged.split()),
+                )
+                self._ledger.bump(C_MERGE)
+                self._last_final_text = ""
+                self._last_final_ts = 0.0
+                self._process(
+                    protocol.FinalTranscript(segment_id=msg.segment_id, text=merged, ts=msg.ts)
+                )
+                return
+        self._last_final_text = text
+        self._last_final_ts = msg.ts
         # --- Accumulation: merge with a pending segment if close in time ---
         if self._pending_segment is not None:
             prev = self._pending_segment
             gap = msg.ts - prev.ts
-            if gap <= _ACCUM_MAX_GAP_S:
+            max_gap = (
+                _ACCUM_MAX_GAP_HANGING_S
+                if _has_hanging_tail(prev.text)
+                else _ACCUM_MAX_GAP_S
+            )
+            if gap <= max_gap:
                 merged_text = (prev.text + " " + msg.text).strip()
                 self._pending_segment = None
+                self._ledger.record(
+                    "merged", id=msg.segment_id, kind="accum",
+                    utter_len=len(merged_text.split()),
+                )
+                self._ledger.bump(C_MERGE)
                 self._process(
                     protocol.FinalTranscript(segment_id=msg.segment_id, text=merged_text, ts=msg.ts)
                 )
@@ -273,10 +501,12 @@ class InterviewEngine:
             self._flush_pending()
         # --- Defer question-candidate segments to the accumulation window ---
         if (
-            detector.is_question(text)
-            and not self._is_short_followup(text)
-            and self._thread is not None
-        ):
+            (
+                detector.is_question(text)
+                and not self._is_short_followup(text)
+            )
+            or _has_hanging_tail(text)
+        ) and self._thread is not None:
             self._pending_segment = msg
             return
         # --- Normal processing (non-question, short followup, or single-threaded) ---
@@ -290,10 +520,58 @@ class InterviewEngine:
         self._context.on_segment(msg.text)
         self._tracker.on_segment(msg.text)
         if self._dialog is not None:
-            self._dialog.add_utterance(text)
+            self._dialog.add_utterance(text, getattr(msg, "speaker", "them"))
         if not detector.is_question(text):
+            # Implicit question: a short markerless final that names a KB
+            # topic («Prometheus.», «про Zabbix») — route it through the
+            # question path so an LLM answer IS generated (the Tier 2/3
+            # fallbacks below only preview/rescue, they skip short chatter).
+            if self._is_implicit_question(text):
+                log.info(
+                    "implicit-question: short markerless final matched a KB topic: %r",
+                    text[:60],
+                )
+                self._ledger.record(
+                    "final", id=msg.segment_id, utter_len=len(text.split()),
+                    qlen=len(text.split()), mode="technical", implicit=True,
+                )
+                self._emit_question(text, msg)
+                view = self._build_best_view(text, "technical")
+                if view is not None:
+                    self._emit_view(view, text, text, msg)
+                return
+            # Tier 2/3 fallback: not a detected question. Topic-shift
+            # statements («давай поговорим про k8s») suppress only the topical
+            # fallback (the context tracker already previews them) — but the
+            # Tier 3 LLM rescue still runs, because a real utterance can glue
+            # a topic shift AND a nested question together («поговорим про
+            # kubernetes, чем Pod отличается от деплоя»). Otherwise, if the
+            # utterance carries a STRONG topical signal (an exact KB topic
+            # id/title/keyword), open that topic's theory view WITHOUT an LLM
+            # answer (marked preview so it does not pollute history).
+            is_shift = detector.is_shift(text)
+            if not is_shift and self._strong_topic(text) is not None:
+                self._emit_topical_fallback(text, msg)
+            if (
+                self._dialog is not None
+                and self._question_rescue_available()
+                and has_topical_signal(text)
+            ):
+                gen = self._generation
+                threading.Thread(
+                    target=self._rescue_question_worker,
+                    args=(text, msg, gen),
+                    daemon=True,
+                    name="interview-question-rescue",
+                ).start()
             return
         query = detector.last_question(text) or text
+        with self._mode_lock:
+            current_mode = self._current_answer_mode
+        self._ledger.record(
+            "final", id=msg.segment_id, utter_len=len(text.split()),
+            qlen=len(query.split()), mode=current_mode,
+        )
         self._emit_question(query, msg)
         # --- Fast path: build the view with the raw query immediately so the
         # UI shows an answer (or the "forming…" placeholder) without waiting
@@ -305,6 +583,7 @@ class InterviewEngine:
         match_query = query
         answer_mode = "technical"
         view = self._build_best_view(match_query, answer_mode)
+        view, match_query = self._rematch_on_utterance(view, match_query, text, query)
         if view is not None:
             self._emit_view(view, query, match_query, msg)
         # Launch async resolve (non-blocking). When the resolved query/mode
@@ -317,6 +596,59 @@ class InterviewEngine:
                 daemon=True,
                 name="interview-dialog-resolve",
             ).start()
+
+    # Best-block score below which a non-miss match on a clipped fragment is
+    # considered weak (wrong topic): proper matches score 40+, clipped-tail
+    # accidental matches land in the 10-30 range.
+    _WEAK_FRAGMENT_SCORE = 35.0
+
+    def _rematch_on_utterance(
+        self,
+        view: protocol.KnowledgeView | None,
+        match_query: str,
+        text: str,
+        query: str,
+    ) -> tuple[protocol.KnowledgeView | None, str]:
+        """Utterance-level KB fallback for clipped compound questions.
+
+        The detector may clip a compound question to its tail («Что такое
+        Service и какие бывают типы?» → «какие бывают типы»). The tail can
+        miss the index entirely (miss=True) or, worse, match a WRONG topic
+        with low block scores (topic=databases on a Kubernetes question).
+        In both cases re-match on the FULL utterance: the first clause
+        carries the topical signal the tail lost. Detector semantics are
+        intentionally untouched — this only repairs weak downstream results.
+        """
+        if view is None or text == query or len(text) <= len(query):
+            return view, match_query
+        scored = [b.score for b in view.blocks if getattr(b, "score", 0.0) > 0.0]
+        best = max(scored, default=0.0)
+        weak = view.miss or best < self._WEAK_FRAGMENT_SCORE
+        if not weak:
+            return view, match_query
+        reason = "miss" if view.miss else f"weak match (best={best:.2f})"
+        full_view = self._build_view(text)
+        if full_view is None or full_view.miss:
+            log.info(
+                "kb-match: fragment %r %s, full utterance also missed — "
+                "question likely outside KB (topic=%s)",
+                query[:60], reason,
+                getattr(full_view, "topic", None) or getattr(view, "topic", "?"),
+            )
+            return view, match_query
+        full_scored = [b.score for b in full_view.blocks if getattr(b, "score", 0.0) > 0.0]
+        full_best = max(full_scored, default=0.0)
+        if not view.miss and full_best <= best:
+            # The fragment match was weak but the full utterance is not
+            # better — keep the original (avoid churn on genuinely
+            # out-of-KB questions).
+            return view, match_query
+        log.info(
+            "kb-match: fragment %r %s — rematched on full utterance "
+            "(topic %s -> %s, best %.2f -> %.2f)",
+            query[:60], reason, view.topic, full_view.topic, best, full_best,
+        )
+        return full_view, text
 
     def _build_best_view(self, match_query: str, answer_mode: str) -> protocol.KnowledgeView | None:
         """Build a view, trying personal-mode first when requested."""
@@ -340,6 +672,20 @@ class InterviewEngine:
             "kb-match: query=%r match_query=%r topic=%s coverage=%.2f miss=%s blocks=[%s]",
             query[:80], match_query[:80], view.topic, view.coverage_score, view.miss, block_scores,
         )
+        # Invariant: a question that matched no scored block (coverage 0.0) is
+        # either out-of-KB or a TERM-MISS — count it so term-correction work
+        # has a measurable baseline. Only count the confirmed-question path
+        # (not previews), and only once per emitted view.
+        scored = [b.score for b in view.blocks if getattr(b, "score", 0.0) > 0.0]
+        if not scored and not getattr(view, "preview", False):
+            self._ledger.warn(
+                "weak_match", C_WEAK_MATCH, id=msg.segment_id,
+                topic=view.topic, query=(query[:80] or ""),
+            )
+        self._ledger.record(
+            "matched", id=msg.segment_id, topic=view.topic,
+            coverage=view.coverage_score, miss=bool(view.miss),
+        )
         view.segment_id = msg.segment_id
         if self._trace is not None:
             self._trace.mark(msg.segment_id, "kb_view")
@@ -358,14 +704,21 @@ class InterviewEngine:
                 score=block.score,
             )
         self._emit_answer(view)
-        self._maybe_predict(view, query)
+        with self._mode_lock:
+            current_mode = self._current_answer_mode
         if self._cfg.use_partials and self._provisional_query:
             force = not _questions_equivalent(
                 self._provisional_query, query, self._cfg.answer_restart_min_similarity
             )
-            self._maybe_answer_llm(view, match_query, force=force, mode=self._current_answer_mode)
+            self._maybe_answer_llm(
+                view, match_query, force=force, mode=current_mode,
+                utterance=(msg.text or "").strip(),
+            )
         else:
-            self._maybe_answer_llm(view, match_query, mode=self._current_answer_mode)
+            self._maybe_answer_llm(
+                view, match_query, mode=current_mode,
+                utterance=(msg.text or "").strip(),
+            )
 
     def _async_resolve_and_upgrade(
         self, query: str, raw_match_query: str, raw_mode: str, msg: protocol.FinalTranscript, generation: int
@@ -397,7 +750,8 @@ class InterviewEngine:
             "dialog-resolve: query=%r raw=%r resolved=%r mode=%s",
             query[:60], raw_match_query[:60], new_match[:60], mode,
         )
-        self._current_answer_mode = mode
+        with self._mode_lock:
+            self._current_answer_mode = mode
         upgraded = self._build_best_view(new_match, mode)
         if upgraded is None:
             return
@@ -457,8 +811,8 @@ class InterviewEngine:
         if not detector.is_question(text):
             return
         query = detector.last_question(text) or text
-        if query == self._provisional_query and self._answer_thread and self._answer_thread.is_alive():
-            return
+        if query == self._provisional_query and self._question_queue.pending:
+            return  # already queued/running for this exact question
         first = query != self._provisional_query
         view = self._build_view(query, dedup=False)
         if view is None:
@@ -466,8 +820,11 @@ class InterviewEngine:
         self._provisional_query = query
         if first and not view.miss:
             view.partial = True
+            self._cache_view(query, view)
             self._emit_answer(view)
-        self._maybe_answer_llm(view, query, force=True)
+        with self._mode_lock:
+            current_mode = self._current_answer_mode
+        self._maybe_answer_llm(view, query, force=True, mode=current_mode)
 
     # -- view construction (pure, testable) ---------------------------------
 
@@ -510,6 +867,61 @@ class InterviewEngine:
                 view.llm_answered = False
                 view.llm_answer = ""
         return view
+
+    def regenerate_answer(self, query: str) -> protocol.KnowledgeView | None:
+        """Force regeneration of LLM answer for query.
+        
+        Clears caches for this query and triggers fresh LLM generation.
+        Returns the updated view (may be None if no KB match).
+        """
+        key = " ".join((query or "").strip().lower().split())
+        if not key:
+            return None
+        
+        # Clear caches
+        if key in self._view_cache:
+            del self._view_cache[key]
+        self._answer_cache.delete(key)
+        
+        # Build new view (dedup=False to avoid throttling)
+        view = self._build_view(query, dedup=False)
+        if view is not None and not view.topic:
+            view = None
+        if view is not None:
+            self._view_cache[key] = view
+            # Force LLM answer with force=True to bypass cooldown
+            with self._mode_lock:
+                current_mode = self._current_answer_mode
+            self._maybe_answer_llm(view, query, force=True, mode=current_mode)
+        
+        return view
+
+    def ask_concept(self, query: str) -> None:
+        """Answer a pure concept/term question via LLM without KB context.
+
+        Used when the user clicks a term-link inside an LLM answer (follow-up
+        "Что такое X?"). Unlike :meth:`regenerate_answer`, this does NOT build
+        a KB view, does NOT feed topic blocks as "factual anchor", and does
+        NOT inject the previous Q/A — the model answers purely from its own
+        expertise. The answer is streamed via ``on_llm_answer`` exactly like
+        a regular answer, so the UI renders it in the primary answer pane.
+        """
+        key = _query_key(query)
+        if not key:
+            return
+        if not (self._cfg.llm_primary and self._llm_answer_available()):
+            return
+        self._last_answer_ts = time.monotonic()
+        # Clear any cached answer for this query so the concept answer is fresh.
+        self._answer_cache.delete(key)
+        self._question_queue.ensure_started()
+        self._question_queue.submit(
+            key=key,
+            segment_id="",
+            run=lambda: self._answer_llm_worker(
+                query, "", "", "", key, "concept", skip_prev_qa=True
+            ),
+        )
 
     def _cache_view(self, query: str, view: protocol.KnowledgeView) -> None:
         key = " ".join((query or "").strip().lower().split())
@@ -721,6 +1133,13 @@ class InterviewEngine:
         if view is None:
             return
         self._cache_view(query, view)
+        # The async rescue can land while the primary answer is already
+        # streaming (it was scheduled before the stream started). Emitting a
+        # new view here would reset the answer pane and change
+        # ``_pending_llm_query``, dropping the in-flight answer. Keep the
+        # upgraded view in the cache but do not clobber the live stream.
+        if getattr(self._llm, "is_streaming", False):
+            return
         self._emit_answer(view)
 
     def _llm_rescue_available(self) -> bool:
@@ -757,6 +1176,17 @@ class InterviewEngine:
             and state.topic
             and state.topic != self._last_preview_topic
         ):
+            # Do NOT clobber an active or just-delivered answer with a theory
+            # preview. The context tracker's async LLM pass can report a
+            # "shift" on the exact utterance that was just answered, and the
+            # preview view (preview=True) re-renders the primary pane as
+            # «Ответ ИИ недоступен», wiping a valid stream. The tracked topic
+            # is still updated so the pane won't re-preview later.
+            if getattr(self._llm, "is_streaming", False) or (
+                time.monotonic() - self._last_answer_ts < _PREVIEW_ANSWER_GRACE_S
+            ):
+                self._last_preview_topic = state.topic
+                return
             self._last_preview_topic = state.topic
             self._emit_preview(state)
 
@@ -806,10 +1236,118 @@ class InterviewEngine:
         key = " ".join(query.strip().lower().split())
         now = time.monotonic()
         if key == self._last_query and now - self._last_query_ts < self._cfg.cooldown_s:
+            self._ledger.bump(C_DEDUP)
             return True
         self._last_query = key
         self._last_query_ts = now
         return False
+
+    def _emit_topical_fallback(self, text: str, msg: protocol.FinalTranscript) -> None:
+        """Open a KB topic view for a non-question that still carries a term.
+
+        The question detector is a whitelist and occasionally misses real
+        questions («надо развернуть», «представь что…»). When the utterance
+        has a strong topical signal but was not classified as a question,
+        surface the matching topic's theory blocks WITHOUT triggering an LLM
+        answer — the user still gets the relevant material, and false positives
+        on plain statements only open the topic tree (no LLM cost).
+        """
+        topic = self._strong_topic(text)
+        if topic is None:
+            active = self._context.active_topics()
+            if active:
+                topic = self._matcher.topic_by_id(active[0][0])
+        if topic is None:
+            return
+        view = self._topic_view(topic, text, miss=True)
+        view.segment_id = msg.segment_id
+        # Mark as preview so the UI does NOT record it in history — this is a
+        # cheap best-effort surface, not a confirmed question; a later LLM
+        # rescue (Tier 3) may upgrade it to the full question path.
+        view.preview = True
+        # Do NOT clobber an active or just-delivered answer with a KB topic
+        # preview. The premise is the same as for ``_emit_preview``: any LLM
+        # call (here: nothing, but a sibling context-tracker LLM pass on the
+        # same utterance) racing with the answer stream can surface this
+        # fallback and the preview view (preview=True) re-renders the primary
+        # pane as «Ответ ИИ недоступен», wiping a valid stream.
+        if getattr(self._llm, "is_streaming", False) or (
+            time.monotonic() - self._last_answer_ts < _PREVIEW_ANSWER_GRACE_S
+        ):
+            log.info(
+                "interview: topical fallback suppressed (answer streaming or recent) "
+                "query=%r topic=%s",
+                text[:80], topic.id,
+            )
+            return
+        log.info(
+            "interview: topical fallback (not a question) query=%r topic=%s",
+            text[:80], topic.id,
+        )
+        self._emit_answer(view)
+
+    def _strong_topic(self, text: str):
+        """Topic matched by an exact KB id/title/keyword — no loose fallback.
+
+        Unlike :meth:`_nearest_topic`, this only consults
+        ``topic_by_keyword`` (topic id/title/keywords). Generic statements like
+        «документ готов к ревью» therefore resolve to nothing here, so they
+        never open a spurious topic view.
+        """
+        for term in self._matcher._index.significant_terms(text):
+            topic = self._matcher.topic_by_keyword(term)
+            if topic is not None:
+                return topic
+        return None
+
+    def _question_rescue_available(self) -> bool:
+        """Whether the Tier 3 LLM question-rescue can run."""
+        return (
+            self._dialog is not None
+            and self._llm is not None
+            and getattr(self._llm, "available", False)
+            and hasattr(self._llm, "analyze_dialog_context")
+        )
+
+    def _rescue_question_worker(self, text: str, msg: protocol.FinalTranscript, generation: int) -> None:
+        """Tier 3: ask the dialog LLM whether a non-detected utterance is a question.
+
+        Runs on a daemon thread and yields to the answer stream via the LLM
+        client's single-flight gate. Only an explicit LLM ``type`` of
+        ``question``/``topic_shift`` (with a real ``resolved_query``) promotes
+        the utterance to the full question path; the ``fallback`` source is
+        ignored so a missing/busy LLM never falsely re-processes a statement.
+        """
+        if generation != self._generation:
+            return
+        if getattr(self._llm, "is_streaming", False):
+            return
+        try:
+            resolved = self._dialog.resolve(text)
+        except Exception:  # noqa: BLE001
+            log.exception("question rescue: dialog resolve failed")
+            return
+        if generation != self._generation:
+            return
+        if resolved.get("source") != "llm":
+            return
+        rtype = resolved.get("type", "")
+        if rtype not in {"question", "topic_shift"}:
+            return
+        rq = (resolved.get("resolved_query") or "").strip()
+        if not rq:
+            return
+        log.info(
+            "question-rescue: LLM classified non-detected utterance as %s query=%r",
+            rtype, rq[:80],
+        )
+        with self._mode_lock:
+            self._current_answer_mode = resolved.get("answer_mode", "technical")
+            current_mode = self._current_answer_mode
+        view = self._build_best_view(rq, current_mode)
+        if view is None:
+            return
+        self._emit_view(view, rq, rq, msg)
 
     def _nearest_topic(self, query: str):
         terms = self._matcher._index.significant_terms(query)
@@ -852,74 +1390,31 @@ class InterviewEngine:
         if self.on_answer:
             self.on_answer(view)
 
-    # -- next-question prediction (LLM, throttled, off the hot path) --------
-
-    def _maybe_predict(self, view: protocol.KnowledgeView, query: str) -> None:
-        """Schedule an LLM prediction of follow-up questions, throttled.
-
-        The LLM round-trip happens on a separate daemon thread so a slow model
-        never stalls the interview worker. KB-based suggestions are attached to
-        the view already and show up instantly; this is the optional extra.
-        """
-        if not (self._cfg.predict_llm and self._llm is not None and self._llm.available):
-            return
-        if getattr(self._llm, "is_streaming", False):
-            return
-        now = time.monotonic()
-        if now - self._last_predict_ts < self._cfg.predict_cooldown_s:
-            return
-        if not view or not view.topic or not view.blocks:
-            return
-        self._last_predict_ts = now
-        context = self._predict_context(view)
-        threading.Thread(
-            target=self._predict_worker,
-            args=(query, view.topic, context),
-            daemon=True,
-            name="interview-predict",
-        ).start()
-
-    def _predict_worker(self, query: str, topic: str, context: str) -> None:
-        try:
-            predicted = self._llm.predict_questions(
-                query, topic, context, max_q=self._cfg.max_next
-            )
-        except Exception:  # noqa: BLE001
-            log.exception("LLM prediction failed")
-            return
-        if predicted and self.on_predictions:
-            self.on_predictions(
-                protocol.Predictions(query=query, topic=topic, questions=predicted)
-            )
-
-    def _predict_context(self, view: protocol.KnowledgeView) -> str:
-        lines = [f"Текущая тема: {view.title or view.topic}"]
-        for block in view.blocks[:4]:
-            lines.append(f"Вопрос: {block.question}\nОтвет: {block.answer}")
-        return "\n\n".join(lines)[:3000]
-
     # -- parallel LLM answer (primary pane, off the hot path) ---------------
 
     def _maybe_answer_llm(
-        self, view: protocol.KnowledgeView, query: str, force: bool = False, mode: str = "technical"
+        self, view: protocol.KnowledgeView, query: str, force: bool = False, mode: str = "technical",
+        utterance: str = "",
     ) -> None:
-        """Schedule an exact-question LLM answer in parallel with the RAG view.
+        """Schedule an LLM answer in parallel with the KB view.
 
         Runs on a separate daemon thread so a slow model never stalls the
-        interview worker. Skips questions the sync path already answered
-        (``llm_answered``) and is throttled by ``answer_cooldown_s`` unless
-        ``force`` (early-start / restart on a changed final transcript).
-        Cached answers are served synchronously without any LLM round-trip.
-        ``mode="personal"`` switches to the first-person STAR prompt.
+        interview worker. The LLM answers from its own expertise — technical
+        KB blocks are NOT injected as context. For ``mode="personal"`` or
+        ``"mixed"`` the candidate's resume blocks are passed as context.
+        Throttled by ``answer_cooldown_s`` unless ``force`` (early-start /
+        restart on a changed final transcript). Cached answers are served
+        synchronously without any LLM round-trip.
         """
         if not (self._cfg.llm_primary and self._llm_answer_available()):
             return
         now = time.monotonic()
         if not force and now - self._last_answer_ts < self._cfg.answer_cooldown_s:
             return
-        # The LLM is always the primary answerer (Variant A: RAG as reference).
-        # We no longer short-circuit on ``view.llm_answered`` — even an exact KB
-        # hit goes through the model so the user gets a rich, expanded answer.
+        # The LLM is always the primary answerer — it answers from its own
+        # expertise. Technical KB context is NOT injected (the topic tree in
+        # the UI serves as a manual reference sidebar). For personal/mixed
+        # modes the candidate's resume blocks are still passed as context.
         if not view or not view.topic:
             return
         self._last_answer_ts = now
@@ -939,23 +1434,130 @@ class InterviewEngine:
             return
         if mode == "personal":
             context = self._llm_answer_context_personal(view, query)
+        elif mode == "mixed":
+            context = self._llm_answer_context_personal(view, query)
         else:
-            context = self._llm_answer_context(view, mode=mode)
-        self._answer_thread = threading.Thread(
-            target=self._answer_llm_worker,
-            args=(query, view.topic, view.title, context, key, mode),
-            kwargs={"seg_id": getattr(view, "segment_id", "") or ""},
-            daemon=True,
-            name="interview-llm-answer",
-        )
+            context = ""
+        kb_fallback = self._kb_fallback_text(view)
+        seg_id = getattr(view, "segment_id", "") or ""
         if self._trace is not None:
-            seg_id = getattr(view, "segment_id", None) or ""
             self._trace.mark(seg_id, "llm_start")
-        self._answer_thread.start()
+        self._question_queue.ensure_started()
+        # Reserve the answer at ENQUEUE time (before it actually starts
+        # streaming): closes the submit→enter-stream race where background
+        # LLM calls (terms/context/topics/dialog) check is_streaming=False
+        # and race the answer to the provider, inflating its time-to-first
+        # token. The reservation is released in _answer_llm_worker (or here,
+        # if the submit was dropped as a duplicate).
+        llm = self._llm
+        reserve = getattr(llm, "reserve_answer", None)
+        unreserve = getattr(llm, "unreserve_answer", None)
+        if reserve is not None:
+            reserve()
+
+        def _run_and_release() -> None:
+            try:
+                self._answer_llm_worker(
+                    query, view.topic, view.title, context, key, mode,
+                    seg_id=seg_id,
+                    utterance=utterance,
+                    kb_fallback=kb_fallback,
+                )
+            finally:
+                if unreserve is not None:
+                    unreserve()
+
+        # Serial question queue: the job runs as soon as the previous answer
+        # stream finishes; all context is snapshotted in the closure args so
+        # a queued answer never reads stale engine state. Equivalent pending
+        # questions are deduplicated by ``key``.
+        accepted = self._question_queue.submit(
+            key=key,
+            segment_id=seg_id,
+            run=_run_and_release,
+        )
+        if not accepted and unreserve is not None:
+            unreserve()
+        pending = self._question_queue.pending
+        if pending:
+            log.info("question-queue: enqueued %r (pending=%d)", query[:60], pending)
+
+    @staticmethod
+    def _kb_fallback_text(view: protocol.KnowledgeView) -> str:
+        """Build the primary-pane fallback from the KB top block.
+
+        Used when the LLM returns an empty answer (failure/timeout) but the KB
+        matched a topic: instead of «Ответ ИИ недоступен» the user sees the
+        best matching block. Empty when there are no blocks.
+        """
+        if view is None or not view.blocks:
+            return ""
+        first = view.blocks[0]
+        parts: list[str] = []
+        if first.question:
+            parts.append(f"**{first.question}**")
+        if first.answer:
+            parts.append(first.answer)
+        return "\n\n".join(parts).strip()
+
+    def _fragment_advisory(self, query: str, topic: str) -> str:
+        """Hint the LLM when a question tail ends on a mangled short term.
+
+        Monologues often end with a clipped question whose last term whisper
+        heard badly («…расскажи, что такое, мэй,» → «неймспейсы»). The LLM
+        otherwise guesses (it read «мэй» as GNU Make). The advisory never
+        rewrites the query — it lists candidate terms from the matched KB
+        topic (topic keywords + block keywords) so the model picks the
+        plausible DevOps concept instead of a phantom. Returns "" when the
+        query is not a short "what is …" fragment or no topic candidates exist.
+        """
+        q = (query or "").strip().lower()
+        if not q:
+            return ""
+        # Only "what is / tell me about" style fragments that are SHORT (a
+        # mangled tail, not a full question that KB already matched).
+        if not re.search(r"что такое|расскажи (?:про |что такое )|что за", q):
+            return ""
+        topic_obj = self._matcher.topic_by_id(topic) if topic else None
+        if topic_obj is None:
+            return ""
+        candidates: list[str] = []
+        seen: set[str] = set()
+        for kw in topic_obj.keywords:
+            k = kw.strip().lower()
+            if k and k not in seen:
+                seen.add(k)
+                candidates.append(kw.strip())
+        for block in topic_obj.all_blocks():
+            for kw in block.keywords:
+                k = kw.strip().lower()
+                if k and k not in seen:
+                    seen.add(k)
+                    candidates.append(kw.strip())
+        if not candidates:
+            return ""
+        # If the query's last significant word already matches a known topic
+        # keyword, the term was NOT mangled — no advisory needed («что такое
+        # Docker» ends on a clean term; «что такое, мэй,» does not).
+        words = re.findall(r"[а-яёa-z]+", q)
+        if words and words[-1] in {c.lower() for c in candidates}:
+            return ""
+        # Keep the list short and generic — the model already has the query;
+        # we only disambiguate the trailing term.
+        listed = ", ".join(candidates[:8])
+        return (
+            f"Примечание распознавания: последнее слово вопроса, вероятно, "
+            f"искажено STT. Тема разговора — «{topic_obj.title}». Возможные "
+            f"понятия: {listed}. Отвечай про наиболее подходящее из них, а не "
+            f"про случайное созвучное слово."
+        )
 
     def _answer_llm_worker(
         self, query: str, topic: str, title: str, context: str, key: str = "", mode: str = "technical",
         seg_id: str = "",
+        skip_prev_qa: bool = False,
+        utterance: str = "",
+        kb_fallback: str = "",
     ) -> None:
         """Stream the LLM answer to the cockpit in real time.
 
@@ -965,14 +1567,69 @@ class InterviewEngine:
         the final message still arrives with ``answer=""`` so the panel can fall
         back to the KB match. A non-empty result is stored in the answer cache.
         ``mode`` selects the system prompt ("personal" = first-person STAR).
+        ``skip_prev_qa=True`` suppresses the previous Q/A context (used for
+        pure concept/term-link questions where prior context is misleading).
+        ``utterance`` carries the full final transcript; when the query is a
+        short tail fragment (detector.last_question), the utterance is
+        prepended to the context so the model sees the whole question.
         """
-        # Build previous Q/A context for follow-up coherence.
+        # Utterance-first: the full final transcript is the primary material.
+        # detector.last_question may clip a compound question to its last
+        # clause («что такое IaC какие инструменты использовали» → «какие
+        # инструменты использовали»), losing the first half. The verbatim
+        # utterance is therefore ALWAYS prepended when it differs from the
+        # query; last_question stays the model's compact question hint.
+        utterance = (utterance or "").strip()
+        explicit_utterance = bool(utterance) and utterance != query and utterance not in context
+        if explicit_utterance:
+            context = (
+                f"Интервьюер сказал дословно (вопрос может состоять из "
+                f"нескольких частей — ответь на всё): {utterance}\n\n"
+                f"Отвечай строго на этот последний вопрос, даже если он "
+                f"перекликается с предыдущей темой.\n\n{context}"
+            ).strip()
+        # STT advisory: single-letter + «запись» fragments are unreliable
+        # («Что означает о записи в DNS» is almost certainly «А-запись»,
+        # «N-запись» — «NS-запись»). Never rewrite the query — just hint the
+        # model so it does not latch onto a phantom interpretation (e.g.
+        # reading «о записи» as SOA).
+        advisory = _dns_record_advisory(query)
+        if advisory:
+            context = f"{advisory}\n\n{context}".strip()
+        fragment = self._fragment_advisory(query, topic)
+        if fragment:
+            context = f"{fragment}\n\n{context}".strip()
+        # Build previous Q/A context for follow-up coherence. Context
+        # hygiene: when the verbatim utterance is already in the context,
+        # it dominates — the previous Q/A is suppressed, otherwise the LLM
+        # tends to continue the previous topic instead of answering the
+        # (possibly fragmented) current question.
         prev_qa = ""
-        if self._last_answer_a and (time.monotonic() - self._last_answer_ts) < 30.0:
+        if (
+            not skip_prev_qa
+            and not explicit_utterance
+            and self._last_answer_a
+            and (time.monotonic() - self._last_answer_ts) < 30.0
+        ):
             prev_qa = (
                 f"Предыдущий вопрос и ответ:\n"
                 f"Q: {self._last_answer_q}\nA: {self._last_answer_a[:300]}\n\n"
             )
+        # Calibration diagnostics: WHY this exact prompt went to the LLM.
+        log.debug(
+            "llm-prompt: query=%r utterance=%s prev_qa=%s reason=%s",
+            query[:80],
+            (utterance[:120] + "…") if len(utterance) > 120 else utterance or "(none)",
+            ("Q=" + self._last_answer_q[:80]) if prev_qa else "suppressed",
+            (
+                "skip_prev_qa flag" if skip_prev_qa
+                else "explicit utterance dominates" if explicit_utterance
+                else "stale" if not self._last_answer_a
+                else "age>30s" if (time.monotonic() - self._last_answer_ts) >= 30.0
+                else "included"
+            ),
+        )
+        log.debug("llm-prompt: full context (%d chars):\n%s", len(context), context)
         # Debug log: what context are we sending to the LLM?
         log.info(
             "llm-request: query=%r mode=%s context_len=%d context_preview=%.200s",
@@ -1001,14 +1658,63 @@ class InterviewEngine:
                                 delta=delta,
                             )
                         )
-            except Exception:  # noqa: BLE001
+            except Exception as stream_exc:  # noqa: BLE001
                 log.exception("LLM answer stream failed")
                 buffer = []
+                stream_failed = True
+            else:
+                stream_failed = False
             answer = "".join(buffer)
+            # Retry on a broken stream: DeepSeek occasionally aborts the
+            # stream mid-generation (exception), returns nothing at all, or
+            # truncates it to a couple of chunks (< _LLM_MIN_ANSWER_CHARS).
+            # One retry re-streams the same request; the broken fragments
+            # already painted are replaced by the final done-message.
+            needs_retry = (
+                not answer or stream_failed or len(answer) < _LLM_MIN_ANSWER_CHARS
+            )
+            if needs_retry:
+                log.warning(
+                    "llm: broken stream (len=%d, failed=%s) — retrying once",
+                    len(answer), stream_failed,
+                )
+                # Visible status ONLY when nothing was painted yet (empty
+                # pane looks hung); a short partial answer stays on screen
+                # and is silently replaced by the retry's final message.
+                if self.on_llm_answer and not answer:
+                    self.on_llm_answer(
+                        protocol.LlmAnswer(
+                            query=query, topic=topic, title=title,
+                            status="retry",
+                        )
+                    )
+                retry_buffer: list[str] = []
+                try:
+                    for delta in self._llm.answer_question_stream(
+                        query, context, mode=mode, previous_qa=prev_qa
+                    ):
+                        if delta:
+                            retry_buffer.append(delta)
+                except Exception:  # noqa: BLE001
+                    log.exception("LLM answer retry stream failed")
+                    retry_buffer = []
+                retry_answer = "".join(retry_buffer)
+                if len(retry_answer) > len(answer):
+                    answer = retry_answer
             log.info(
                 "llm-response(stream): query=%r answer_len=%d empty=%s preview=%.200s",
                 query[:80], len(answer), not bool(answer), answer[:200],
             )
+            if not answer:
+                # Empty-answer diagnostics: what the model saw right before
+                # returning nothing (usually a fragmented query or a prompt
+                # the model found self-contradictory).
+                log.warning(
+                    "llm-response(stream): empty answer diagnostics — "
+                    "query=%r mode=%s context_tail=%.300s prev_qa=%s",
+                    query[:80], mode, context[-300:],
+                    "yes" if prev_qa else "no",
+                )
             if self._cfg.answer_cache:
                 self._answer_cache.put(key, answer)
             if answer:
@@ -1016,6 +1722,15 @@ class InterviewEngine:
                 self._last_answer_a = answer
                 self._last_answer_ts = time.monotonic()
                 self._feed_answer_to_context(query, answer)
+            if not answer:
+                self._ledger.warn(
+                    "empty_answer", C_EMPTY_ANSWER, id=seg_id,
+                    mode=mode, query=(query[:80] or ""),
+                )
+            self._ledger.record(
+                "answered", id=seg_id, mode=mode,
+                answer_len=len(answer), empty=not bool(answer),
+            )
             if self._trace is not None and seg_id:
                 self._trace.mark(seg_id, "llm_done")
             if self.on_llm_answer:
@@ -1028,6 +1743,7 @@ class InterviewEngine:
                         context_summary=self._context_summary(),
                         done=True,
                         segment_id=seg_id,
+                        kb_fallback=kb_fallback if not answer else "",
                     )
                 )
             return
@@ -1048,6 +1764,15 @@ class InterviewEngine:
             self._last_answer_a = answer
             self._last_answer_ts = time.monotonic()
             self._feed_answer_to_context(query, answer)
+        if not answer:
+            self._ledger.warn(
+                "empty_answer", C_EMPTY_ANSWER, id=seg_id,
+                mode=mode, query=(query[:80] or ""),
+            )
+        self._ledger.record(
+            "answered", id=seg_id, mode=mode,
+            answer_len=len(answer), empty=not bool(answer),
+        )
         if self._trace is not None and seg_id:
             self._trace.mark(seg_id, "llm_first")
             self._trace.mark(seg_id, "llm_done")
@@ -1061,6 +1786,7 @@ class InterviewEngine:
                     context_summary=self._context_summary(),
                     done=True,
                     segment_id=seg_id,
+                    kb_fallback=kb_fallback if not answer else "",
                 )
             )
 
@@ -1088,18 +1814,18 @@ class InterviewEngine:
         # interviewer questions from candidate responses.
         snippet = f"[ответ] {summary}"
         if self._dialog is not None:
-            self._dialog.add_utterance(snippet)
+            self._dialog.add_utterance(snippet, speaker="me")
         self._context.on_segment(snippet)
         log.info("answer-context: query=%r summary=%.120s", query[:60], summary)
 
     def _llm_answer_context(self, view: protocol.KnowledgeView, mode: str = "technical") -> str:
         """Reference material + tracker summary for an exact-question answer.
 
-        Variant A ("RAG as reference"): the KB blocks are supplied as a
-        factual anchor — the model decides how much to lean on them. We always
-        surface up to 5 blocks and a wide context limit so the model has the
-        facts it needs; a one-line coverage note tells it whether the KB has
-        good material or it should expand from its own expertise.
+        DEPRECATED: technical KB context is no longer fed to the LLM — the
+        model answers from its own expertise. This method is retained for
+        potential debugging/CLI use but is not called on the answer path.
+        Only ``_llm_answer_context_personal`` (resume blocks) is still used
+        for ``mode="personal"`` and ``"mixed"``.
         """
         lines = []
         if view.title:

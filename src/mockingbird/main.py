@@ -1,6 +1,7 @@
 """Mockingbird entry point."""
 from __future__ import annotations
 
+import logging
 import os
 import sys
 
@@ -12,6 +13,77 @@ from mockingbird.config import load_config
 from mockingbird.logging_setup import setup_logging
 from mockingbird.ui.main_window import MainWindow
 from mockingbird.ui.theme import apply_theme
+
+
+def _show_system_warnings(parent, warnings: list) -> None:
+    """Render system-check warnings in a themed dialog with Lucide icons.
+
+    Replaces the plain QMessageBox with emoji markers — each warning gets a
+    colour-coded Lucide glyph (info / triangle / octagon-x) painted in the
+    palette of the active theme, so it reads well in dark and light alike.
+    """
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import (
+        QDialog,
+        QHBoxLayout,
+        QLabel,
+        QPushButton,
+        QVBoxLayout,
+    )
+
+    from mockingbird.ui import theme
+    from mockingbird.ui.icons import icon as lucide_icon
+
+    LEVEL_STYLE = {
+        "error": ("octagon-x", theme.current.status_error),
+        "warning": ("alert-triangle", theme.current.status_muted),
+        "info": ("info", theme.current.status_idle),
+    }
+
+    dlg = QDialog(parent)
+    dlg.setWindowTitle("Проверка системы")
+    dlg.setModal(True)
+    layout = QVBoxLayout(dlg)
+    layout.setContentsMargins(20, 18, 20, 18)
+    layout.setSpacing(12)
+
+    for w in warnings:
+        name, color = LEVEL_STYLE.get(w.level, LEVEL_STYLE["info"])
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        glyph = QLabel()
+        glyph.setPixmap(
+            lucide_icon(name, size=20, color=color).pixmap(20, 20)
+        )
+        glyph.setFixedSize(20, 20)
+        glyph.setAlignment(Qt.AlignmentFlag.AlignTop)
+        text = QLabel(f"<b>{w.title}</b><br>{w.message}")
+        text.setWordWrap(True)
+        text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        row.addWidget(glyph, 0, Qt.AlignmentFlag.AlignTop)
+        row.addWidget(text, 1)
+        layout.addLayout(row)
+
+    btn = QPushButton("Понятно")
+    btn.setProperty("primary", True)
+    btn.setFixedWidth(120)
+    btn.clicked.connect(dlg.accept)
+    btn_layout = QHBoxLayout()
+    btn_layout.addStretch(1)
+    btn_layout.addWidget(btn)
+    layout.addLayout(btn_layout)
+
+    dlg.exec()
+
+
+def _log_level() -> int:
+    """Root log level from ``MOCKINGBIRD_LOG_LEVEL`` env (default INFO).
+
+    DEBUG enables calibration diagnostics (llm-prompt / last_question /
+    kb-match decisions) in the in-app Log panel, console and log file.
+    """
+    name = (os.environ.get("MOCKINGBIRD_LOG_LEVEL") or "").strip().upper()
+    return getattr(logging, name, logging.INFO) if name else logging.INFO
 
 
 def _harden_hf_symlinks() -> None:
@@ -53,6 +125,37 @@ def _set_app_user_model_id() -> None:
         pass
 
 
+def _ensure_vendor_on_path() -> None:
+    """Add vendor/ to sys.path so the stub ``pyannote`` is importable.
+
+    GigaAM's remote modeling file imports ``pyannote`` top-level; transformers'
+    ``check_imports`` requires the package to exist even though the app never
+    calls ``transcribe_longform``. If the real ``pyannote.audio`` is installed
+    (diarization feature), it takes precedence and the stub is skipped.
+    """
+    if getattr(sys, "frozen", False):
+        return  # spec handles bundling
+    import importlib.util
+    # Only skip the stub if the *real* pyannote.audio package is installed.
+    try:
+        _has_real_pyannote = importlib.util.find_spec("pyannote.audio") is not None
+    except (ImportError, ModuleNotFoundError, ValueError):
+        _has_real_pyannote = False
+    if _has_real_pyannote:
+        return
+    here = os.path.dirname(os.path.abspath(__file__))
+    vendor = os.path.normpath(os.path.join(here, "..", "..", "vendor"))
+    if os.path.isdir(vendor) and vendor not in sys.path:
+        sys.path.insert(0, vendor)
+    # Also purge any stale partial pyannote from sys.modules so the stub
+    # is used instead of a half-loaded namespace.
+    for key in list(sys.modules):
+        if key == "pyannote" or key.startswith("pyannote."):
+            mod = sys.modules.pop(key, None)
+            if mod is not None:
+                del mod
+
+
 def _resolve_icon_path() -> str | None:
     """Locate ``logo_mockingbird.ico`` in dev and frozen (PyInstaller) modes."""
     candidates: list[str] = []
@@ -76,16 +179,17 @@ def _resolve_icon_path() -> str | None:
 
 
 def main() -> int:
+    _ensure_vendor_on_path()
     _harden_hf_symlinks()
     _set_app_user_model_id()
     if "--cli" in sys.argv:
         from mockingbird.cli import run_cli
 
         config = load_config()
-        setup_logging(config.storage.log_dir)
+        setup_logging(config.storage.log_dir, _log_level())
         return run_cli(config)
     config = load_config()
-    setup_logging(config.storage.log_dir)
+    setup_logging(config.storage.log_dir, _log_level())
     app = QApplication(sys.argv)
     app.setApplicationName("Mockingbird")
     app.setStyle("Fusion")
@@ -99,7 +203,6 @@ def main() -> int:
     apply_theme(app, theme_name)
 
     # Splash screen — show immediately while App initializes.
-    from PySide6.QtWidgets import QMessageBox
     from mockingbird.ui.splash import LoaderSplash
 
     splash = LoaderSplash()
@@ -129,8 +232,48 @@ def main() -> int:
                     import faster_whisper  # noqa: F401
             except Exception:
                 pass
-            _preload["topics"] = load_topics(config.interview.kb_path)
-            _preload["glossary"] = Glossary.load(config.terms.glossary_path)
+            topics = load_topics(config.interview.kb_path)
+            glossary = Glossary.load(config.terms.glossary_path)
+            _preload["topics"] = topics
+            _preload["glossary"] = glossary
+            # Build the KB index off the GUI thread too — alias expansion over
+            # 400+ glossary entries plus index construction is another chunk
+            # of the synchronous App.__init__ cost.
+            try:
+                from mockingbird.kb.index import KbIndex
+
+                aliases: dict[str, str] = {}
+                for entry in glossary.entries:
+                    canonical = entry.term or entry.normalized
+                    if not canonical:
+                        continue
+                    aliases[canonical] = canonical
+                    if entry.normalized:
+                        aliases[entry.normalized] = canonical
+                    for alias in entry.aliases:
+                        aliases[alias] = canonical
+                _preload["kb_index"] = KbIndex(topics, aliases=aliases)
+            except Exception:
+                pass
+            # Pre-collect KB matcher terms (word_tokens scan over 19 topics)
+            # so App.__init__ skips the rescan on the GUI thread.
+            try:
+                from mockingbird.terms.phonetics import word_tokens
+
+                kb_terms: list[str] = []
+                for topic in topics:
+                    kb_terms.extend(topic.keywords)
+                    for section in topic.sections:
+                        for block in section.blocks:
+                            kb_terms.extend(block.keywords)
+                cleaned_terms: list[str] = []
+                for t in kb_terms:
+                    t = (t or "").strip()
+                    if t and len(word_tokens(t)) <= 3:
+                        cleaned_terms.append(t)
+                _preload["kb_terms"] = cleaned_terms
+            except Exception:
+                pass
         except Exception:
             pass
         _preload_ready.set()
@@ -156,6 +299,8 @@ def main() -> int:
             config,
             preloaded_topics=_preload.get("topics"),
             preloaded_glossary=_preload.get("glossary"),
+            preloaded_kb_index=_preload.get("kb_index"),
+            preloaded_kb_terms=_preload.get("kb_terms"),
         )
         app.processEvents()
         window = MainWindow(context)
@@ -168,6 +313,12 @@ def main() -> int:
 
     context, window, sys_warnings = _build_app()
     app.processEvents()
+
+    # Kick the STT model load off as early as possible: the worker thread
+    # loads the weights while the window is still being shown / onboarding /
+    # system checks run. By the time the user reaches the UI, the model is
+    # already loading (or ready) instead of waiting for warm_start later.
+    context.warm_start()
 
     # First-launch onboarding: show wizard if LLM is not configured.
     if not config.llm.base_url or not config.llm.api_key:
@@ -195,15 +346,7 @@ def main() -> int:
     context.signals.toggle_capture_request.connect(window._on_toggle_capture_via_signal)
 
     if sys_warnings:
-        messages = []
-        for w in sys_warnings:
-            icon = {"error": "❌", "warning": "⚠", "info": "ℹ"}.get(w.level, "•")
-            messages.append(f"{icon} {w.title}: {w.message}")
-        QMessageBox.warning(
-            window,
-            "Проверка системы",
-            "\n\n".join(messages),
-        )
+        _show_system_warnings(window, sys_warnings)
 
     # Global hotkey Ctrl+Alt+H (Windows only; no-op elsewhere).
     from mockingbird.ui.global_hotkey import GlobalHotkey

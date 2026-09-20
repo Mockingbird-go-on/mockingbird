@@ -1,0 +1,5 @@
+id: mobile
+title: "Mobile-разработчик"
+persona: "Mobile-разработчик с 5-летним опытом"
+persona_senior: "Mobile-разработчик 6+ лет, публиковал приложения в сторах, оптимизировал производительность и батарею, вёл команду из 3 человек"
+stack: "Kotlin (Android) / Swift (iOS) / Flutter/React Native, работа с API, офлайн-режимы, аналитика (Crashlytics), CI/CD для мобилок"

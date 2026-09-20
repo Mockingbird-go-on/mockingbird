@@ -192,6 +192,16 @@ _FILLERS = {
     "разница", "разницы", "сравни", "сравнить",
     "работает", "устроен", "устроена", "устроены",
     "есть", "имеется", "нужно", "расскажи", "объясни", "опиши",
+    # Pronoun oblique forms — carry no topical signal ("в нём", "с ней", "у них")
+    "нём", "нем", "ней", "них", "ним", "ними", "неё", "нее",
+    # Generic past-tense verbs — no subject by themselves ("делал", "был")
+    "делал", "делала", "делало", "делали",
+    "был", "была", "было", "были",
+    "использовал", "использовала", "использовали",
+    "настраивал", "настраивала", "настраивали",
+    "работал", "работала", "работали",
+    "применял", "применяла", "применяли",
+    "настроил", "настроила", "настроили",
 }
 
 _WEIGHT_KEYWORD = 3.0
@@ -234,6 +244,39 @@ def has_topical_signal(text: str) -> bool:
     return False
 
 
+def related_topic_ids(
+    kb_topics: list, active_topic: str | None, max_topics: int = 2
+) -> set[str]:
+    """Ids of KB topics whose keywords overlap the active topic most.
+
+    Used by the STT hot-words rebuild to seed the prompt with adjacent
+    topics' terms (subject drift happens before the context tracker notices
+    the shift). Empty when there is no active topic — the canonical glossary
+    pool already covers the general case.
+    """
+    if not active_topic:
+        return set()
+    active = next((t for t in kb_topics if t.id == active_topic), None)
+    if active is None:
+        return set()
+    active_kw = {k.lower() for k in active.keywords}
+    for section in active.sections:
+        for block in section.blocks:
+            active_kw.update(k.lower() for k in (block.keywords or []))
+    if not active_kw:
+        return set()
+    scored: list[tuple[int, str]] = []
+    for topic in kb_topics:
+        if topic.id == active_topic:
+            continue
+        kw = {k.lower() for k in topic.keywords}
+        overlap = len(active_kw & kw)
+        if overlap > 0:
+            scored.append((overlap, topic.id))
+    scored.sort(reverse=True)
+    return {tid for _, tid in scored[:max_topics]}
+
+
 class KbIndex:
     def __init__(self, topics: list[KbTopic], aliases: dict[str, str] | None = None):
         self.topics = topics
@@ -254,6 +297,7 @@ class KbIndex:
         self._extra_aliases: dict[str, str] = {
             fold(k): v for k, v in (aliases or {}).items()
         }
+        self._resolve_cache: dict[str, str | None] = {}
         self._build()
 
     @staticmethod
@@ -350,11 +394,21 @@ class KbIndex:
         KB question text, so ``fuzzy_resolve`` returns them as "known terms".
         They carry no topical signal and would highlight every utterance, so
         they are filtered out before resolution.
+
+        Results are memoized in ``self._resolve_cache`` so repeated calls for
+        the same token (e.g. when re-rendering answers during history
+        browsing) are O(1) dict lookups instead of re-running fuzzy matching.
         """
+        cache = self._resolve_cache
+        if token in cache:
+            return cache[token]
         folded = fold(token)
         if not folded or folded in _STOPWORDS or is_filler(folded):
+            cache[token] = None
             return None
-        return self.fuzzy_resolve(token)
+        result = self.fuzzy_resolve(token)
+        cache[token] = result
+        return result
 
     def query_terms(self, query: str) -> list[str]:
         return [fold(t) for t in normalize_terms(query) if fold(t) not in _STOPWORDS and len(fold(t)) > 1]

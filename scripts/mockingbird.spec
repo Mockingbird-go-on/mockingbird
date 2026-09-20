@@ -32,14 +32,38 @@ _SRC = os.path.join(_ROOT, "src")
 _VENDOR = os.path.join(_ROOT, "vendor")
 _ICON = os.path.join(SPECPATH, "logo_mockingbird.ico")
 
+# If pyannote.audio is installed, collect it; otherwise fall back to the
+# vendor stub so GigaAM's check_imports still passes.
+_pyannote_modules = []
+try:
+    _pyannote_modules = (
+        collect_submodules("pyannote")
+        + collect_submodules("pyannote.audio")
+        + collect_submodules("speechbrain")
+    )
+except Exception:
+    pass
+
+_vendor_datas = []
+_vendor_hidden = []
+_vendor_pathex = []
+if not _pyannote_modules:
+    # No real pyannote.audio — use the vendor stub.
+    _vendor_datas = [(os.path.join(_VENDOR, "pyannote"), "pyannote")]
+    _vendor_hidden = ["pyannote"]
+    _vendor_pathex = [_VENDOR]
+
 datas = (
     collect_data_files("mockingbird")
     + [(os.path.join(SPECPATH, "logo_mockingbird.ico"), "mockingbird")]
     + [(os.path.join(_ROOT, "src", "mockingbird", "sound.mp3"), "mockingbird")]
+    + [(os.path.join(_ROOT, "src", "mockingbird", "assets", "icons", "*.svg"),
+        os.path.join("mockingbird", "assets", "icons"))]
     + collect_data_files("faster_whisper")
     + collect_data_files("ctranslate2")
     + collect_data_files("transformers")
     + collect_data_files("tokenizers")
+    + _vendor_datas
 )
 
 def _collect_optional(name: str):
@@ -51,7 +75,45 @@ def _collect_optional(name: str):
         return []
 
 
-binaries = (
+def _flat_nvidia_libs(collected):
+    """Find the installed nvidia-* wheels and return (src, dest) pairs that
+    put every CUDA DLL FLAT into _internal/ctranslate2/, next to
+    ctranslate2.dll. The Windows loader only searches the process dir and
+    add_dll_directory() paths, so the nvidia/<lib>/bin/ wheel layout leaves
+    cuDNN's sub-DLLs unresolvable -> ctranslate2 drops float16 -> whisper
+    decodes on float32. No-op when the nvidia packages are absent (CPU
+    builds)."""
+    import glob
+    try:
+        import nvidia
+    except ImportError:
+        return []
+    # "nvidia" is a namespace package (no __init__.py): __file__ is None,
+    # the package root lives in the __path__ iterable.
+    pkg_root = next(iter(nvidia.__path__), None)
+    if not pkg_root:
+        return []
+    pairs = []
+    # Skip DLLs already shipped by collect_dynamic_libs: duplicate dest paths
+    # make COLLECT fail. Note: collect_dynamic_libs entries carry the DEST
+    # DIRECTORY (e.g. "ctranslate2"), not the full file path — the effective
+    # file name is basename(src) in that case.
+    def _dest_name(src: str, dest: str) -> str:
+        if dest.lower().endswith(".dll"):
+            return os.path.basename(dest)
+        return os.path.basename(src)
+
+    already = {_dest_name(src, dest) for src, dest in collected}
+    for dll in glob.glob(os.path.join(pkg_root, "*", "bin", "*.dll")):
+        base = os.path.basename(dll)
+        if base in already:
+            continue
+        already.add(base)
+        pairs.append((dll, os.path.join("ctranslate2", base)))
+    return pairs
+
+
+_base_binaries = (
     collect_dynamic_libs("ctranslate2")
     + collect_dynamic_libs("onnxruntime")
     + collect_dynamic_libs("sentencepiece")
@@ -68,6 +130,16 @@ binaries = (
     + _collect_optional("nvidia.cusparse")
     + _collect_optional("nvidia.cuda_runtime")
 )
+binaries = (
+    _base_binaries
+    # cuDNN/cuBLAS sub-DLLs (cudnn_engines_*, cudnn_graph*, cublas*, ...) must
+    # sit NEXT to ctranslate2.dll in a directory the Windows loader searches
+    # (_internal/ctranslate2/); the nvidia/<lib>/bin/ wheel layout is invisible
+    # to the loader, cuDNN then fails to load and whisper silently falls back
+    # to float32. Locate the nvidia wheels on disk and add a FLAT copy.
+    + _flat_nvidia_libs(_base_binaries)
+)
+
 hiddenimports = (
     collect_submodules("mockingbird")
     + collect_submodules("faster_whisper")
@@ -81,15 +153,14 @@ hiddenimports = (
     + collect_submodules("sentencepiece")
     + collect_submodules("hydra")
     + collect_submodules("omegaconf")
-    # The remote GigaAM modeling file imports `pyannote` in a code path this
-    # app never uses; transformers' check_imports still requires the top-level
-    # package to be importable. vendor/pyannote is a tiny stand-in for it.
-    + ["pyannote"]
+    + _pyannote_modules
+    + _vendor_hidden
+    + ["PySide6.QtSvg"]
 )
 
 a = Analysis(
     [_ENTRY],
-    pathex=[_SRC, _VENDOR],
+    pathex=[_SRC] + _vendor_pathex,
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
@@ -98,6 +169,8 @@ a = Analysis(
     excludes=[],
     noarchive=False,
 )
+
+
 pyz = PYZ(a.pure)
 
 exe = EXE(

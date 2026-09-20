@@ -47,7 +47,9 @@ def test_extract_yaml_list_garbage():
 
 
 def test_kb_generation_prompt_mentions_constraints():
-    prompt = KB_GENERATION_PROMPT.format(chunk="CHUNK", max_topics=5, max_blocks=24)
+    prompt = KB_GENERATION_PROMPT.format(
+        chunk="CHUNK", max_topics=5, max_blocks=24, context_hint="инструкции"
+    )
     assert "CHUNK" in prompt
     assert "max_topics" not in prompt  # formatted away
     assert "5" in prompt and "24" in prompt

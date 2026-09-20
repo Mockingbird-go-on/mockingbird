@@ -42,6 +42,7 @@ class TermExplainer:
         self._emitted: set[str] = set()
         self._context: deque[str] = deque(maxlen=max(1, config.context_segments))
         self._last_analysis_ts: float = 0.0
+        self._session_terms: list[str] = []
         self.on_term = None
 
     def start(self) -> None:
@@ -59,6 +60,7 @@ class TermExplainer:
     def reset_session(self) -> None:
         self._emitted.clear()
         self._context.clear()
+        self._session_terms.clear()
         self._last_analysis_ts = 0.0
 
     def on_final(self, msg: protocol.FinalTranscript) -> None:
@@ -79,6 +81,17 @@ class TermExplainer:
             return
         self._context.append(msg.text)
         if self._cfg.llm_primary and self._llm is not None and self._llm.available:
+            # Short finals («Угу.», «Да.») never contain terms worth an LLM
+            # round-trip — go straight to the free glossary fallback. This
+            # keeps the LLM connection pool free for the interview answer
+            # stream (lower first-token latency).
+            if len(msg.text.strip()) < self._cfg.llm_min_chars:
+                log.debug(
+                    "terms: short final (%d chars < %d), glossary only",
+                    len(msg.text.strip()), self._cfg.llm_min_chars,
+                )
+                self._glossary_fallback(msg)
+                return
             # Throttle: skip the expensive LLM term-analysis if the last call
             # was less than ``min_interval_s`` ago — go straight to the
             # glossary fallback which is free. This cuts ~15× the number of
@@ -119,6 +132,7 @@ class TermExplainer:
             )
             self._cache.put(detected)
             self._emit(detected)
+            self._add_session_term(item["term"])
             emitted += 1
             if len(self._emitted) > 200:
                 break
@@ -196,6 +210,18 @@ class TermExplainer:
         )
         self._cache.put(detected)
         self._emit(detected)
+        self._add_session_term(term)
+
+    def _add_session_term(self, term: str) -> None:
+        """Track LLM-detected terms for inclusion in STT hot-words."""
+        key = term.strip()
+        if not key or key.lower() in {t.lower() for t in self._session_terms}:
+            return
+        self._session_terms.append(key)
+
+    @property
+    def session_terms(self) -> list[str]:
+        return list(self._session_terms)
 
     def _emit(self, detected: protocol.TermDetected) -> None:
         key = detected.term.lower()

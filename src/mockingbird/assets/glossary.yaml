@@ -5,6 +5,8 @@ terms:
     explanation: "Практика автоматизации сборки, тестирования и доставки кода. CI собирает и проверяет каждое изменение, CD разворачивает его в среду."
     examples: ["Мы выкатываем через CI/CD.", "CI/CD пайплайн упал на этапе тестов."]
     category: devops
+    priority: true
+    keywords: ["pipeline", "deploy", "automation"]
     related:
       - question: "В чём разница между CI и CD?"
         answer: "CI (непрерывная интеграция) — автоматическая сборка и тесты на каждое изменение. CD (непрерывная доставка) — автоматическое развёртывание сборки в среды и готовность к релизу. CI отвечает за «получилось ли собрать», CD — за «попал ли результат в среду»."
@@ -15,6 +17,8 @@ terms:
     explanation: "Открытая платформа оркестрации контейнеров: автоматизирует деплой, масштабирование и управление контейнерными приложениями."
     examples: ["Кластер Kubernetes перезапустил поды.", "Развернём сервис в k8s."]
     category: infra
+    priority: true
+    keywords: ["cluster", "pod", "deployment", "service", "container"]
     related:
       - question: "В чём отличие Deployment от StatefulSet?"
         answer: "Deployment — для stateless-приложений: реплики без стабильных имён, быстрое масштабирование и обновления. StatefulSet — для stateful: стабильные имена (pod-0, pod-1), стабильный сетевой идентификатор, отдельный PVC на реплику и гарантированный порядок старта."
@@ -22,11 +26,13 @@ terms:
         answer: "Это фронтенд control plane: единственная точка входа для всех операций кластера. Принимает REST-запросы, выполняет аутентификацию и авторизацию, валидацию, а состояние хранит в etcd."
 
   - term: "Docker"
-    aliases: ["docker", "докер", "дохер"]
+    aliases: ["docker", "докер", "дохер", "дрокер"]
     normalized: "Docker"
     explanation: "Инструмент для упаковки приложений и зависимостей в изолированные контейнеры, которые одинаково работают на любой машине."
     examples: ["Запусти базу в Docker.", "Собери образ через Dockerfile."]
     category: infra
+    priority: true
+    keywords: ["container", "image", "dockerfile", "volume"]
     related:
       - question: "В чём отличие ENTRYPOINT от CMD?"
         answer: "CMD задаёт команду и аргументы по умолчанию и легко переопределяется в docker run. ENTRYPOINT фиксирует исполняемый процесс контейнера и переопределяется только через --entrypoint. Если заданы оба, CMD передаётся аргументами в ENTRYPOINT. Практика: ENTRYPOINT — процесс, CMD — его дефолтные аргументы."
@@ -369,7 +375,7 @@ terms:
     category: infra
 
   - term: "Volume"
-    aliases: ["volume", "docker volume", "том", "вольюм", "вольюма", "вольюмы", "дисковый том", "volume каталог"]
+    aliases: ["volume", "docker volume", "вольюм", "вольюма", "вольюмы", "дисковый том", "volume каталог"]
     normalized: "Docker Volume"
     explanation: "Механизм хранения данных вне файловой системы контейнера. Данные в томе переживают перезапуск и могут шариться между контейнерами."
     examples: ["База висит на docker volume, данные не теряются при рестарте."]
@@ -404,7 +410,7 @@ terms:
     category: infra
 
   - term: "Docker Swarm"
-    aliases: ["docker swarm", "swarm", "сворм", "докер сворм", "swarm cluster"]
+    aliases: ["docker swarm", "swarm", "сворм", "докер сворм", "swarm cluster", "докерсварм"]
     normalized: "Docker Swarm"
     explanation: "Встроенная в Docker оркестрация контейнеров на нескольких нодах (manager/worker). Проще Kubernetes, но уступает ему в возможностях."
     examples: ["Стек крутится на Docker Swarm."]
@@ -452,6 +458,8 @@ terms:
     explanation: "Пакетный менеджер для Kubernetes: чарты описывают приложение через шаблоны и values, позволяют ставить и обновлять релизы одной командой."
     examples: ["Поставили приложение через Helm chart."]
     category: infra
+    priority: true
+    keywords: ["chart", "package", "release", "kubernetes"]
     related:
       - question: "Из чего состоит Helm chart?"
         answer: "Директория чарта: **Chart.yaml** (метаданные: name, version, dependencies), **values.yaml** (параметры по умолчанию), **templates/** (Go-шаблоны манифестов) и **_helpers.tpl** (вспомогательные шаблоны). Любые значения из values подставляются в шаблоны через {{ .Values... }}."
@@ -581,7 +589,7 @@ terms:
     category: infra
 
   - term: "RBAC"
-    aliases: ["rbac", "рбак", "эрбиэйси", "ролевая модель", "role-based access control"]
+    aliases: ["rbac", "рбак", "эрбак", "арбак", "эрбиэйси", "ролевая модель", "role-based access control"]
     normalized: "Role-Based Access Control"
     explanation: "Модель доступа на основе ролей. В Kubernetes управляет тем, кто и что может делать: Role/ClusterRole, RoleBinding/ClusterRoleBinding."
     examples: ["Доступы в кластере настроены через RBAC."]
@@ -594,6 +602,8 @@ terms:
     explanation: "Система непрерывной интеграции внутри GitLab: по событиям в репозитории запускает пайплайны из файла .gitlab-ci.yml."
     examples: ["Сборка идёт через GitLab CI."]
     category: devops
+    priority: true
+    keywords: ["pipeline", "runner", "job", "deploy"]
 
   - term: "Pipeline"
     aliases: ["pipeline", "пайплайн", "пайплайны", "пайплайн в ci", "пайп", "пайплайн в гитлабе", "пайплайны в ci"]
@@ -638,7 +648,7 @@ terms:
     category: engineering
 
   - term: "CI job"
-    aliases: ["ci job", "job", "джоба", "джобы", "джоб в пайплайне", "job в пайплайне", "джоба в ci"]
+    aliases: ["ci job", "job", "джобы", "джоб в пайплайне", "job в пайплайне", "джоба в ci"]
     normalized: "CI Job"
     explanation: "Одна единица работы в пайплайне: команды, которые выполняет раннер. Джобы группируются в стадии и могут иметь зависимости."
     examples: ["Джоба на сборку упала из-за таймаута."]
@@ -1136,7 +1146,7 @@ terms:
     category: ops
 
   - term: "Staging"
-    aliases: ["staging", "стейджинг", "стейджинг-среда", "стеджинг", "стейдж среда", "препрод", "pre-prod", "пре-прод", "стейдж"]
+    aliases: ["staging", "стейджинг", "стейджинг-среда", "стеджинг", "стейдж среда", "препрод", "pre-prod", "пре-прод"]
     normalized: "Staging"
     explanation: "Окружение, максимально близкое к проду, где проходят финальные проверки перед релизом. Нередко подпитывается теми же данными."
     examples: ["Сначала гоняем на стейджинге."]
@@ -1262,11 +1272,13 @@ terms:
     category: data
 
   - term: "PostgreSQL"
-    aliases: ["postgresql", "postgres", "постгрес", "постгресскл"]
+    aliases: ["postgresql", "postgres", "постгрес", "постгресскл", "постгри", "постгрес куэль", "постгрес кьюэль", "postgres sql", "пг"]
     normalized: "PostgreSQL"
     explanation: "Открытая реляционная СУБД с богатыми типами, расширениями (JSON, полнотекст) и строгими транзакциями. Стандарт для большинства веб-приложений."
     examples: ["Данные хранятся в PostgreSQL."]
     category: data
+    priority: true
+    keywords: ["database", "sql", "acid", "index"]
 
   - term: "MySQL"
     aliases: ["mysql", "майскл"]
@@ -2024,6 +2036,83 @@ terms:
     examples: ["DNS не резолвит домен."]
     category: networking
 
+  - term: "A-запись"
+    aliases: ["a запись", "a-запись", "a записи", "a-записи", "эй запись", "а запись", "а-запись", "а записи", "а-записи"]
+    normalized: "A record (DNS)"
+    explanation: "DNS-запись, сопоставляющая доменное имя IPv4-адресу. Базовый тип записи; AAAA — то же для IPv6."
+    examples: ["Добавь A-запись на этот IP."]
+    category: networking
+
+  - term: "AAAA-запись"
+    aliases: ["aaaa запись", "aaaa-запись", "квад-эй запись", "квадратичная запись", "аааа запись", "аааа-запись"]
+    normalized: "AAAA record (DNS)"
+    explanation: "DNS-запись, сопоставляющая доменное имя IPv6-адресу (аналог A-записи для IPv6)."
+    examples: ["Для IPv6 нужна AAAA-запись."]
+    category: networking
+
+  - term: "NS-запись"
+    aliases: ["ns запись", "ns-запись", "ns записи", "ns-записи", "n запись", "n-запись", "эн эс запись", "энэс запись", "name server запись", "нс запись", "нс-запись"]
+    normalized: "NS record (DNS)"
+    explanation: "DNS-запись, указывающая авторитативные DNS-серверы (name servers) для домена/зоны."
+    examples: ["NS-записи домена смотрят на провайдера."]
+    category: networking
+
+  - term: "CNAME-запись"
+    aliases: ["cname запись", "cname-запись", "синейм запись", "си нейм запись", "кнейм запись", "снейм запись", "снейм-запись", "cname записи", "cname-записи"]
+    normalized: "CNAME record (DNS)"
+    explanation: "DNS-запись-алиас: указывает, что имя — псевдоним другого имени (не может сосуществовать с A-записью на том же имени)."
+    examples: ["CNAME на CDN-endpoint."]
+    category: networking
+
+  - term: "MX-запись"
+    aliases: ["mx запись", "mx-запись", "mx записи", "mx-записи", "эмикс запись", "мх запись", "мх-запись", "mail exchange запись"]
+    normalized: "MX record (DNS)"
+    explanation: "DNS-запись, задающая почтовые серверы (MTA) домена и их приоритеты (меньше число — выше приоритет)."
+    examples: ["MX-записи указывают на Google."]
+    category: networking
+
+  - term: "PTR-запись"
+    aliases: ["ptr запись", "ptr-запись", "питиэр запись", "пи ти ар запись", "птр запись", "птр-запись", "reverse запись"]
+    normalized: "PTR record (DNS)"
+    explanation: "Обратная DNS-запись (IP → имя); используется для проверки при отправке почты (reverse DNS)."
+    examples: ["PTR-запись для исходящего SMTP."]
+    category: networking
+
+  - term: "TXT-запись"
+    aliases: ["txt запись", "txt-запись", "тхт запись", "тэкс запись", "text запись"]
+    normalized: "TXT record (DNS)"
+    explanation: "DNS-запись с произвольным текстом: SPF, DKIM, DMARC, верификация владения доменом."
+    examples: ["SPF живёт в TXT-записи."]
+    category: networking
+
+  - term: "SOA-запись"
+    aliases: ["soa запись", "soa-запись", "соу запись", "эсоа запись", "эс о эй запись", "соа запись", "соа-запись", "start of authority запись"]
+    normalized: "SOA record (DNS)"
+    explanation: "Start of Authority: обязательная запись зоны — primary-сервер, серийный номер, таймеры refresh/retry/expire и negative-TTL."
+    examples: ["SOA-запись задаёт primary зоны."]
+    category: networking
+
+  - term: "TTL"
+    aliases: ["ttl", "титил", "ттл", "time to live", "время жизни записи"]
+    normalized: "TTL (DNS)"
+    explanation: "Time to live — время кэширования DNS-записи resolver'ами. Низкий TTL — быстрая смена, но больше запросов."
+    examples: ["Поставь TTL 300 перед миграцией."]
+    category: networking
+
+  - term: "SPF"
+    aliases: ["spf", "спф", "sender policy framework"]
+    normalized: "SPF"
+    explanation: "TXT-запись, перечисляющая серверы, которым разрешено отправлять почту от имени домена (защита от спуфинга)."
+    examples: ["SPF-запись домена."]
+    category: networking
+
+  - term: "DKIM"
+    aliases: ["dkim", "дким", "ди ким"]
+    normalized: "DKIM"
+    explanation: "Подпись писем закрытым ключом домена; публичный ключ публикуется в DNS TXT-записи. Проверяется получателем."
+    examples: ["DKIM-подпись не прошла проверку."]
+    category: networking
+
   - term: "TLS"
     aliases: ["tls", "ssl", "тилс", "transport layer security"]
     normalized: "TLS"
@@ -2109,7 +2198,7 @@ terms:
     category: networking
 
   - term: "Port"
-    aliases: ["port", "порт", "сетевой порт"]
+    aliases: ["port", "сетевой порт", "порт сети"]
     normalized: "Port"
     explanation: "Номер (0-65535), идентифицирующий приложение на хосте: 80 HTTP, 443 HTTPS, 22 SSH. Сочетание IP+порт = сокет."
     examples: ["Сервис слушает порт 8080."]
@@ -2235,7 +2324,7 @@ terms:
     category: ops
 
   - term: "Cardinality"
-    aliases: ["cardinality", "кардинальность", "метрики"]
+    aliases: ["cardinality", "кардинальность", "высокая кардинальность", "кардинальность метрик"]
     normalized: "Cardinality"
     explanation: "Число уникальных значений метрики по labels. Высокая кардинальность взрывает хранилище метрик."
     examples: ["Снижаем кардинальность метрик."]
@@ -2354,11 +2443,12 @@ terms:
     category: devops
 
   - term: "ArgoCD"
-    aliases: ["argocd", "аргосди", "argo cd"]
+    aliases: ["argocd", "аргосди", "argo cd", "аргосиди", "арго си ди", "аргоцд", "аргоцеди", "арго сиди", "argocd sync", "аргосиди синк"]
     normalized: "ArgoCD"
     explanation: "Инструмент GitOps для Kubernetes: следит за репо с манифестами и синхронизирует кластер, видит drift."
     examples: ["ArgoCD показывает расхождение манифестов."]
     category: devops
+    priority: true
 
   - term: "Blue-green deployment"
     aliases: ["blue-green", "blue green", "сине зелёный", "bluegreen"]
@@ -2396,7 +2486,7 @@ terms:
     category: devops
 
   - term: "Rolling deployment"
-    aliases: ["rolling", "роллинг", "rolling deployment", "постепенная выкатка"]
+    aliases: ["rolling", "роллинг", "rolling deployment", "постепенная выкатка", "rolling update", "rollingupdate", "роллинг апдейт", "роллинг апдейт стратегия"]
     normalized: "Rolling deployment"
     explanation: "Поэтапная замена реплик без простоя: старые выключаются, новые поднимаются. В k8s управляется maxSurge/maxUnavailable."
     examples: ["Выкатка идёт rolling'ом."]
@@ -2578,11 +2668,97 @@ terms:
     category: ops
 
   - term: "Patroni"
-    aliases: ["patroni", "патрони", "пaтрони", "патрoни", "patroni кластер"]
+    aliases: ["patroni", "патрони", "пaтрони", "патрoни", "patroni кластер", "патрони кластер", "патрони кластере"]
     normalized: "Patroni"
     explanation: "Инструмент высокой доступности для PostgreSQL: следит за состоянием кластера через DCS (Etcd/Zookeeper) и автоматически продвигает реплику при сбое мастера."
     examples: ["PostgreSQL крутится на Patroni.", "Patroni переключил мастера."]
     category: data
+    priority: true
+
+  - term: "Patroni-кластер"
+    aliases: ["patroni cluster", "patroni кластер ha", "кластер patroni", "кластер на патрони", "ha кластер postgres", "ha кластер постгрес"]
+    normalized: "Patroni HA cluster"
+    explanation: "Кластер PostgreSQL под управлением Patroni: один primary + реплики, лидер выбирается через DCS (etcd), failover автоматический, watchdog защищает от split-brain."
+    examples: ["Patroni-кластер пережил смерть мастера.", "Реплика в patroni-кластере встала в leader."]
+    category: data
+
+  - term: "PostgreSQL failover"
+    aliases: ["postgres failover", "постгрес фейловер", "фейловер постгрес", "failover в кластере postgres", "переключение мастера postgres"]
+    normalized: "PostgreSQL failover"
+    explanation: "Автоматическое переключение роли primary на реплику при сбое: Patroni понижает/повышает ноды, клиенты переподключаются к новому лидеру через haproxy/патрони-endpoint."
+    examples: ["Failover занял 15 секунд.", "Патрони сделал фейловер."]
+    category: data
+
+  - term: "Streaming replication"
+    aliases: ["streaming репликация", "стриминг репликация", "потоковая репликация", "postgres streaming", "физическая репликация"]
+    normalized: "PostgreSQL streaming replication"
+    explanation: "Физическая репликация PostgreSQL: реплики читают поток WAL с primary и применяют изменения непрерывно. Основа HA-кластеров (в отличие от логической — построчной)."
+    examples: ["Реплика отстаёт по streaming replication.", "Лаг стриминг-репликации вырос."]
+    category: data
+
+  - term: "WAL"
+    aliases: ["wal", "вэил", "вал журналы", "журналы wal", "write ahead log", "журнал предзаписи"]
+    normalized: "WAL (Write-Ahead Log)"
+    explanation: "Журнал предзаписи PostgreSQL: изменения сначала пишутся в WAL, потом в таблицы. Обеспечивает durability и питание streaming replication; сегменты WAL архивируются для PITR."
+    examples: ["WAL-сегменты растут слишком быстро.", "Реплика читает WAL."]
+    category: data
+
+  - term: "etcd"
+    aliases: ["etcd", "этсиди", "эт це ди", "etcd кластер", "этсиди кластер"]
+    normalized: "etcd"
+    explanation: "Распределённое key-value хранилище с консенсусом Raft: хранит состояние Kubernetes (control plane) и служит DCS для Patroni-кластеров."
+    examples: ["etcd кластер потерял кворум.", "Patroni хранит лидера в etcd."]
+    category: data
+    priority: true
+
+  - term: "HAProxy"
+    aliases: ["haproxy", "ха прокси", "хапрокси", "haproxy балансировщик", "эйч эй прокси"]
+    normalized: "HAProxy"
+    explanation: "TCP/HTTP-балансировщик и proxy: health-checks бэкендов, ACL, sticky sessions. В HA-кластерах PostgreSQL направляет трафик на текущий primary."
+    examples: ["HAProxy чередует умершие ноды.", "Вход в кластер через HAProxy."]
+    category: networking
+
+  - term: "keepalived"
+    aliases: ["keepalived", "кип элайв", "кипэлайв", "keep alive демона", "виртуальный ip vip"]
+    normalized: "keepalived"
+    explanation: "Демон VRRP: держит виртуальный IP (VIP) на живой ноде, при падении переносит на резервную. Классическая пара к HAProxy для отказа единой точки входа."
+    examples: ["VIP переехал через keepalived.", "keepalived поднял VIP на второй ноде."]
+    category: networking
+
+  - term: "PgBouncer"
+    aliases: ["pgbouncer", "пгбаунсер", "пи джи баунсер", "пулер соединений postgres", "pg bouncer"]
+    normalized: "PgBouncer"
+    explanation: "Лёгкий пулер соединений PostgreSQL (modes: session/transaction/statement): переиспользует коннекты, защищает БД от исчерпания соединений."
+    examples: ["PgBouncer держит тысячи клиентских коннектов.", "Поставили PgBouncer перед Postgres."]
+    category: data
+
+  - term: "App-of-Apps"
+    aliases: ["app of apps", "ап оф ап", "ап-оф-апс", "app-of-apps pattern", "паттерн ап оф апс", "корневое приложение argocd"]
+    normalized: "App-of-Apps (ArgoCD)"
+    explanation: "Паттерн ArgoCD: корневое Application создаёт другие Applications (по пути/шаблонам), включая вложенные кластеры. Один commit декларативно разворачивает весь ландшафт."
+    examples: ["Все приложения растут из root app-of-apps.", "App-of-Apps разворачивает окружения целиком."]
+    category: devops
+
+  - term: "GitOps sync"
+    aliases: ["gitops синк", "автосинхронизация argocd", "argo cd sync", "авто-синк", "синхронизация кластера с git"]
+    normalized: "GitOps sync"
+    explanation: "Синхронизация желаемого состояния из Git в кластер: ArgoCD сверяет манифесты (drift), авто-синк применяет коммиты, webhook-триггеры ускоряют реакцию."
+    examples: ["GitOps sync подтянул новый образ.", "Drift виден до sync."]
+    category: devops
+
+  - term: "Cloud.ru"
+    aliases: ["cloud ru", "клауд ру", "cloud.ru", "сбер клауд"]
+    normalized: "Cloud.ru"
+    explanation: "Российское облако (ex-SberCloud/Cloud.ru): IaaS для гибридной инфраструктуры, совместимо с Terraform provider'ами; часть стека — вместе с VK Cloud."
+    examples: ["Часть нагрузок живёт в Cloud.ru.", "Terraform управляет VM в Cloud.ru."]
+    category: cloud
+
+  - term: "VK Cloud"
+    aliases: ["vk cloud", "вк клауд", "вкCloud", "майл облако"]
+    normalized: "VK Cloud"
+    explanation: "Российское облако VK: managed Kubernetes, БД, сети; управление через Terraform. В стеке используется совместно с Cloud.ru для гибрида."
+    examples: ["Managed K8s подняли в VK Cloud.", "VK Cloud держит стейджинг."]
+    category: cloud
 
   - term: "Keycloak"
     aliases: ["keycloak", "кейклок", "кейclock", "кейклоак", "идп"]
@@ -2744,3 +2920,82 @@ terms:
     explanation: "Платформа и продукты 1С. В резюме — развёртывание 1С на Linux (srv1c, кластер), SaaS-автоматизация через FastAPI, Ansible-плейбуки (github.com/glebgv/1c-ansible-platform), Python-экспортеры метрик."
     examples: ["1С поставили на Linux.", "Автоматизируем развёртывание 1С."]
     category: backend
+
+  # --- Wave-1 phonetic aliases (STT_PATTERNS P-009..P-020) ---
+
+  - term: "Agile"
+    aliases: ["agile", "эджайл", "аджайл", "агайл", "эджел", "аджил", "эйджил", "эджаал", "эджайл", "эджел скрам", "аджайл подход"]
+    normalized: "Agile"
+    explanation: "Итеративный подход к разработке: короткие циклы, обратная связь, гибкость к изменениям. Связан с DevOps через общую цель — быстрая и надёжная поставка ценности."
+    examples: ["Мы работаем по Agile.", "Agile и DevOps дополняют друг друга."]
+    category: ops
+    priority: true
+
+  - term: "DevOps"
+    aliases: ["devops", "девопс", "дивобс", "дэвопс", "девоопс", "девопц", "девOps", "дэв опс", "дев опс", "дивокс", "дивопс", "девокс", "дивопц", "девопсы", "девопсам"]
+    normalized: "DevOps"
+    explanation: "Культурная и инженерная практика, объединяющая разработку и эксплуатацию: автоматизация CI/CD, IaC, мониторинг, общая ответственность за продукт."
+    examples: ["DevOps — это культура, не должность.", "Что такое DevOps в вашем понимании?"]
+    category: ops
+    priority: true
+
+  - term: "DORA"
+    aliases: ["dora", "дора", "дора метрики", "доры", "метрики dora"]
+    normalized: "DORA metrics"
+    explanation: "Четыре ключевые метрики эффективности поставки ПО: deployment frequency, lead time for changes, change failure rate, MTTR. Демонстрируют зрелость DevOps-процессов."
+    examples: ["DORA-метрики показывают зрелость процессов.", "Какие метрики DORA вы знаете?"]
+    category: ops
+
+  - term: "Terraform"
+    aliases: ["terraform", "терраформ", "терраформом", "терраформа", "таэрраформ", "терраформе"]
+    normalized: "Terraform"
+    explanation: "Декларативный IaC-инструмент (HashiCorp): инфраструктура описывается в HCL, состояние — в state-файле, изменения применяются через plan/apply."
+    examples: ["Инфраструктура у нас в Terraform.", "Прогони terraform plan."]
+    category: ops
+    priority: true
+
+  - term: "Prometheus"
+    aliases: ["prometheus", "прометеус", "прометея", "прометеем", "прометеусе", "прометеусу"]
+    normalized: "Prometheus"
+    explanation: "Система мониторинга с pull-моделью сбора метрик, PromQL и алертингом (Alertmanager). Де-факто стандарт для cloud-native окружений."
+    examples: ["Метрики собирает Prometheus.", "Напиши PromQL-запрос."]
+    category: ops
+    priority: true
+
+  - term: "Grafana"
+    aliases: ["grafana", "графана", "графане", "графану", "графаной", "графанe"]
+    normalized: "Grafana"
+    explanation: "Визуализация метрик и логов: дашборды, алерты, datasource-агностицизм (Prometheus, VictoriaMetrics, Loki)."
+    examples: ["Собери дашборд в Grafana.", "Графана показывает загрузку."]
+    category: ops
+    priority: true
+
+  - term: "Ansible"
+    aliases: ["ansible", "энсибл", "ансибл", "энсибле", "ансиблом", "энсиблом", "энсибла"]
+    normalized: "Ansible"
+    explanation: "Agentless-автоматизация конфигурации: плейбуки YAML, SSH, идемпотентные модули."
+    examples: ["Конфигурацию раскатываем Ansible.", "Ансибл-плейбук для 1С."]
+    category: ops
+    priority: true
+
+  - term: "Continuous Delivery"
+    aliases: ["continuous delivery", "cd", "континиум деливери", "континьюс деливери", "континиус деливери", "континус delivery", "непрерывная доставка", "continuum с delivery", "continuum delivery", "continues delivery", "continue с delivery"]
+    normalized: "Continuous Delivery"
+    explanation: "Практика: каждый коммит автоматически собирается, тестируется и готовится к релизу; deploying — вручную по кнопке. Отличается от Continuous Deployment отсутствием автопродвижения в прод."
+    examples: ["У нас Continuous Delivery с ручным продвижением."]
+    category: ci_cd
+
+  - term: "Continuous Deployment"
+    aliases: ["continuous deployment", "континиум деплоймент", "континьюс деплоймент", "комплоймент", "камплоймент", "комплоймнт", "непрерывное развёртывание", "непрерывный деплой", "continuum deployment", "continues deployment"]
+    normalized: "Continuous Deployment"
+    explanation: "Практика: каждый прошедший пайплайн коммит автоматически попадает в прод без ручного подтверждения. Требует высокой культуры тестирования и мониторинга."
+    examples: ["Continuous Deployment без сильных тестов опасен."]
+    category: ci_cd
+
+  - term: "Linux"
+    aliases: ["linux", "линукс", "линокс", "линакс", "линакса", "линукса", "линух"]
+    normalized: "Linux"
+    explanation: "Семейство открытых ОС на ядре Linux. Основа серверной инфраструктуры и контейнеров; ключевые области: процессы, сигналы, файловые системы, systemd, права, сети."
+    examples: ["Какие команды Linux используете ежедневно?", "Сигналы Linux."]
+    category: linux
+    priority: true

@@ -7,7 +7,6 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -25,6 +24,7 @@ from PySide6.QtWidgets import (
 
 from mockingbird.config import Config
 from mockingbird.ui import theme
+from mockingbird.ui.toggle import ToggleSwitch
 
 
 class OnboardingWizard(QDialog):
@@ -215,19 +215,19 @@ class OnboardingWizard(QDialog):
             if idx >= 0:
                 self._audio_device.setCurrentIndex(idx)
 
-        self._audio_loopback = QComboBox()
-        self._audio_loopback.addItem("по умолчанию", "")
+        self._audio_loopback_device = QComboBox()
+        self._audio_loopback_device.addItem("по умолчанию", "")
         try:
             from mockingbird.audio.loopback import list_loopback_devices
 
             for name in list_loopback_devices():
-                self._audio_loopback.addItem(name, name)
+                self._audio_loopback_device.addItem(name, name)
         except Exception:
             pass
         if self.config.audio.loopback_device:
-            idx = self._audio_loopback.findData(self.config.audio.loopback_device)
+            idx = self._audio_loopback_device.findData(self.config.audio.loopback_device)
             if idx >= 0:
-                self._audio_loopback.setCurrentIndex(idx)
+                self._audio_loopback_device.setCurrentIndex(idx)
 
         layout.addWidget(self._audio_mic)
         layout.addWidget(self._audio_loopback)
@@ -235,7 +235,7 @@ class OnboardingWizard(QDialog):
         form = QFormLayout()
         form.addRow("Микрофон:", self._audio_device)
         self._loopback_label = QLabel("Loopback (динамик):")
-        form.addRow(self._loopback_label, self._audio_loopback)
+        form.addRow(self._loopback_label, self._audio_loopback_device)
         layout.addLayout(form)
         self._audio_mic.toggled.connect(self._update_audio_visibility)
         self._update_audio_visibility()
@@ -245,7 +245,7 @@ class OnboardingWizard(QDialog):
     def _update_audio_visibility(self) -> None:
         loopback = self._audio_loopback.isChecked()
         self._loopback_label.setVisible(loopback)
-        self._audio_loopback.setVisible(loopback)
+        self._audio_loopback_device.setVisible(loopback)
 
     # -- Step 3: STT -------------------------------------------------------
 
@@ -324,7 +324,7 @@ class OnboardingWizard(QDialog):
         tl.addWidget(self._theme_light)
         layout.addWidget(theme_box)
 
-        self._capture_check = QCheckBox("Скрывать окно от захвата экрана (Zoom, Teams)")
+        self._capture_check = ToggleSwitch("Скрывать окно от захвата экрана (Zoom, Teams)")
         from mockingbird.ui import capture_guard
 
         if not capture_guard.is_capture_protection_available():
@@ -393,7 +393,7 @@ class OnboardingWizard(QDialog):
         cfg.audio.mode = "loopback" if self._audio_loopback.isChecked() else "mic"
         cfg.audio.device = self._audio_device.currentData() or None
         if self._audio_loopback.isChecked():
-            cfg.audio.loopback_device = self._audio_loopback.currentData() or None
+            cfg.audio.loopback_device = self._audio_loopback_device.currentData() or None
 
         # STT
         if self._stt_whisper.isChecked():

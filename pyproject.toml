@@ -15,6 +15,7 @@ dependencies = [
     "PyYAML>=6.0",
     "pydantic>=2.7",
     "python-dotenv>=1.0",
+    "python-docx>=1.1",
 ]
 
 [project.optional-dependencies]
@@ -27,7 +28,7 @@ gigaam = [
     "omegaconf>=2.3",
     "numpy>=1.26",
 ]
- dev = [
+dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "pypdf>=4.0",
@@ -45,7 +46,7 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-"mockingbird.assets" = ["*.yaml"]
+"mockingbird.assets" = ["*.yaml", "icons/*.svg", "fonts/*.otf"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

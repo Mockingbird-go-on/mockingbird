@@ -4,7 +4,7 @@ import types
 import numpy as np
 import pytest
 
-from mockingbird.audio.vad import SileroVAD, VadStateMachine
+from mockingbird.audio.vad import SileroVAD, VadStateMachine, _TAIL_PAD_SAMPLES
 
 _FRAME = 512
 
@@ -27,14 +27,59 @@ def test_machine_triggers_and_finalizes():
     assert len([e["audio"] for e in events if e["kind"] == "audio"]) > 0
 
 
+def test_machine_preroll_preserves_leading_audio():
+    """Pre-roll buffer (~250ms) must include the frames just before the trigger.
+
+    Silero needs a few frames of ramp-up, so speech often starts BEFORE the
+    probability crosses the threshold; a one-frame pre-roll clipped the first
+    syllable («чем докер…» → «дрокер…»).
+    """
+    machine = VadStateMachine(threshold=0.5, min_silence_samples=_FRAME * 3)
+    frames = [np.full(_FRAME, 0.3, dtype=np.float32) for _ in range(8)]
+    events = []
+    # 8 quiet-probability frames (speech ramping up, VAD not yet sure)
+    for f in frames:
+        events.extend(machine.consume(f, 0.3))
+    # threshold crossed on the next frame
+    trigger = np.full(_FRAME, 0.3, dtype=np.float32)
+    events.extend(machine.consume(trigger, 0.9))
+    first_audio = next(e["audio"] for e in events if e["kind"] == "audio")
+    # The pre-roll frames (below-threshold speech) must be in the segment.
+    assert len(first_audio) >= 5 * _FRAME
+    assert float(np.max(first_audio)) > 0.1
+
+
 def test_machine_drops_trailing_silence():
     machine = VadStateMachine(threshold=0.5, min_silence_samples=_FRAME * 2)
     probs = [0.9] * 4 + [0.1] * 6
     events = _feed(machine, probs)
     end = events[-1]
     assert end["kind"] == "end"
-    # 4 speech frames + 1 pre-context frame, trailing silence trimmed
-    assert len(end["audio"]) == _FRAME * 5
+    # Segment closes after 2 silent frames: 1 pre-roll + 4 speech + 2 silence,
+    # and the tail pad cannot extend past the buffered audio.
+    assert len(end["audio"]) == _FRAME * 7
+
+
+def test_machine_tail_pad_keeps_quiet_trailing_speech():
+    """Wave-1 TAIL-LOSS fix: the trailing "silence" often carries the quiet
+    tail of the last word («…на диске и inode»). The end event must include
+    the last 400 ms of that silence so the STT sees the tail.
+    """
+    machine = VadStateMachine(threshold=0.5, min_silence_samples=_FRAME * 6)
+    events = []
+    # 4 loud speech frames
+    for _ in range(4):
+        events.extend(machine.consume(np.full(_FRAME, 0.3, dtype=np.float32), 0.9))
+    # 8 silent frames (prob 0) — segment closes on the 6th
+    for _ in range(8):
+        events.extend(machine.consume(np.zeros(_FRAME, dtype=np.float32), 0.05))
+    end = next(e for e in events if e["kind"] == "end")
+    # Segment closes on the 6th silent frame; the buffer holds 1 pre-roll +
+    # 4 speech + 6 silence = 11 frames, and the 400ms pad is capped by it.
+    expected = min(_FRAME * 11, _FRAME * 11 + _TAIL_PAD_SAMPLES)
+    assert len(end["audio"]) == expected
+    # without the pad the old code stripped to 5 frames
+    assert len(end["audio"]) > _FRAME * 5
 
 
 def test_machine_ignores_no_speech():
@@ -73,8 +118,11 @@ def test_machine_emits_speech_stop_before_end():
     assert len(stops) == 1
     assert len(ends) == 1
     assert stops[0] < ends[0]
-    # end still trims trailing silence (4 speech frames + 1 pre-context frame)
-    assert len(events[ends[0]]["audio"]) == _FRAME * 5
+    # Segment closes after 10 silent frames: 1 pre-roll + 4 speech + 10
+    # silence buffered; the tail pad extends past the silence onset but is
+    # capped by the buffered audio.
+    expected = min(_FRAME * 5 + _TAIL_PAD_SAMPLES, _FRAME * 15)
+    assert len(events[ends[0]]["audio"]) == expected
 
 
 def test_machine_no_speech_stop_when_delay_exceeds_silence():

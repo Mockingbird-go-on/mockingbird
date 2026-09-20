@@ -71,7 +71,6 @@ def _collect_all_topics() -> list[KbTopic]:
     from pathlib import Path
 
     from mockingbird.config import app_dir
-    from mockingbird.kb.module_manager import ModuleManager
 
     topic_map: dict[str, KbTopic] = {}
 
@@ -81,20 +80,7 @@ def _collect_all_topics() -> list[KbTopic]:
         if topic is not None:
             topic_map[topic.id] = topic
 
-    # 2. Active modules
-    try:
-        mgr = ModuleManager()
-        for mod_dir in mgr.active_module_dirs():
-            for file in sorted(mod_dir.glob("*.yaml")):
-                if file.name == "manifest.yaml":
-                    continue
-                topic = _try_parse(file)
-                if topic is not None:
-                    topic_map[topic.id] = topic
-    except Exception:
-        pass  # modules not configured yet
-
-    # 3. kb_override (resume PDF etc.)
+    # 2. kb_override (resume PDF etc.)
     override_dir = app_dir() / "kb_override"
     if override_dir.exists():
         for file in sorted(override_dir.glob("*.yaml")):

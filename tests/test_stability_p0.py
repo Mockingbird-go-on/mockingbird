@@ -3,9 +3,6 @@
 Covers:
 - system_check no longer crashes when ``torch.cuda.is_available`` raises a
   non-ImportError (CUDA driver mismatch).
-- module_manager rejects ZIP-slip archives (unsafe paths).
-- TopicsBoard keeps its cards after ``on_topics`` (the previous bug wiped
-  them via ``_clear_grid`` inside ``_relayout``).
 - LlmClient JSON extraction is non-greedy (avoids swallowing multi-object
   LLM output).
 - main_window session timer resets between sessions.
@@ -17,7 +14,6 @@ import io
 import logging
 import sys
 import types
-import zipfile
 from pathlib import Path
 
 import pytest
@@ -45,49 +41,6 @@ def test_system_check_survives_cuda_runtime_error(monkeypatch):
     # Should return (possibly with a warning), never raise.
     warnings = run_system_checks(cfg)
     assert isinstance(warnings, list)
-
-
-# --------------------------------------------------------------------------- #
-# 1.5 — ZIP slip rejected by module_manager
-# --------------------------------------------------------------------------- #
-def test_module_manager_rejects_zip_slip(tmp_path, monkeypatch):
-    monkeypatch.setenv("MOCKINGBIRD_HOME", str(tmp_path))
-    from mockingbird.kb import module_manager
-
-    # Re-point the modules dir at our tmp_path so no real ~/.mockingbird is touched.
-    monkeypatch.setattr(module_manager, "_MODULES_DIR", tmp_path / "modules")
-    module_manager._MODULES_DIR.mkdir(parents=True, exist_ok=True)
-
-    evil_zip = tmp_path / "evil.zip"
-    with zipfile.ZipFile(evil_zip, "w") as zf:
-        zf.writestr("manifest.yaml", "id: evil\nversion: '1.0'\ntopics: []\n")
-        zf.writestr("../../escaped.txt", "pwned")
-
-    mgr = module_manager.ModuleManager()
-    result = mgr.install_zip(str(evil_zip))
-    assert result is None, "module_manager must reject a ZIP-slip archive"
-    assert not (tmp_path.parent / "escaped.txt").exists()
-
-
-# --------------------------------------------------------------------------- #
-# 1.3 — TopicsBoard keeps cards after on_topics
-# --------------------------------------------------------------------------- #
-def test_topics_board_keeps_cards(qapp):
-    from unittest.mock import MagicMock
-
-    from mockingbird import protocol
-    from mockingbird.ui.topics_board import TopicsBoard
-
-    board = TopicsBoard()
-    block = protocol.TopicBlock(
-        block_id="t1",
-        theme="Theme",
-        terms=["x"],
-        source=protocol.TopicSource.KB,
-        questions=[],
-    )
-    board.on_topics([block])
-    assert len(board._cards) == 1, "cards were wiped by _relayout/_clear_grid"
 
 
 # --------------------------------------------------------------------------- #

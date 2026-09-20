@@ -303,15 +303,18 @@ def test_llm_answer_mode_not_overridden_when_confident():
 
 
 def test_regex_kicks_in_when_llm_unsure():
-    """When LLM confidence < 0.6, regex is_personal overrides to personal."""
+    """Low-confidence LLM technical verdict with a personal marker: the
+    mode-switch guard only protects AGAINST false-personal — a low-confidence
+    technical verdict is kept (a wrong technical answer is recoverable, and
+    the fallback path handles pronouns via is_personal)."""
     llm = _FakeLlm([
         {"type": "question", "topic": "zabbix", "resolved_query": "что ты делал",
          "answer_mode": "technical", "confidence": 0.4}
     ])
     mgr = DialogContextManager(llm=llm)
-    # «твой опыт» — is_personal marker, should override low-confidence LLM
     out = mgr.resolve("расскажи про твой опыт с docker")
-    assert out["answer_mode"] == "personal"
+    assert out["answer_mode"] == "technical"
+    assert out["source"] == "llm"
 
 
 def test_pronoun_marker_in_him_done():
@@ -354,3 +357,5 @@ def test_build_personal_view_none_for_garbage():
     engine = InterviewEngine(matcher, InterviewConfig())
     view = engine._build_personal_view("zzzzzz nonexistent garbage")
     assert view is None
+
+

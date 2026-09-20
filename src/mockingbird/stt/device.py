@@ -7,7 +7,50 @@ ctranslate2 for faster-whisper).
 """
 from __future__ import annotations
 
+import glob
+import logging
+import os
+
+log = logging.getLogger(__name__)
+
 _VALID = {"auto", "cpu", "cuda"}
+
+_cudnn_dll_dirs_added = False
+
+
+def ensure_cudnn_dll_dirs() -> None:
+    """Make cuDNN 9 loadable by ctranslate2 on Windows.
+
+    The nvidia-* wheels ship their DLLs in ``nvidia/<lib>/bin/`` subfolders
+    that the Windows loader never searches, so ``cudnn64_9.dll`` resolves but
+    its sub-DLLs (cudnn_engines_*, cudnn_graph*, cudnn_ops*, ...) do not:
+    cuDNN fails to load and ctranslate2 silently drops float16 from the
+    supported compute types (whisper then decodes on float32). Register every
+    ``nvidia/*/bin`` directory with ``os.add_dll_directory`` before the first
+    ctranslate2 call. Idempotent; no-op on non-Windows or when the nvidia
+    packages are absent (CPU builds).
+    """
+    global _cudnn_dll_dirs_added
+    if _cudnn_dll_dirs_added or os.name != "nt":
+        return
+    _cudnn_dll_dirs_added = True
+    try:
+        import nvidia
+
+        roots = list(nvidia.__path__ or [])
+    except Exception:  # noqa: BLE001
+        return
+    added = 0
+    for root in roots:
+        for lib_dir in glob.glob(os.path.join(root, "*", "bin")):
+            try:
+                os.add_dll_directory(lib_dir)
+                added += 1
+            except OSError:
+                continue
+    if added:
+        log.info("device: registered %d nvidia DLL directories for cuDNN", added)
+
 
 
 def is_valid_device(device: str | None) -> bool:
@@ -55,6 +98,7 @@ def ctranslate2_cuda_available() -> bool:
     try:
         import ctranslate2
 
+        ensure_cudnn_dll_dirs()
         return ctranslate2.get_cuda_device_count() > 0
     except Exception:  # noqa: BLE001
         return False

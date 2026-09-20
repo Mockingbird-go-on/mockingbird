@@ -22,6 +22,162 @@ log = logging.getLogger(__name__)
 _DEFAULT_RATE = 16000
 
 
+class _BandLimitedResampler:
+    """Streaming polyphase resampler with an anti-aliasing FIR lowpass.
+
+    Linear interpolation (``_LinearResampler``) folds everything above the
+    output Nyquist back into the passband when downsampling (aliasing), which
+    smears consonants and hurts both the VAD and the acoustic model. This
+    resampler instead filters with a Kaiser-windowed sinc kernel whose cutoff
+    tracks the *output* Nyquist (0.95 margin), so 48k→16k keeps 0–7.6 kHz and
+    attenuates the rest by ~70 dB.
+
+    Streaming contract is identical to ``_LinearResampler``: ``process(block)``
+    emits the output samples whose filter window is fully covered by the input
+    seen so far; state (input history, output index) carries across blocks so
+    no sample is dropped or duplicated. The first output is delayed by ``K``
+    input samples (filter warm-up, ~0.25 ms at 48 kHz).
+
+    The kernel is evaluated on a rational grid: output ``j`` sits at input
+    position ``j*M/L`` (``L = dst/gcd``, ``M = src/gcd``), so the fractional
+    phase takes only ``L`` discrete values and the per-phase tap vectors are
+    precomputed once (polyphase table of shape ``(L, 2K)``).
+    """
+
+    def __init__(self, src_rate: int, dst_rate: int, half_taps: int = 12, beta: float = 9.0):
+        if src_rate <= 0 or dst_rate <= 0:
+            raise ValueError("sample rates must be positive")
+        self._src = int(src_rate)
+        self._dst = int(dst_rate)
+        self._identity = self._src == self._dst
+        g = math.gcd(self._src, self._dst)
+        self._l = self._dst // g
+        self._m = self._src // g
+        self._k = int(half_taps)
+        # Cutoff in cycles per input sample: output Nyquist with a 5% margin,
+        # never above the input Nyquist (upsampling case).
+        self._fc = 0.95 * min(1.0, self._dst / self._src) * 0.5
+        self._table = self._build_table(beta)
+        # Input history: absolute input index of hist[0], padded with K-1
+        # leading zeros so the first output (i=0) has a full filter window.
+        self._hist = np.zeros(self._k - 1, dtype=np.float32)
+        self._hist_start = -(self._k - 1)
+        self._j = 0  # global output-sample index
+
+    def _build_table(self, beta: float) -> np.ndarray:
+        """Polyphase tap table: table[m, k] = h(m/L - k) for tap offsets k."""
+        i0 = float(np.i0(beta))
+        offsets = np.arange(-(self._k - 1), self._k + 1, dtype=np.float64)  # 2K taps
+        phases = np.arange(self._l, dtype=np.float64) / self._l
+        t = phases[:, None] - offsets[None, :]  # (L, 2K) continuous tap positions
+        # Kaiser window over (-K, K)
+        w = np.zeros_like(t)
+        inside = np.abs(t) < self._k
+        w[inside] = np.i0(beta * np.sqrt(np.maximum(0.0, 1.0 - (t[inside] / self._k) ** 2))) / i0
+        h = 2.0 * self._fc * np.sinc(2.0 * self._fc * t) * w
+        return h.astype(np.float32)
+
+    def reset(self) -> None:
+        self._hist = np.zeros(self._k - 1, dtype=np.float32)
+        self._hist_start = -(self._k - 1)
+        self._j = 0
+
+    def process(self, audio: np.ndarray) -> np.ndarray:
+        audio = np.ascontiguousarray(audio, dtype=np.float32)
+        if self._identity or len(audio) == 0:
+            return audio
+        self._hist = np.concatenate([self._hist, audio])
+        taps = 2 * self._k
+        last = self._hist_start + len(self._hist) - 1
+        # Number of ready outputs: largest n with pos(j+n-1) + K <= last.
+        # pos(j) = floor(j*M/L); conservative bound then exact trim below.
+        first_i, _ = divmod(self._j * self._m, self._l)
+        if first_i + self._k > last:
+            self._trim()
+            return np.zeros(0, dtype=np.float32)
+        # pos(j) grows by M/L < 1 per output on average; bound with ceil.
+        span = last - first_i - self._k + 1
+        n_max = int(span * self._l / self._m) + 2
+        js = self._j + np.arange(n_max, dtype=np.int64)
+        pos = (js * self._m) // self._l
+        ready = pos + self._k <= last
+        if not ready.any():
+            self._trim()
+            return np.zeros(0, dtype=np.float32)
+        n_out = int(np.count_nonzero(ready))  # ready is a prefix (pos is monotonic)
+        js = js[:n_out]
+        pos = pos[:n_out]
+        phases = ((js * self._m) % self._l).astype(np.int64)
+        bases = pos - self._k + 1 - self._hist_start  # index of the leftmost tap
+        idx = bases[:, None] + np.arange(taps, dtype=np.int64)[None, :]
+        windows = self._hist[idx]
+        out = np.einsum("ij,ij->i", windows, self._table[phases])
+        self._j += n_out
+        self._trim()
+        return out.astype(np.float32)
+
+    def _trim(self) -> None:
+        """Drop history that no future output can reference."""
+        i_next, _ = divmod(self._j * self._m, self._l)
+        keep_from = i_next - self._k + 1
+        if keep_from > self._hist_start:
+            self._hist = self._hist[keep_from - self._hist_start :]
+            self._hist_start = keep_from
+
+
+class _LoopbackAgc:
+    """Slow RMS normalizer for loopback speech (quiet remote callers).
+
+    Conferencing codecs often deliver the remote party well below the level
+    the pipeline expects: quiet signal both trips the VAD noise-floor override
+    (``block_rms < 0.015``) and degrades acoustic features. This AGC tracks an
+    exponential RMS average over non-silent blocks (~3 s time constant),
+    computes a gain towards ``target_rms`` clamped to ``[1, max_gain]`` (never
+    attenuates), slews the applied gain slowly (≤3 dB/s) to avoid pumping, and
+    hard-limits the output to avoid clipping.
+    """
+
+    _BLOCK_MS = 100.0
+
+    def __init__(
+        self,
+        target_rms: float = 0.07,
+        noise_floor: float = 0.005,
+        max_gain: float = 8.0,
+        max_gain_rate: float = 1.035,
+        limit: float = 0.98,
+    ):
+        self._target = target_rms
+        self._floor = noise_floor
+        self._max_gain = max_gain
+        self._rate = max_gain_rate
+        self._limit = limit
+        self._avg: float | None = None
+        self._gain = 1.0
+        # ~3 s EMA at 100 ms blocks
+        self._alpha = min(1.0, self._BLOCK_MS / 3000.0)
+
+    def reset(self) -> None:
+        self._avg = None
+        self._gain = 1.0
+
+    def process(self, audio: np.ndarray) -> np.ndarray:
+        audio = np.ascontiguousarray(audio, dtype=np.float32)
+        if len(audio) == 0:
+            return audio
+        rms = float(np.sqrt(np.mean(np.square(audio))))
+        if rms > self._floor:
+            self._avg = rms if self._avg is None else self._avg * (1.0 - self._alpha) + rms * self._alpha
+        target = 1.0
+        if self._avg is not None and self._avg > self._floor:
+            target = min(self._max_gain, max(1.0, self._target / self._avg))
+        if target > self._gain:
+            self._gain = min(target, self._gain * self._rate, self._max_gain)
+        else:
+            self._gain = max(target, self._gain / self._rate, 1.0)
+        return np.clip(audio * self._gain, -self._limit, self._limit).astype(np.float32)
+
+
 class _LinearResampler:
     """Block-wise linear-interpolation resampler with continuous phase.
 
@@ -68,16 +224,24 @@ class _LinearResampler:
 class LoopbackCapture:
     """Capture the system's default (or selected) playback as an input stream."""
 
-    def __init__(self, sample_rate: int = _DEFAULT_RATE, block_ms: int = 100, device: str | None = None):
+    def __init__(
+        self,
+        sample_rate: int = _DEFAULT_RATE,
+        block_ms: int = 100,
+        device: str | None = None,
+        agc_enabled: bool = True,
+    ):
         self.sample_rate = sample_rate
         self.block_size = max(int(sample_rate * block_ms / 1000), 1)
         self.device = device
+        self._agc_enabled = agc_enabled
         self._pa = None
         self._pa_module = None
         self._stream = None
         self._callback = None
         self._lock = threading.Lock()
-        self._resampler: _LinearResampler | None = None
+        self._resampler = None
+        self._agc: _LoopbackAgc | None = None
         self._channels = 1
 
     @property
@@ -108,7 +272,14 @@ class LoopbackCapture:
             native = int(info.get("defaultSampleRate") or 48000)
             channels = max(int(info.get("maxInputChannels") or 2), 1)
             self._channels = min(channels, 2)
-            self._resampler = _LinearResampler(native, self.sample_rate)
+            if native != self.sample_rate:
+                # Anti-aliasing polyphase resampler; linear interpolation
+                # aliases anything above the output Nyquist into the passband
+                # and smears consonants for both the VAD and the STT model.
+                self._resampler = _BandLimitedResampler(native, self.sample_rate)
+            else:
+                self._resampler = None
+            self._agc = _LoopbackAgc() if self._agc_enabled else None
             self._stream = self._pa.open(
                 format=pa.paFloat32,
                 channels=self._channels,
@@ -122,13 +293,19 @@ class LoopbackCapture:
 
     def stop(self) -> None:
         with self._lock:
-            if self._stream is not None:
+            # Drop the Python-side references FIRST so a callback that is
+            # still executing in the native thread sees _stream=None and
+            # returns immediately instead of touching objects we are about
+            # to free (resampler/AGC hold native buffers).
+            stream, self._stream = self._stream, None
+            self._resampler = None
+            self._agc = None
+            if stream is not None:
                 try:
-                    self._stream.stop_stream()
-                    self._stream.close()
+                    stream.stop_stream()
+                    stream.close()
                 except Exception:  # noqa: BLE001
                     log.exception("error closing loopback stream")
-                self._stream = None
             if self._pa is not None:
                 try:
                     self._pa.terminate()
@@ -136,9 +313,13 @@ class LoopbackCapture:
                     log.exception("error terminating PyAudio")
                 self._pa = None
             self._pa_module = None
-            self._resampler = None
 
     def _on_audio(self, in_data, frame_count, time_info, status) -> tuple:
+        # The native callback can fire once more after stop() begins tearing
+        # the stream down; touching freed resampler/AGC objects from there is
+        # an access violation. Bail out the moment teardown starts.
+        if self._stream is None:
+            return (None, self._pa_module.paComplete if self._pa_module else None)
         try:
             audio = np.frombuffer(in_data, dtype=np.float32)
         except Exception:  # noqa: BLE001
@@ -146,6 +327,8 @@ class LoopbackCapture:
         if audio.ndim == 1 and self._channels > 1 and len(audio) % self._channels == 0:
             audio = audio.reshape(-1, self._channels)[:, 0]
         resampled = self._resampler.process(audio) if self._resampler is not None else audio
+        if self._agc is not None:
+            resampled = self._agc.process(resampled)
         if self._callback is not None:
             ts = time_info.get("currentTime") if isinstance(time_info, dict) else 0.0
             self._callback(resampled, ts)

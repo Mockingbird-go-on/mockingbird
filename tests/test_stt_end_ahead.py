@@ -1,4 +1,4 @@
-"""End-ahead speculative finalize for both STT engines (no real models needed)."""
+"""End-ahead speculative partials + quality-first finalize (no real models)."""
 from __future__ import annotations
 
 import numpy as np
@@ -55,22 +55,102 @@ def _collect_finals(engine):
     return finals
 
 
-def test_speculative_reused_on_final(engine):
+def test_finalize_reuses_speculative_when_buffer_unchanged(engine, request):
+    """Speculative-reuse (whisper only): the finalize buffer matches the
+    speculative decode (only the VAD silence tail was added) → the
+    speculative text is reused without a re-decode (GPU waste guard).
+    GigaAM always re-decodes on finalize (no reuse path there)."""
     calls = _stub_transcribe(engine)
     sid = _prime_rolling(engine)
     finals = _collect_finals(engine)
 
     engine._handle_stop_hint()
-    assert len(calls) == 1
-    assert calls[0][1] == int(16000 * 2)  # decoded the full rolling segment
+    assert len(calls) == 1  # speculative decode of 2s (emitted as partial)
 
-    engine._finalize(np.zeros(int(16000 * 2), dtype=np.float32), sid)
-    # final emitted from cache, no re-decode
-    assert len(calls) == 1
+    engine._finalize(np.zeros((16000 * 2), dtype=np.float32), sid)
+    if request.node.callspec.id == "whisper":
+        # delta = 0s ≤ 3s → no second decode, speculative text reused
+        assert len(calls) == 1
+    else:
+        # gigaam: no speculative-reuse, always re-decodes
+        assert len(calls) == 2
     assert len(finals) == 1
     assert finals[0].text == "Вопрос?"
     assert finals[0].segment_id == sid
     assert len(engine._rolling) == 0
+
+
+def test_finalize_after_audio_growth_redecodes(engine):
+    """Audio grew >3s past the speculative duration → full re-decode (the
+    speculative text would miss the newly spoken tail)."""
+    calls = _stub_transcribe(engine)
+    sid = _prime_rolling(engine, seconds=2.0)
+    finals = _collect_finals(engine)
+
+    engine._handle_stop_hint()
+    assert len(calls) == 1
+
+    # 2s speculative + 4s growth = 4s delta > _SPECULATIVE_REUSE_MAX_DELTA_S
+    engine._finalize(np.zeros((16000 * 6), dtype=np.float32), sid)
+    assert len(calls) == 2
+    assert calls[1][1] == (16000 * 6)
+    assert len(finals) == 1
+    assert finals[0].segment_id == sid
+
+
+def test_final_shorter_than_partial_uses_partial(engine):
+    """Safety-net: the full decode dropped a word the last partial had
+    (GigaAM losing «Agile» on a different audio cut) → partial wins.
+
+    Forces a re-decode (audio grew >3s) so reconcile_final_with_partial runs
+    on the fresh final text."""
+    texts = iter(["в чем связь между Agile и", "в чем связь между и"])
+
+    def fake(audio, kind="decode", beam_size=1):
+        return next(texts), 0.9, len(audio) / 16000.0
+
+    engine._transcribe = fake
+    sid = _prime_rolling(engine)
+    finals = _collect_finals(engine)
+
+    engine._handle_stop_hint()  # partial: full text with Agile
+    engine._finalize(np.zeros((16000 * 6), dtype=np.float32), sid)
+    assert len(finals) == 1
+    assert "Agile" in finals[0].text
+
+
+def test_final_ok_keeps_final_not_partial(engine):
+    """Final decode at least as complete as the partial → keep the final.
+    Forces a re-decode (audio grew >3s)."""
+    texts = iter(["в чем связь", "в чем связь между Agile и DevOps"])
+
+    def fake(audio, kind="decode", beam_size=1):
+        return next(texts), 0.9, len(audio) / 16000.0
+
+    engine._transcribe = fake
+    sid = _prime_rolling(engine)
+    finals = _collect_finals(engine)
+
+    engine._handle_stop_hint()
+    engine._finalize(np.zeros((16000 * 6), dtype=np.float32), sid)
+    assert finals[0].text == "в чем связь между Agile и DevOps"
+
+
+def test_finalize_different_text_partial_not_applied(engine):
+    """Different utterance (low token similarity) → the partial is NOT merged.
+    Forces a re-decode (audio grew >3s)."""
+    texts = iter(["совсем другой вопрос про сети", "в чем связь между и"])
+
+    def fake(audio, kind="decode", beam_size=1):
+        return next(texts), 0.9, len(audio) / 16000.0
+
+    engine._transcribe = fake
+    sid = _prime_rolling(engine)
+    finals = _collect_finals(engine)
+
+    engine._handle_stop_hint()
+    engine._finalize(np.zeros((16000 * 6), dtype=np.float32), sid)
+    assert finals[0].text == "в чем связь между и"
 
 
 def test_disabled_falls_back_to_normal_final(engine):
@@ -82,7 +162,7 @@ def test_disabled_falls_back_to_normal_final(engine):
     engine._handle_stop_hint()
     assert len(calls) == 0  # no speculative decode
 
-    engine._finalize(np.zeros(int(16000 * 2), dtype=np.float32), sid)
+    engine._finalize(np.zeros((16000 * 2), dtype=np.float32), sid)
     assert len(calls) == 1
     assert len(finals) == 1
 
@@ -96,12 +176,12 @@ def test_resume_discards_speculative(engine):
     assert len(calls) == 1
     engine._speculative = None  # what the worker does on _CMD_RESUME
 
-    engine._finalize(np.zeros(int(16000 * 2), dtype=np.float32), sid)
+    engine._finalize(np.zeros((16000 * 2), dtype=np.float32), sid)
     assert len(calls) == 2  # re-decode on final
     assert len(finals) == 1
 
 
-def test_speculative_only_used_for_matching_segment(engine):
+def test_speculative_only_for_matching_segment(engine):
     calls = _stub_transcribe(engine)
     _prime_rolling(engine)
     finals = _collect_finals(engine)
@@ -109,9 +189,11 @@ def test_speculative_only_used_for_matching_segment(engine):
     engine._handle_stop_hint()
     assert len(calls) == 1
 
-    engine._finalize(np.zeros(int(16000 * 2), dtype=np.float32), "other-segment")
+    engine._finalize(np.zeros((16000 * 2), dtype=np.float32), "other-segment")
     assert len(calls) == 2
     assert len(finals) == 1
+    # partial from a different segment must not leak into this final
+    assert finals[0].text == "Вопрос?"
 
 
 def test_short_audio_skips_speculative(engine):
@@ -215,3 +297,4 @@ def test_start_segment_clears_partial_emitted(engine):
     assert engine._spec_partial_emitted is True
     engine.start_segment()
     assert engine._spec_partial_emitted is False
+    assert engine._last_partial_text == ""

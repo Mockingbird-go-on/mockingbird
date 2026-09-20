@@ -44,7 +44,8 @@ class DialogContextManager:
         cache_size: int = 64,
     ):
         self._llm = llm
-        self._window: deque[str] = deque(maxlen=max(2, history_segments))
+        # Each entry: (speaker, text) where speaker is "me" or "them".
+        self._window: deque[tuple[str, str]] = deque(maxlen=max(2, history_segments))
         self._lock = threading.Lock()
         # (utterance_hash + history_hash) -> result dict
         self._cache: dict[str, dict] = {}
@@ -71,26 +72,72 @@ class DialogContextManager:
 
     # -- dialogue tracking -------------------------------------------------
 
-    def add_utterance(self, text: str) -> None:
-        """Append a raw utterance to the rolling history window."""
+    def last_opponent_utterance(self) -> str:
+        """Most recent «them» utterance text ('' when none).
+
+        Used by the interview engine's tail-merge: a clipped segment starting
+        with a conjunction («и DevOps.») is glued to what the opponent said
+        last, even when the engine's own `_last_final_text` has already been
+        superseded or aged out of the tail-merge window.
+        """
+        with self._lock:
+            for speaker, text in reversed(self._window):
+                if speaker == "them" and text:
+                    return text
+        return ""
+
+    def add_utterance(self, text: str, speaker: str = "them") -> None:
+        """Append a raw utterance to the rolling history window.
+
+        ``speaker`` is ``"them"`` (opponent) or ``"me"`` (user).  The label is
+        rendered by :meth:`history_text` so the LLM can distinguish who said
+        what.  Defaults to ``"them"`` for backward compatibility with callers
+        that don't pass the speaker.
+        """
         t = (text or "").strip()
         if not t:
             return
         with self._lock:
-            self._window.append(t)
+            self._window.append((speaker, t))
+
+    def replace_utterance(self, old: str, new: str, speaker: str | None = None) -> None:
+        """Replace the first occurrence of ``old`` with ``new`` in history.
+
+        Used when the user edits a claim — the corrected text replaces the
+        STT error so subsequent LLM calls see the right context.  When
+        ``speaker`` is given, only entries from that speaker are matched.
+        """
+        old_s = (old or "").strip()
+        new_s = (new or "").strip()
+        if not old_s or not new_s:
+            return
+        with self._lock:
+            for i, (spk, line) in enumerate(self._window):
+                if line == old_s and (speaker is None or spk == speaker):
+                    self._window[i] = (spk, new_s)
+                    break
+            self._cache.clear()
+            self._cache_order.clear()
+            self._utterance_cache.clear()
 
     def history_text(self) -> str:
-        """Joined recent utterances (oldest first), capped to ``_HISTORY_CHAR_CAP``."""
+        """Labelled recent utterances (oldest first), capped to ``_HISTORY_CHAR_CAP``.
+
+        Each line is prefixed with ``[Я]:`` (user) or ``[ОПП]:`` (opponent) so
+        the LLM can distinguish who said what.
+        """
         with self._lock:
-            lines = list(self._window)
+            entries = list(self._window)
         # Keep the most recent utterances within the char budget.
         out: list[str] = []
         total = 0
-        for line in reversed(lines):
-            if total + len(line) > _HISTORY_CHAR_CAP:
+        for speaker, line in reversed(entries):
+            label = "[Я]" if speaker == "me" else "[ОПП]"
+            rendered = f"{label}: {line}"
+            if total + len(rendered) > _HISTORY_CHAR_CAP:
                 break
-            out.append(line)
-            total += len(line)
+            out.append(rendered)
+            total += len(rendered)
         return "\n".join(reversed(out))
 
     # -- resolution --------------------------------------------------------
@@ -147,12 +194,17 @@ class DialogContextManager:
             if result and result.get("resolved_query"):
                 answer_mode = result.get("answer_mode", "technical")
                 confidence = result.get("confidence", 0.0)
-                # LLM primary: trust its answer_mode when confident enough.
-                # Regex is_personal() only kicks in as a fallback when the LLM
-                # is unsure (confidence < 0.6) — it catches pronoun-heavy
-                # phrasings the LLM might miss.
-                if confidence < 0.6 and _det.is_personal(u):
-                    answer_mode = "personal"
+                # Mode-switch guard (incident: «какие Linux команды» resolved
+                # to personal and every answer drifted into the resume). The
+                # LLM's "personal" verdict is only accepted with high
+                # confidence AND explicit personal markers in the utterance;
+                # otherwise the mode stays technical — a wrong technical
+                # answer is recoverable, resume-drift on a tech question is
+                # not.
+                if answer_mode == "personal" and not (
+                    confidence >= 0.8 and _det.is_personal(u)
+                ):
+                    answer_mode = "technical"
                 resolved = {
                     "type": result.get("type", "question"),
                     "topic": result.get("topic", ""),

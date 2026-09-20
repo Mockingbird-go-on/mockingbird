@@ -76,7 +76,7 @@ def test_explainer_llm_primary_emits_analysis():
                   {"term": "ArgoCD", "explanation": "gitops-инструмент"}],
     )
     explainer = TermExplainer(Glossary.load(), _FakeCache(), llm, TermsConfig())
-    out = _emitted(explainer, _final("Обсуждали развёртывание и пайплайны."))
+    out = _emitted(explainer, _final("Мы сегодня подробно обсуждали развёртывание и пайплайны."))
     assert {t.term for t in out} == {"Kubernetes", "ArgoCD"}
     assert all(t.source == protocol.TermSource.LLM for t in out)
     assert all(t.explanation for t in out)
@@ -88,9 +88,9 @@ def test_explainer_llm_primary_dedupes_across_segments():
         analysis=[{"term": "Kubernetes", "explanation": "оркестратор"}],
     )
     explainer = TermExplainer(Glossary.load(), _FakeCache(), llm, TermsConfig())
-    out = _emitted(explainer, _final("первый сегмент"))
+    out = _emitted(explainer, _final("первый сегмент достаточно длинный для анализа"))
     assert len(out) == 1
-    out2 = _emitted(explainer, _final("второй сегмент"))
+    out2 = _emitted(explainer, _final("второй сегмент тоже достаточно длинный для анализа"))
     assert out2 == []
 
 
@@ -120,3 +120,46 @@ def test_explainer_accumulates_context():
     assert len(texts) == 1
     _emitted(explainer, _final("второй сегмент"))
     assert list(explainer._context) == ["первый сегмент", "второй сегмент"]
+
+
+# --- Phase 4: session learning ---
+
+def test_session_terms_accumulate():
+    """LLM-detected term добавляется в _session_terms."""
+    llm = _FakeLlm(
+        available=True,
+        analysis=[{"term": "Airflow", "explanation": "пайплайны"}],
+    )
+    explainer = TermExplainer(Glossary.load(), _FakeCache(), llm, TermsConfig())
+    # Text must exceed TermsConfig.llm_min_chars (40) — shorter finals skip
+    # the LLM analysis and go straight to the free glossary pass.
+    _emitted(explainer, _final("мы долго обсуждали airflow в продовой инфраструктуре"))
+    assert "Airflow" in explainer.session_terms
+
+
+def test_session_terms_in_hotwords():
+    """build_stt_hotwords включает session_terms."""
+    from mockingbird.terms.phonetics import build_stt_hotwords
+
+    words = build_stt_hotwords(
+        ["Kubernetes"],
+        session_terms=["Airflow"],
+    )
+    parts = [p.strip() for p in words.split(",")]
+    assert "Airflow" in parts
+    airflow_idx = parts.index("Airflow")
+    k8s_idx = parts.index("Kubernetes")
+    assert airflow_idx < k8s_idx
+
+
+def test_session_terms_reset():
+    """reset_session очищает список."""
+    llm = _FakeLlm(
+        available=True,
+        analysis=[{"term": "Airflow", "explanation": "пайплайны"}],
+    )
+    explainer = TermExplainer(Glossary.load(), _FakeCache(), llm, TermsConfig())
+    _emitted(explainer, _final("мы долго обсуждали airflow в продовой инфраструктуре"))
+    assert explainer.session_terms
+    explainer.reset_session()
+    assert not explainer.session_terms

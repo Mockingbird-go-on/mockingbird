@@ -8,6 +8,7 @@ from PySide6.QtGui import (
     QFont,
     QLinearGradient,
     QPainter,
+    QPainterPath,
     QPen,
     QPixmap,
     QRadialGradient,
@@ -291,20 +292,27 @@ class _BarCanvas(QWidget):
 
     def _paint_progress(self, painter: QPainter, rect: QRectF) -> None:
         t = theme.current
+        # Clip everything to the track's rounded rect — the sweeping gradient
+        # would otherwise poke square corners outside the rounded ends.
+        clip = QPainterPath()
+        clip.addRoundedRect(rect, 6, 6)
+        painter.save()
+        painter.setClipPath(clip)
         percent = self._owner._percent
         if percent is not None and percent >= 0:
             w = rect.width() * min(100.0, percent) / 100.0
             painter.setBrush(QBrush(QColor(t.accent)))
             painter.drawRoundedRect(QRectF(rect.x(), rect.y(), w, rect.height()), 6, 6)
-            return
-        x = self._owner._sweep * rect.width()
-        sweep = QRectF(x - 60.0, rect.y(), 120.0, rect.height())
-        grad = QLinearGradient(sweep.topLeft(), sweep.topRight())
-        grad.setColorAt(0.0, QColor(t.surface_alt))
-        grad.setColorAt(0.5, QColor(t.accent))
-        grad.setColorAt(1.0, QColor(t.surface_alt))
-        painter.setBrush(QBrush(grad))
-        painter.drawRoundedRect(sweep, 6, 6)
+        else:
+            x = self._owner._sweep * rect.width()
+            sweep = QRectF(x - 60.0, rect.y(), 120.0, rect.height())
+            grad = QLinearGradient(sweep.topLeft(), sweep.topRight())
+            grad.setColorAt(0.0, QColor(t.surface_alt))
+            grad.setColorAt(0.5, QColor(t.accent))
+            grad.setColorAt(1.0, QColor(t.surface_alt))
+            painter.setBrush(QBrush(grad))
+            painter.drawRoundedRect(sweep, 6, 6)
+        painter.restore()
 
 
 def _mix_color(a: QColor, b: QColor, f: float) -> QColor:
@@ -466,52 +474,14 @@ class ThemeToggle(QPushButton):
         self.themeChanged.emit(new_name)
 
     def update_theme(self) -> None:
+        from mockingbird.ui.icons import icon as lucide_icon
+
         is_dark = theme.current.name == "dark"
-        icon = self._make_icon(is_dark)
+        icon = lucide_icon("moon" if is_dark else "sun",
+                           color=theme.current.text_secondary)
         self.setIcon(icon)
-        self.setIconSize(QPixmap(20, 20).size())
         self.setText("")
         self.setToolTip("Светлая" if is_dark else "Тёмная")
-
-    @staticmethod
-    def _make_icon(is_dark: bool):
-        """Draw a simple moon (dark) or sun (light) icon."""
-        from PySide6.QtCore import QRectF
-        from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
-
-        pix = QPixmap(20, 20)
-        pix.fill(QColor(0, 0, 0, 0))
-        p = QPainter(pix)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        color = QColor(theme.current.text_secondary)
-        p.setPen(Qt.PenStyle.NoPen)
-
-        if is_dark:
-            # Crescent moon: draw full circle, then erase a smaller offset circle.
-            p.setBrush(color)
-            p.drawEllipse(QRectF(3, 3, 14, 14))
-            # Erase the bite (transparent)
-            p.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationOut)
-            p.drawEllipse(QRectF(8, 2, 13, 13))
-        else:
-            # Sun: filled circle + radiating lines
-            p.setBrush(color)
-            p.drawEllipse(QRectF(5, 5, 10, 10))
-            p.setPen(color)
-            import math
-
-            cx, cy = 10, 10
-            for i in range(8):
-                angle = i * math.pi / 4
-                x1 = cx + 6 * math.cos(angle)
-                y1 = cy + 6 * math.sin(angle)
-                x2 = cx + 9 * math.cos(angle)
-                y2 = cy + 9 * math.sin(angle)
-                p.drawLine(int(x1), int(y1), int(x2), int(y2))
-
-        p.end()
-        return QIcon(pix)
-
 
 class SourceBadge(QLabel):
     """Primary audio source: «Система» (loopback) or «Микрофон»."""
@@ -539,23 +509,3 @@ class SourceBadge(QLabel):
         )
 
 
-class StatusDot(QLabel):
-    """Small coloured dot — a minimal "app alive" indicator for Simple Mode.
-
-    Visible only when Simple Mode is active; shows a coloured ● whose colour
-    follows the active session state via ``theme.status_color``.
-    """
-
-    def __init__(self, parent=None):
-        super().__init__("●", parent)
-        self.setFixedSize(14, 14)
-        self.setToolTip("Mockingbird активен")
-        self._state = "idle"
-
-    def set_state(self, state: str) -> None:
-        self._state = state
-        self.update_theme()
-
-    def update_theme(self) -> None:
-        color = theme.status_color(self._state)
-        self.setStyleSheet(f"color:{color}; background:transparent;")

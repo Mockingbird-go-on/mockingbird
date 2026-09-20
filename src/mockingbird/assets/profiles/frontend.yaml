@@ -1,0 +1,5 @@
+id: frontend
+title: "Frontend-разработчик"
+persona: "Frontend-разработчик с 5-летним опытом"
+persona_senior: "Frontend-разработчик 6+ лет, вёл продуктовые команды, менторит джунов, проводит код-ревью и дизайн-ревью"
+stack: "TypeScript/JavaScript, React, Vue, HTML/CSS, Webpack/Vite, тестирование (Jest, Playwright), доступность, веб-перформанс"

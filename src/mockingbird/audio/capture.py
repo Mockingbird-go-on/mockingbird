@@ -46,13 +46,16 @@ class AudioCapture:
 
     def stop(self) -> None:
         with self._lock:
-            if self._stream is not None:
+            # Drop the reference first: the native PortAudio thread may
+            # invoke the callback once more while close() is in flight;
+            # with _stream=None the callback path is a no-op.
+            stream, self._stream = self._stream, None
+            if stream is not None:
                 try:
-                    self._stream.stop()
-                    self._stream.close()
+                    stream.stop()
+                    stream.close()
                 except Exception:
                     log.exception("error closing audio stream")
-                self._stream = None
 
     def _on_audio(self, indata, frames, time_info, status) -> None:
         if status:

@@ -38,7 +38,15 @@ def run_system_checks(config: Config) -> list[SystemWarning]:
         import torch
 
         cuda_available = torch.cuda.is_available()
-        if not cuda_available and config.stt.backend == "gigaam":
+        gigaam_cfg_device = (config.gigaam.device or "auto").lower()
+        # Only warn when the user did not explicitly pick CPU (otherwise the
+        # message is noise — they know they chose CPU on purpose).
+        cuda_effectively_off = (
+            not cuda_available
+            and config.stt.backend == "gigaam"
+            and gigaam_cfg_device != "cpu"
+        )
+        if cuda_effectively_off:
             warnings.append(SystemWarning(
                 level="warning",
                 title="GPU (CUDA) недоступен",
@@ -52,9 +60,8 @@ def run_system_checks(config: Config) -> list[SystemWarning]:
         # generic warning so the app still boots on CPU.
         logging.getLogger(__name__).debug("torch/CUDA probe failed", exc_info=True)
 
-    # 3. No active KB modules
+    # 3. No KB topics
     try:
-        from mockingbird.kb.module_manager import ModuleManager
         from mockingbird.kb.loader import load_topics
 
         topics = load_topics(config.interview.kb_path)
@@ -62,7 +69,7 @@ def run_system_checks(config: Config) -> list[SystemWarning]:
             warnings.append(SystemWarning(
                 level="warning",
                 title="База знаний пуста",
-                message="Нет активных модулей базы знаний. Импортируйте модуль в «Настройки → Модули».",
+                message="Не найдено топиков базы знаний.",
             ))
     except Exception:
         pass
@@ -76,7 +83,7 @@ def run_system_checks(config: Config) -> list[SystemWarning]:
                 level="info",
                 title="Резюме не загружено",
                 message="Personal-вопросы («что ты делал?») будут отвечать в constructive-режиме "
-                "(без конкретных фактов из резюме). Загрузите PDF в «Настройки → Резюме».",
+                "(без конкретных фактов из резюме). Загрузите PDF на вкладке «Резюме».",
             ))
     except Exception:
         pass

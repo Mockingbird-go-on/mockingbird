@@ -1,12 +1,12 @@
 """Диалог настроек. Изменения моделей и вычислительного устройства применяются после перезапуска приложения."""
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, Qt
+from PySide6.QtCore import QEvent, QSize, Qt
 from PySide6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QDoubleSpinBox,
     QFormLayout,
     QFrame,
     QHBoxLayout,
@@ -14,7 +14,6 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QScrollArea,
-    QStyle,
     QVBoxLayout,
     QWidget,
  )
@@ -37,13 +36,16 @@ from mockingbird.audio.capture import list_input_devices
 from mockingbird.audio.loopback import list_loopback_devices
 from mockingbird.config import Config
 from mockingbird.ui import theme
+from mockingbird.ui.toggle import ToggleSwitch
 
 _WHISPER_MODELS = ["tiny", "base", "small", "medium", "large-v3", "large-v3-turbo"]
 _BACKENDS = [("gigaam", "GigaAM"), ("whisper", "Whisper")]
+_BEAM_SIZES = [("1", "1 (рекомендуется)"), ("3", "3"), ("5", "5")]
 _COMPUTE_TYPES = [
-    ("int8", "int8 (быстрее)"),
-    ("float16", "float16"),
-    ("float32", "float32 (точнее)"),
+    ("int8", "int8 (быстрее, CPU)"),
+    ("int8_float32", "int8_float32 (быстрее, но хуже точность)"),
+    ("float16", "float16 (Turing+)"),
+    ("float32", "float32 (рекомендуется)"),
 ]
 _DEVICES = [("auto", "авто"), ("cpu", "CPU"), ("cuda", "CUDA")]
 _GIGAAM_REVISIONS = ["e2e_rnnt", "rnnt", "ctc"]
@@ -112,26 +114,101 @@ _HELP = {
     "whisper.model_size": "Размер основной whisper-модели: tiny…large-v3-turbo. "
     "large-v3-turbo — самая быстрая large-модель, хороший компромисс скорости и качества для русского + английских терминов. "
     "Больше — точнее, но медленнее и требовательнее к памяти.",
-    "whisper.compute_type": "Точность вычислений whisper: int8 — быстрее, "
-    "float16 — компромисс, float32 — точнее.",
+    "whisper.compute_type": "Точность вычислений whisper: int8 — быстрее (CPU), "
+    "int8_float32 — GPU без fp16 (Pascal), float16 — Turing+, float32 — точнее.",
+    "whisper.final_beam_size": "Beam для финального декода (качество распознавания): "
+    "1 — быстрее, 5 — точнее на быстрой речи; финал использует speculative, поэтому beam не замедляет ответ.",
     "whisper.language": "Язык распознавания (например, ru). Пусто — автоматическое определение языка.",
     "llm.base_url": "Базовый URL API большой языковой модели (OpenAI-совместимый).",
     "llm.api_key": "API-ключ LLM-сервиса. Хранится в файле настроек.",
     "llm.model": "Имя модели для LLM-запросов (например, gpt-4o-mini или локальная модель).",
     "terms.glossary_path": "Путь к файлу глоссария — базе знаний с терминами и определениями.",
-    "topics.enabled": "Предлагать вопросы по текущей теме встречи.",
     "interview.enabled": "Включить ассистента интервью — ответы из базы знаний на вопросы пользователя.",
     "interview.subject_llm": "Определять тему нечёткого вопроса через LLM, когда она не находится напрямую.",
     "interview.answer_llm": "Если точного ответа нет в базе знаний — сформировать его через LLM.",
-    "interview.predict_llm": "Прогнозировать следующие вопросы на основе текущего контекста.",
     "interview.context_tracker_llm": "Отслеживать контекст беседы и выводить актуальную тему в живом режиме.",
     "interview.llm_primary": "Использовать LLM как основной источник ответа на точный вопрос "
     "(база знаний — запасной вариант).",
     "interview.answer_stream": "Показывать ответ LLM с эффектом печати по мере генерации.",
     "interview.answer_cache": "Кэшировать повторные ответы, чтобы мгновенно показывать их при повторе вопроса.",
-    "kgen.books_dir": "Папка с книгами-источниками для генерации базы знаний.",
-    "kgen.out_dir": "Выходная папка для сгенерированной базы знаний.",
+    "terms.glossary_path": "Путь к YAML-глоссарию терминов для STT-коррекции.",
 }
+
+
+class _ThemeCard(QPushButton):
+    """Clickable theme preview card: icon, name and a mini palette strip.
+
+    The swatches are a miniature of the theme's colours (bg / surface /
+    secondary text / accent) painted as rounded chips; the card border
+    highlights in the accent colour when selected. Theme-agnostic (reads
+    ``theme.current`` for the frame/text), so it looks right in both modes.
+    """
+
+    def __init__(self, title: str, icon_name: str, swatches: list[str],
+                 selected: bool, parent=None):
+        super().__init__(parent)
+        from PySide6.QtCore import Qt
+
+        from mockingbird.ui.icons import icon as lucide_icon
+
+        self._title = title
+        self._swatches = list(swatches)
+        self._selected = selected
+        self.setCheckable(False)
+        self.setFlat(False)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedHeight(86)
+        self.setIcon(lucide_icon(icon_name, size=22, color=theme.current.text_secondary))
+        self.setIconSize(QSize(22, 22))
+        self.setText(title)
+        self.setToolTip(f"Тема «{title}»")
+        self._apply_style()
+
+    def set_selected(self, selected: bool) -> None:
+        if selected != self._selected:
+            self._selected = selected
+            self._apply_style()
+
+    def _apply_style(self) -> None:
+        t = theme.current
+        border = t.accent if self._selected else t.border
+        width = 2 if self._selected else 1
+        weight = "bold" if self._selected else "normal"
+        qss = f"""
+            QPushButton {{
+                background-color: {t.card};
+                border: {width}px solid {border};
+                border-radius: 10px;
+                padding: 10px 12px 8px 12px;
+                text-align: left;
+                font-weight: {weight};
+                color: {t.text};
+            }}
+            QPushButton:hover {{ border-color: {t.accent}; background-color: {t.card_hover}; }}
+        """
+        # setStyleSheet fires StyleChange -> changeEvent -> _apply_style;
+        # skip the update when the QSS is already what we want.
+        if self.styleSheet() != qss:
+            self.setStyleSheet(qss)
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        from PySide6.QtCore import QPointF, QRectF
+        from PySide6.QtGui import QColor, QPainter, QPainterPath
+
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        m = 12  # side margin
+        chip_w = 26
+        chip_h = 10
+        y = self.height() - chip_h - 9
+        x = m + 30  # leave room for icon
+        for c in self._swatches:
+            rect = QRectF(x, y, chip_w, chip_h)
+            path = QPainterPath()
+            path.addRoundedRect(rect, 4, 4)
+            p.fillPath(path, QColor(c))
+            x += chip_w + 6
 
 
 class SettingsDialog(QDialog):
@@ -176,28 +253,25 @@ class SettingsDialog(QDialog):
         self._compute = _NoWheelComboBox()
         self._init_combo(self._compute, _COMPUTE_TYPES, config.whisper.compute_type)
 
+        self._beam = _NoWheelComboBox()
+        self._init_combo(self._beam, _BEAM_SIZES, str(config.whisper.final_beam_size))
+
         self._language = QLineEdit(config.whisper.language or "")
         self._glossary = QLineEdit(config.terms.glossary_path or "")
-        self._topics_enabled = QCheckBox("Темы: предлагать вопросы по теме")
-        self._topics_enabled.setChecked(config.topics.enabled)
-        self._interview_enabled = QCheckBox("Ассистент интервью (база знаний)")
+        self._interview_enabled = ToggleSwitch("Ассистент интервью (база знаний)")
         self._interview_enabled.setChecked(config.interview.enabled)
-        self._interview_subject_llm = QCheckBox("LLM: определять тему нечёткого вопроса")
+        self._interview_subject_llm = ToggleSwitch("LLM: определять тему нечёткого вопроса")
         self._interview_subject_llm.setChecked(config.interview.subject_llm)
-        self._interview_answer_llm = QCheckBox("LLM: отвечать, если в базе нет ответа")
+        self._interview_answer_llm = ToggleSwitch("LLM: отвечать, если в базе нет ответа")
         self._interview_answer_llm.setChecked(config.interview.answer_llm)
-        self._interview_predict_llm = QCheckBox("LLM: прогнозировать следующие вопросы")
-        self._interview_predict_llm.setChecked(config.interview.predict_llm)
-        self._interview_context_llm = QCheckBox("LLM: отслеживать контекст беседы (живая тема)")
+        self._interview_context_llm = ToggleSwitch("LLM: отслеживать контекст беседы (живая тема)")
         self._interview_context_llm.setChecked(config.interview.context_tracker_llm)
-        self._interview_llm_primary = QCheckBox("LLM: основной ответ на точный вопрос")
+        self._interview_llm_primary = ToggleSwitch("LLM: основной ответ на точный вопрос")
         self._interview_llm_primary.setChecked(config.interview.llm_primary)
-        self._interview_answer_stream = QCheckBox("LLM: потоковый вывод ответа (эффект печати)")
+        self._interview_answer_stream = ToggleSwitch("LLM: потоковый вывод ответа (эффект печати)")
         self._interview_answer_stream.setChecked(config.interview.answer_stream)
-        self._interview_answer_cache = QCheckBox("LLM: кэшировать повторные ответы")
+        self._interview_answer_cache = ToggleSwitch("LLM: кэшировать повторные ответы")
         self._interview_answer_cache.setChecked(config.interview.answer_cache)
-        self._kgen_books = QLineEdit(config.kgen.books_dir or "")
-        self._kgen_out = QLineEdit(config.kgen.out_dir or "")
 
         form = QFormLayout()
         form.addRow(self._section("Аудио"))
@@ -236,6 +310,10 @@ class SettingsDialog(QDialog):
             self._row(self._compute, _HELP["whisper.compute_type"]),
         )
         form.addRow(
+            self._flabel("Beam (качество финала)", _HELP["whisper.final_beam_size"]),
+            self._row(self._beam, _HELP["whisper.final_beam_size"]),
+        )
+        form.addRow(
             self._flabel("Язык (пусто = авто)", _HELP["whisper.language"]),
             self._row(self._language, _HELP["whisper.language"]),
         )
@@ -247,25 +325,28 @@ class SettingsDialog(QDialog):
         )
 
         form.addRow(self._section("Ассистент интервью"))
-        form.addRow("", self._row(self._topics_enabled, _HELP["topics.enabled"]))
         form.addRow("", self._row(self._interview_enabled, _HELP["interview.enabled"]))
         form.addRow("", self._row(self._interview_subject_llm, _HELP["interview.subject_llm"]))
         form.addRow("", self._row(self._interview_answer_llm, _HELP["interview.answer_llm"]))
-        form.addRow("", self._row(self._interview_predict_llm, _HELP["interview.predict_llm"]))
         form.addRow("", self._row(self._interview_context_llm, _HELP["interview.context_tracker_llm"]))
         form.addRow("", self._row(self._interview_llm_primary, _HELP["interview.llm_primary"]))
         form.addRow("", self._row(self._interview_answer_stream, _HELP["interview.answer_stream"]))
         form.addRow("", self._row(self._interview_answer_cache, _HELP["interview.answer_cache"]))
 
-        form.addRow(self._section("Генерация базы знаний"))
-        form.addRow(
-            self._flabel("Папка книг", _HELP["kgen.books_dir"]),
-            self._row(self._kgen_books, _HELP["kgen.books_dir"]),
-        )
-        form.addRow(
-            self._flabel("Выходная папка", _HELP["kgen.out_dir"]),
-            self._row(self._kgen_out, _HELP["kgen.out_dir"]),
-        )
+        # Specialization profile (persona prompts + glossary hint)
+        from mockingbird.profiles.loader import load_profiles
+        self._profiles = load_profiles()
+        self._profile_combo = _NoWheelComboBox()
+        for pid in sorted(self._profiles):
+            prof = self._profiles[pid]
+            label = prof.title + ("" if prof.calibrated else " (базовый)")
+            self._profile_combo.addItem(label, pid)
+        idx = self._profile_combo.findData(config.profile_id)
+        if idx < 0:
+            idx = self._profile_combo.findData("devops")
+        self._profile_combo.setCurrentIndex(max(0, idx))
+        self._profiles_btn = QPushButton("Редактировать профили…")
+        self._profiles_btn.clicked.connect(self._open_profiles_editor)
 
         # === Build tabbed layout ===
         from PySide6.QtWidgets import QTabWidget, QPushButton, QFileDialog, QMessageBox
@@ -280,6 +361,7 @@ class SettingsDialog(QDialog):
         stt_form.addRow(self._flabel("Ревизия GigaAM", _HELP["gigaam.revision"]), self._row(self._gigaam_revision, _HELP["gigaam.revision"]))
         stt_form.addRow(self._flabel("Модель Whisper", _HELP["whisper.model_size"]), self._row(self._model, _HELP["whisper.model_size"]))
         stt_form.addRow(self._flabel("Точность вычислений", _HELP["whisper.compute_type"]), self._row(self._compute, _HELP["whisper.compute_type"]))
+        stt_form.addRow(self._flabel("Beam (качество финала)", _HELP["whisper.final_beam_size"]), self._row(self._beam, _HELP["whisper.final_beam_size"]))
         stt_form.addRow(self._flabel("Язык (пусто = авто)", _HELP["whisper.language"]), self._row(self._language, _HELP["whisper.language"]))
         stt_scroll = self._wrap_scroll(stt_form)
         tabs.addTab(stt_scroll, "STT")
@@ -295,13 +377,26 @@ class SettingsDialog(QDialog):
         audio_form.addRow(self._flabel("Loopback-устройство (для режима «Динамик»)", _HELP["audio.loopback"]), self._row(self._loopback, _HELP["audio.loopback"]))
         tabs.addTab(self._wrap_scroll(audio_form), "Аудио")
 
+        # --- Tab: Профиль ---
+        profile_form = QFormLayout()
+        profile_form.addRow(self._section("Специализация"))
+        profile_form.addRow(
+            self._flabel("Профиль", "Персона для ответов ИИ и подсказка глоссария. «Базовый» — без откалиброванного глоссария."),
+            self._profile_combo,
+        )
+        profile_row = QHBoxLayout()
+        profile_row.addWidget(self._profiles_btn)
+        profile_row.addStretch(1)
+        wrap = QWidget()
+        wrap.setLayout(profile_row)
+        profile_form.addRow("", wrap)
+        tabs.addTab(self._wrap_scroll(profile_form), "Профиль")
+
         # --- Tab 4: Интервью ---
         interview_form = QFormLayout()
-        interview_form.addRow("", self._row(self._topics_enabled, _HELP["topics.enabled"]))
         interview_form.addRow("", self._row(self._interview_enabled, _HELP["interview.enabled"]))
         interview_form.addRow("", self._row(self._interview_subject_llm, _HELP["interview.subject_llm"]))
         interview_form.addRow("", self._row(self._interview_answer_llm, _HELP["interview.answer_llm"]))
-        interview_form.addRow("", self._row(self._interview_predict_llm, _HELP["interview.predict_llm"]))
         interview_form.addRow("", self._row(self._interview_context_llm, _HELP["interview.context_tracker_llm"]))
         interview_form.addRow("", self._row(self._interview_llm_primary, _HELP["interview.llm_primary"]))
         interview_form.addRow("", self._row(self._interview_answer_stream, _HELP["interview.answer_stream"]))
@@ -317,34 +412,57 @@ class SettingsDialog(QDialog):
         appearance_widget = QWidget()
         ap_layout = QVBoxLayout(appearance_widget)
 
-        # Theme selection
+        # Theme selection — preview cards with mini palette swatches
         theme_group = QGroupBox("Тема оформления")
         theme_box = QVBoxLayout(theme_group)
         _qsettings = QSettings("Mockingbird", "Mockingbird")
         _current_theme = _qsettings.value("ui/theme", "dark")
         self._theme_dark = QRadioButton("Тёмная")
         self._theme_light = QRadioButton("Светлая")
+        # Hidden radio buttons keep the apply() state contract intact; an
+        # explicit group is required for exclusivity (they are not in a layout).
+        from PySide6.QtWidgets import QButtonGroup
+
+        self._theme_group = QButtonGroup(self)
+        self._theme_group.addButton(self._theme_dark)
+        self._theme_group.addButton(self._theme_light)
+        self._theme_dark.setVisible(False)
+        self._theme_light.setVisible(False)
         if _current_theme == "light":
             self._theme_light.setChecked(True)
         else:
             self._theme_dark.setChecked(True)
-        theme_box.addWidget(self._theme_dark)
-        theme_box.addWidget(self._theme_light)
+        cards_row = QHBoxLayout()
+        cards_row.setSpacing(12)
+        self._theme_card_dark = _ThemeCard(
+            "Тёмная",
+            icon_name="moon",
+            swatches=[theme.DARK_THEME.bg, theme.DARK_THEME.surface,
+                      theme.DARK_THEME.text_secondary, theme.DARK_THEME.accent],
+            selected=_current_theme != "light",
+        )
+        self._theme_card_light = _ThemeCard(
+            "Светлая",
+            icon_name="sun",
+            swatches=[theme.LIGHT_THEME.bg, theme.LIGHT_THEME.surface,
+                      theme.LIGHT_THEME.text_secondary, theme.LIGHT_THEME.accent],
+            selected=_current_theme == "light",
+        )
+        self._theme_card_dark.clicked.connect(self._select_theme_card)
+        self._theme_card_light.clicked.connect(self._select_theme_card)
+        cards_row.addWidget(self._theme_card_dark, 1)
+        cards_row.addWidget(self._theme_card_light, 1)
+        theme_box.addLayout(cards_row)
         ap_layout.addWidget(theme_group)
 
         # Capture guard
-        self._capture_check = QCheckBox("Скрывать окно от захвата экрана (Zoom, Teams, OBS)")
+        self._capture_check = ToggleSwitch("Скрывать окно от захвата экрана (Zoom, Teams, OBS)")
         self._capture_check.setChecked(config.window.hide_from_capture)
         if not _cg.is_capture_protection_available():
             self._capture_check.setEnabled(False)
             build = _cg.windows_build() or "?"
             self._capture_check.setToolTip(f"Недоступно: требуется Windows 10 build 19041+ (у вас build {build})")
         ap_layout.addWidget(self._capture_check)
-
-        # Simple Mode
-        self._simple_check = QCheckBox("Simple Mode — скрыть лишние элементы UI (ответ ИИ крупно)")
-        self._simple_check.setChecked(config.window.simple_mode)
-        ap_layout.addWidget(self._simple_check)
 
         ap_layout.addStretch(1)
         tabs.addTab(appearance_widget, "Внешний вид")
@@ -435,7 +553,84 @@ class SettingsDialog(QDialog):
         check_widget = QWidget()
         check_widget.setLayout(check_row)
         form.addRow("", check_widget)
+
+        # --- Failover provider (hedged race for answers) ---
+        form.addRow(self._section("Резервный LLM-провайдер (ускорение ответа)"))
+        self._failover_enabled = ToggleSwitch("Включить гонку с резервным эндпоинтом")
+        self._failover_enabled.setChecked(bool(cfg.failover_enabled))
+        fo_enable_help = (
+            "Если основной провайдер не даст первый токен за Хедж-задержку, тот же вопрос "
+            "параллельно уходит резервному; кто быстрее — тот и отвечает."
+        )
+        form.addRow(self._flabel("Включить", fo_enable_help), self._row(self._failover_enabled, fo_enable_help))
+
+        fo_current_url = (cfg.failover_base_url or "").rstrip("/")
+        fo_matched = "custom"
+        for pid, _name, url, _models in _LLM_PROVIDERS:
+            if pid != "custom" and url and fo_current_url == url.rstrip("/"):
+                fo_matched = pid
+                break
+        self._fo_provider = _NoWheelComboBox()
+        for pid, name, _url, _models in _LLM_PROVIDERS:
+            self._fo_provider.addItem(name, pid)
+        self._fo_provider.setCurrentIndex(max(0, self._fo_provider.findData(fo_matched)))
+        self._fo_base_url = QLineEdit(cfg.failover_base_url or "")
+        self._fo_base_url.setPlaceholderText("https://openrouter.ai/api/v1")
+        self._fo_api_key = QLineEdit(cfg.failover_api_key or "")
+        self._fo_api_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self._fo_api_key.setPlaceholderText("sk-...")
+        self._fo_model = _NoWheelComboBox()
+        self._fo_model.setEditable(True)
+        self._fo_model.setInsertPolicy(_NoWheelComboBox.InsertPolicy.NoInsert)
+        self._fo_model.setCurrentText(cfg.failover_model or "")
+        self._fo_hedge = QDoubleSpinBox()
+        self._fo_hedge.setRange(0.5, 15.0)
+        self._fo_hedge.setSingleStep(0.5)
+        self._fo_hedge.setSuffix(" с")
+        self._fo_hedge.setValue(cfg.failover_hedge_s)
+
+        self._fo_provider.currentIndexChanged.connect(self._on_fo_provider_changed)
+        self._on_fo_provider_changed(self._fo_provider.currentIndex())
+
+        fo_prov_help = "Резервный провайдер LLM (любой OpenAI-совместимый)."
+        fo_url_help = "Базовый URL резервного API."
+        fo_model_help = "Модель резервного эндпоинта."
+        fo_hedge_help = (
+            "Сколько секунд ждать первый токен от основного провайдера, прежде чем "
+            "запустить резервный. Меньше — быстрее, но чаще два запроса вместо одного."
+        )
+        # Failover fields live in a collapsible widget shown only when the
+        # race toggle is on — hides the noise for the common (disabled) case.
+        self._fo_fields = QWidget()
+        fo_form = QFormLayout(self._fo_fields)
+        fo_form.setContentsMargins(0, 0, 0, 0)
+        fo_form.addRow(self._flabel("Провайдер", fo_prov_help), self._row(self._fo_provider, fo_prov_help))
+        fo_form.addRow(self._flabel("Базовый URL", fo_url_help), self._row(self._fo_base_url, fo_url_help))
+        fo_form.addRow(self._flabel("API-ключ", "API-ключ резервного LLM-сервиса."), self._row(self._fo_api_key, "API-ключ резервного LLM-сервиса."))
+        fo_form.addRow(self._flabel("Модель", fo_model_help), self._row(self._fo_model, fo_model_help))
+        fo_form.addRow(self._flabel("Хедж-задержка", fo_hedge_help), self._row(self._fo_hedge, fo_hedge_help))
+        self._fo_fields.setVisible(bool(cfg.failover_enabled))
+        self._failover_enabled.toggled.connect(self._fo_fields.setVisible)
+        form.addRow(self._fo_fields)
         return form
+
+    def _on_fo_provider_changed(self, idx: int) -> None:
+        """Fill URL + model list for the failover provider dropdown."""
+        pid = self._fo_provider.itemData(idx) if idx >= 0 else "custom"
+        info = _LLM_PROVIDER_BY_ID.get(pid)
+        if info is None:
+            return
+        _name, url, models = info
+        if url:
+            self._fo_base_url.setText(url)
+        current = self._fo_model.currentText()
+        self._fo_model.clear()
+        for m in models:
+            self._fo_model.addItem(m)
+        if current:
+            self._fo_model.setEditText(current)
+        elif models:
+            self._fo_model.setCurrentIndex(0)
 
     def _on_llm_provider_changed(self, idx: int) -> None:
         """When the provider dropdown changes, fill URL + model list."""
@@ -500,176 +695,6 @@ class SettingsDialog(QDialog):
         self._check_worker.done.connect(_on_done)
         self._check_worker.start()
 
-    def _build_modules_tab(self, mgr) -> QWidget:
-        from PySide6.QtWidgets import QFileDialog, QListWidget, QListWidgetItem, QPushButton
-
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-
-        layout.addWidget(QLabel("Установленные модули базы знаний:"))
-
-        self._module_list = QListWidget()
-        modules = mgr.list_modules()
-        for manifest, entry in modules:
-            blocks_count = len(manifest.topics)
-            status = "✅" if entry.enabled else "⬜"
-            text = f"{status}  {manifest.name} v{manifest.version} ({blocks_count} топиков)"
-            if manifest.description:
-                text += f"\n    {manifest.description[:80]}"
-            item = QListWidgetItem(text)
-            item.setData(Qt.ItemDataRole.UserRole, manifest.id)
-            item.setData(Qt.ItemDataRole.UserRole + 1, entry.enabled)
-            self._module_list.addItem(item)
-
-        if not modules:
-            self._module_list.addItem("Нет установленных модулей. Импортируйте ZIP-файл.")
-
-        layout.addWidget(self._module_list, stretch=1)
-
-        btn_row = QHBoxLayout()
-        self._module_import_btn = QPushButton("📦 Импортировать ZIP…")
-        self._module_toggle_btn = QPushButton("Включить/выключить")
-        self._module_remove_btn = QPushButton("🗑 Удалить")
-
-        self._module_import_btn.clicked.connect(lambda: self._import_module(mgr))
-        self._module_toggle_btn.clicked.connect(lambda: self._toggle_module(mgr))
-        self._module_remove_btn.clicked.connect(lambda: self._remove_module(mgr))
-
-        btn_row.addWidget(self._module_import_btn)
-        btn_row.addWidget(self._module_toggle_btn)
-        btn_row.addWidget(self._module_remove_btn)
-        layout.addLayout(btn_row)
-
-        # Store ref for KB reload after OK
-        self._module_mgr = mgr
-        self._modules_changed = False
-        return widget
-
-    def _import_module(self, mgr) -> None:
-        from PySide6.QtWidgets import QFileDialog, QMessageBox
-
-        path, _ = QFileDialog.getOpenFileName(self, "Импорт модуля KB", "", "KB Module (*.zip)")
-        if not path:
-            return
-        manifest = mgr.install_zip(path)
-        if manifest:
-            self._modules_changed = True
-            QMessageBox.information(self, "Модуль установлен", f"{manifest.name} v{manifest.version}\n{len(manifest.topics)} топиков.")
-        else:
-            QMessageBox.warning(self, "Ошибка", "Не удалось установить модуль. Проверьте формат ZIP.")
-
-    def _toggle_module(self, mgr) -> None:
-        item = self._module_list.currentItem()
-        if item is None:
-            return
-        mod_id = item.data(Qt.ItemDataRole.UserRole)
-        if not mod_id:
-            return
-        current = item.data(Qt.ItemDataRole.UserRole + 1)
-        mgr.set_enabled(mod_id, not current)
-        self._modules_changed = True
-
-    def _remove_module(self, mgr) -> None:
-        from PySide6.QtWidgets import QMessageBox
-
-        item = self._module_list.currentItem()
-        if item is None:
-            return
-        mod_id = item.data(Qt.ItemDataRole.UserRole)
-        if not mod_id:
-            return
-        reply = QMessageBox.question(self, "Удалить модуль", f"Удалить модуль {mod_id}?")
-        if reply == QMessageBox.StandardButton.Yes:
-            mgr.remove(mod_id)
-            self._modules_changed = True
-
-    def _build_resume_tab(self) -> QWidget:
-        from PySide6.QtWidgets import QFileDialog, QMessageBox, QProgressBar
-
-        from mockingbird.kb.resume_loader import ResumeLoader
-
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-
-        layout.addWidget(QLabel("Резюме для personal-режима ответов (вопросы «что ты делал?»)."))
-
-        info = ResumeLoader.get_info()
-        if info:
-            status_text = f"✅ Резюме загружено: {info['blocks']} блоков\nФайл: {info['path']}\nОбновлено: {info['modified']}"
-        else:
-            status_text = "⬜ Резюме не загружено. Personal-режим работает в constructive-режиме (без конкретных фактов)."
-        self._resume_status = QLabel(status_text)
-        self._resume_status.setWordWrap(True)
-        self._resume_status.setStyleSheet(f"color:{theme.TEXT_SECONDARY}; padding: 8px;")
-        layout.addWidget(self._resume_status)
-
-        btn_row = QHBoxLayout()
-        self._resume_load_btn = QPushButton("📄 Загрузить PDF…")
-        self._resume_remove_btn = QPushButton("🗑 Удалить резюме")
-        self._resume_load_btn.clicked.connect(lambda: self._import_resume())
-        self._resume_remove_btn.clicked.connect(lambda: self._remove_resume())
-        btn_row.addWidget(self._resume_load_btn)
-        btn_row.addWidget(self._resume_remove_btn)
-        layout.addLayout(btn_row)
-
-        layout.addWidget(QLabel("Поддерживается PDF с текстовым слём. Сканы (изображения) не обрабатываются."))
-        layout.addStretch(1)
-
-        self._resume_changed = False
-        return widget
-
-    def _import_resume(self) -> None:
-        from PySide6.QtWidgets import QFileDialog, QMessageBox, QProgressDialog
-
-        path, _ = QFileDialog.getOpenFileName(self, "Выберите PDF резюме", "", "PDF (*.pdf)")
-        if not path:
-            return
-        # Find parent App via the dialog's parent chain
-        parent = self.parent()
-        while parent is not None and not hasattr(parent, "_app"):
-            parent = parent.parent()
-        if parent is None or not hasattr(parent, "_app"):
-            QMessageBox.warning(self, "Ошибка", "Не удалось получить доступ к приложению.")
-            return
-        app = parent._app  # noqa: SLF001
-
-        progress = QProgressDialog("Обработка резюме…", "Отмена", 0, 100, self)
-        progress.setWindowTitle("Импорт резюме")
-        progress.setMinimumDuration(0)
-        progress.show()
-
-        try:
-            result = app.import_resume(path, on_progress=lambda msg, pct: (
-                progress.setLabelText(msg),
-                progress.setValue(int(pct * 100)) if pct >= 0 else None,
-            ))
-            progress.close()
-            self._resume_changed = True
-            QMessageBox.information(
-                self, "Резюме загружено",
-                f"Обработано блоков: {result['blocks']}. Резюме готово к использованию.",
-            )
-            from mockingbird.kb.resume_loader import ResumeLoader
-            info = ResumeLoader.get_info()
-            if info:
-                self._resume_status.setText(
-                    f"✅ Резюме загружено: {info['blocks']} блоков\nФайл: {info['path']}\nОбновлено: {info['modified']}"
-                )
-        except Exception as exc:
-            progress.close()
-            QMessageBox.warning(self, "Ошибка", f"Не удалось обработать PDF: {exc}")
-
-    def _remove_resume(self) -> None:
-        from PySide6.QtWidgets import QMessageBox
-
-        from mockingbird.kb.resume_loader import ResumeLoader
-
-        reply = QMessageBox.question(self, "Удалить резюме", "Удалить загруженное резюме?")
-        if reply == QMessageBox.StandardButton.Yes:
-            ResumeLoader.remove()
-            self._resume_changed = True
-            self._resume_status.setText("⬜ Резюме не загружено. Personal-режим работает в constructive-режиме.")
-
     @staticmethod
     def _init_combo(combo: QComboBox, items: list[tuple[str, str]], value: str) -> None:
         for raw, label in items:
@@ -695,8 +720,18 @@ class SettingsDialog(QDialog):
                 return
         combo.setCurrentIndex(0)
 
+    def _select_theme_card(self) -> None:
+        """Sync the hidden radio buttons with the clicked theme card."""
+        clicked_dark = self.sender() is self._theme_card_dark
+        self._theme_dark.setChecked(clicked_dark)
+        self._theme_light.setChecked(not clicked_dark)
+        self._theme_card_dark.set_selected(clicked_dark)
+        self._theme_card_light.set_selected(not clicked_dark)
+
     def _help_icon(self, tooltip: str) -> QLabel:
-        icon = self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxQuestion)
+        from mockingbird.ui.icons import icon as lucide_icon
+
+        icon = lucide_icon("help-circle", size=16, color=theme.current.text_secondary)
         label = QLabel()
         label.setPixmap(icon.pixmap(16, 16))
         label.setToolTip(tooltip)
@@ -759,12 +794,37 @@ class SettingsDialog(QDialog):
                 self.config.whisper.compute_type,
             ),
             (
+                "whisper.final_beam_size",
+                int(self._beam.currentData() or self._beam.currentText() or 5),
+                self.config.whisper.final_beam_size,
+            ),
+            (
                 "terms.glossary_path",
                 self._glossary.text().strip() or None,
                 self.config.terms.glossary_path,
             ),
         ]
         return [key for key, new, old in checks if new != old]
+
+    def _open_profiles_editor(self) -> None:
+        from mockingbird.ui.profiles_dialog import ProfilesDialog
+
+        dlg = ProfilesDialog(self._profile_combo.currentData() or "devops", self)
+        dlg.exec()
+        if dlg.profile_changed:
+            prev = self._profile_combo.currentData()
+            self._profiles = load_profiles()
+            self._profile_combo.blockSignals(True)
+            self._profile_combo.clear()
+            for pid in sorted(self._profiles):
+                prof = self._profiles[pid]
+                label = prof.title + ("" if prof.calibrated else " (базовый)")
+                self._profile_combo.addItem(label, pid)
+            idx = self._profile_combo.findData(prev)
+            if idx < 0:
+                idx = self._profile_combo.findData("devops")
+            self._profile_combo.setCurrentIndex(max(0, idx))
+            self._profile_combo.blockSignals(False)
 
     def apply(self) -> None:
         self.restart_required = self._restart_required_fields()
@@ -788,28 +848,34 @@ class SettingsDialog(QDialog):
         self.config.whisper.device = device_value
         self.config.whisper.model_size = self._model.currentText()
         self.config.whisper.compute_type = self._compute.currentData() or self._compute.currentText()
+        beam_raw = self._beam.currentData() or self._beam.currentText()
+        try:
+            self.config.whisper.final_beam_size = int(beam_raw)
+        except (TypeError, ValueError):
+            self.config.whisper.final_beam_size = 5
         language = self._language.text().strip()
         self.config.whisper.language = language or None
         self.config.llm.base_url = self._base_url.text().strip() or None
         self.config.llm.api_key = self._api_key.text().strip() or None
         self.config.llm.model = self._llm_model_combo.currentText().strip()
+        self.config.llm.failover_enabled = self._failover_enabled.isChecked()
+        self.config.llm.failover_base_url = self._fo_base_url.text().strip() or None
+        self.config.llm.failover_api_key = self._fo_api_key.text().strip() or None
+        self.config.llm.failover_model = self._fo_model.currentText().strip() or None
+        self.config.llm.failover_hedge_s = float(self._fo_hedge.value())
         glossary = self._glossary.text().strip()
         self.config.terms.glossary_path = glossary or None
-        self.config.topics.enabled = self._topics_enabled.isChecked()
         self.config.interview.enabled = self._interview_enabled.isChecked()
         self.config.interview.subject_llm = self._interview_subject_llm.isChecked()
         self.config.interview.answer_llm = self._interview_answer_llm.isChecked()
-        self.config.interview.predict_llm = self._interview_predict_llm.isChecked()
         self.config.interview.context_tracker_llm = self._interview_context_llm.isChecked()
         self.config.interview.llm_primary = self._interview_llm_primary.isChecked()
         self.config.interview.answer_stream = self._interview_answer_stream.isChecked()
         self.config.interview.answer_cache = self._interview_answer_cache.isChecked()
-        books = self._kgen_books.text().strip()
-        out = self._kgen_out.text().strip()
-        self.config.kgen.books_dir = books or None
-        self.config.kgen.out_dir = out or None
+        pid = self._profile_combo.currentData()
+        if pid:
+            self.config.profile_id = pid
         self.config.window.hide_from_capture = self._capture_check.isChecked()
-        self.config.window.simple_mode = self._simple_check.isChecked()
         # Theme
         self._theme_choice = "light" if self._theme_light.isChecked() else "dark"
         from PySide6.QtCore import QSettings
@@ -817,4 +883,5 @@ class SettingsDialog(QDialog):
         from PySide6.QtWidgets import QApplication
         _qs = QSettings("Mockingbird", "Mockingbird")
         _qs.setValue("ui/theme", self._theme_choice)
+        _qs.sync()
         apply_theme(QApplication.instance(), self._theme_choice)

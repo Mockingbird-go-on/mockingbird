@@ -1,0 +1,5 @@
+id: data
+title: "Data Science / ML"
+persona: "ML-инженер с 5-летним опытом"
+persona_senior: "ML-инженер 6+ лет, доводил модели до продакшена, строил ML-пайплайны, выступал на внутренних тех-конференциях"
+stack: "Python, Pandas/NumPy, scikit-learn, PyTorch/TensorFlow, SQL, классика ML и нейросети, MLOps, A/B-тесты, feature engineering"

@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import os
+from enum import Enum
 from importlib import resources
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from dotenv import load_dotenv
@@ -28,13 +29,15 @@ class AudioConfig(BaseModel):
     # Switchable from the Settings dialog (requires app restart).
     mode: str = "mic"
     loopback_device: str | None = None
+    # RMS normalization of the loopback (remote caller) signal before the VAD.
+    loopback_agc: bool = True
 
 
 class VadConfig(BaseModel):
     threshold: float = 0.5
     min_speech_ms: int = 250
     min_silence_ms: int = 700
-    stop_hint_delay_ms: int = 240  # sustained silence before the "speech_stop" hint fires
+    stop_hint_delay_ms: int = 180  # sustained silence before the "speech_stop" hint fires
     model_path: str | None = None
 
 
@@ -43,12 +46,19 @@ class WhisperConfig(BaseModel):
     device: str = "auto"  # "auto" | "cpu" | "cuda"
     compute_type: str = "int8"
     beam_size: int = 1
-    final_beam_size: int = 1  # beam for the final (speech-end) decode only
+    # Beam for the final (speech-end) decode only. Kept at 1 (greedy): A/B on
+    # GTX 1070 (large-v3-turbo) showed beam>=3 injects hallucinated terms into
+    # clean speech («Docker» → «доктор»/«RADKER»), and with the speculative
+    # result being reused (no re-decode) beam does not even save latency.
+    final_beam_size: int = 1
     language: str | None = None
     window_seconds: float = 3.5
     partial_interval_ms: int = 250
     model_dir: str | None = None
     initial_prompt: str | None = None  # hot-words (glossary/KB terms) for faster-whisper
+    # Short decoder-level term bias (faster-whisper hotwords=), rebuilt with
+    # initial_prompt in App._rebuild_hotwords. None → feature off.
+    hotwords_param: str | None = None
 
 
 class SttConfig(BaseModel):
@@ -70,6 +80,15 @@ class LlmConfig(BaseModel):
     api_key: str | None = None
     model: str = "gpt-4o-mini"
     timeout_s: float = 20.0
+    # Optional second endpoint used as a hedged race in answer_question_stream:
+    # if the primary stream yields no first token within failover_hedge_s, the
+    # same request fires against this endpoint; first stream to produce a
+    # delta wins, the loser is closed.
+    failover_enabled: bool = False
+    failover_base_url: str | None = None
+    failover_api_key: str | None = None
+    failover_model: str | None = None
+    failover_hedge_s: float = 2.0
 
 
 class TermsConfig(BaseModel):
@@ -83,15 +102,7 @@ class TermsConfig(BaseModel):
     fuzzy_enabled: bool = True
     fuzzy_threshold: float = 0.72
     min_interval_s: float = 4.0  # minimum gap between LLM term-analysis calls
-
-
-class TopicsConfig(BaseModel):
-    enabled: bool = False
-    llm_primary: bool = True
-    debounce_s: float = 3.0
-    max_topics: int = 8
-    max_questions_per_topic: int = 4
-    include_kb: bool = True
+    llm_min_chars: int = 40  # shorter finals go straight to the free glossary
 
 
 class InterviewConfig(BaseModel):
@@ -108,8 +119,6 @@ class InterviewConfig(BaseModel):
     context_boost: float = 0.5
     subject_llm: bool = True
     answer_llm: bool = True
-    predict_llm: bool = True
-    predict_cooldown_s: float = 20.0
     max_next: int = 5
     context_tracker_llm: bool = True
     context_refresh_s: float = 5.0
@@ -125,7 +134,6 @@ class WindowConfig(BaseModel):
     width: int = 1440
     height: int = 900
     hide_from_capture: bool = False
-    simple_mode: bool = False
 
 
 class StorageConfig(BaseModel):
@@ -154,11 +162,11 @@ class Config(BaseModel):
     gigaam: GigaAMConfig = Field(default_factory=GigaAMConfig)
     llm: LlmConfig = Field(default_factory=LlmConfig)
     terms: TermsConfig = Field(default_factory=TermsConfig)
-    topics: TopicsConfig = Field(default_factory=TopicsConfig)
     interview: InterviewConfig = Field(default_factory=InterviewConfig)
     window: WindowConfig = Field(default_factory=WindowConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
     kgen: KGenConfig = Field(default_factory=KGenConfig)
+    profile_id: str = "devops"
 
 
 ENV_OVERRIDES: dict[str, tuple[str, str]] = {
@@ -167,6 +175,7 @@ ENV_OVERRIDES: dict[str, tuple[str, str]] = {
     "MOCKINGBIRD_AUDIO_BLOCK_MS": ("audio", "block_ms"),
     "MOCKINGBIRD_AUDIO_MODE": ("audio", "mode"),
     "MOCKINGBIRD_AUDIO_LOOPBACK_DEVICE": ("audio", "loopback_device"),
+    "MOCKINGBIRD_AUDIO_LOOPBACK_AGC": ("audio", "loopback_agc"),
     "MOCKINGBIRD_VAD_THRESHOLD": ("vad", "threshold"),
     "MOCKINGBIRD_VAD_MIN_SPEECH_MS": ("vad", "min_speech_ms"),
     "MOCKINGBIRD_VAD_MIN_SILENCE_MS": ("vad", "min_silence_ms"),
@@ -192,12 +201,7 @@ ENV_OVERRIDES: dict[str, tuple[str, str]] = {
     "MOCKINGBIRD_TERMS_CONTEXT_SEGMENTS": ("terms", "context_segments"),
     "MOCKINGBIRD_TERMS_CACHE_TTL_DAYS": ("terms", "cache_ttl_days"),
     "MOCKINGBIRD_TERMS_GLOSSARY_PATH": ("terms", "glossary_path"),
-    "MOCKINGBIRD_TOPICS_ENABLED": ("topics", "enabled"),
-    "MOCKINGBIRD_TOPICS_LLM_PRIMARY": ("topics", "llm_primary"),
-    "MOCKINGBIRD_TOPICS_DEBOUNCE_S": ("topics", "debounce_s"),
-    "MOCKINGBIRD_TOPICS_MAX_TOPICS": ("topics", "max_topics"),
-    "MOCKINGBIRD_TOPICS_MAX_QUESTIONS_PER_TOPIC": ("topics", "max_questions_per_topic"),
-    "MOCKINGBIRD_TOPICS_INCLUDE_KB": ("topics", "include_kb"),
+    "MOCKINGBIRD_TERMS_LLM_MIN_CHARS": ("terms", "llm_min_chars"),
     "MOCKINGBIRD_INTERVIEW_ENABLED": ("interview", "enabled"),
     "MOCKINGBIRD_KB_PATH": ("interview", "kb_path"),
     "MOCKINGBIRD_INTERVIEW_MIN_MATCH_SCORE": ("interview", "min_match_score"),
@@ -210,8 +214,6 @@ ENV_OVERRIDES: dict[str, tuple[str, str]] = {
     "MOCKINGBIRD_INTERVIEW_CONTEXT_BOOST": ("interview", "context_boost"),
     "MOCKINGBIRD_INTERVIEW_SUBJECT_LLM": ("interview", "subject_llm"),
     "MOCKINGBIRD_INTERVIEW_ANSWER_LLM": ("interview", "answer_llm"),
-    "MOCKINGBIRD_INTERVIEW_PREDICT_LLM": ("interview", "predict_llm"),
-    "MOCKINGBIRD_INTERVIEW_PREDICT_COOLDOWN_S": ("interview", "predict_cooldown_s"),
     "MOCKINGBIRD_INTERVIEW_MAX_NEXT": ("interview", "max_next"),
     "MOCKINGBIRD_INTERVIEW_CONTEXT_TRACKER_LLM": ("interview", "context_tracker_llm"),
     "MOCKINGBIRD_INTERVIEW_CONTEXT_REFRESH_S": ("interview", "context_refresh_s"),
@@ -224,7 +226,6 @@ ENV_OVERRIDES: dict[str, tuple[str, str]] = {
     "MOCKINGBIRD_WINDOW_WIDTH": ("window", "width"),
     "MOCKINGBIRD_WINDOW_HEIGHT": ("window", "height"),
     "MOCKINGBIRD_WINDOW_HIDE_FROM_CAPTURE": ("window", "hide_from_capture"),
-    "MOCKINGBIRD_WINDOW_SIMPLE_MODE": ("window", "simple_mode"),
     "MOCKINGBIRD_DB_PATH": ("storage", "db_path"),
     "MOCKINGBIRD_LOG_DIR": ("storage", "log_dir"),
     "MOCKINGBIRD_KGEN_BOOKS_DIR": ("kgen", "books_dir"),
@@ -238,6 +239,11 @@ ENV_OVERRIDES: dict[str, tuple[str, str]] = {
     "OPENAI_API_KEY": ("llm", "api_key"),
     "OPENAI_BASE_URL": ("llm", "base_url"),
     "OPENAI_MODEL": ("llm", "model"),
+    "MOCKINGBIRD_LLM_FAILOVER_ENABLED": ("llm", "failover_enabled"),
+    "MOCKINGBIRD_LLM_FAILOVER_BASE_URL": ("llm", "failover_base_url"),
+    "MOCKINGBIRD_LLM_FAILOVER_API_KEY": ("llm", "failover_api_key"),
+    "MOCKINGBIRD_LLM_FAILOVER_MODEL": ("llm", "failover_model"),
+    "MOCKINGBIRD_LLM_FAILOVER_HEDGE_S": ("llm", "failover_hedge_s"),
 }
 
 # Settings persisted through the Settings dialog and restored on startup.
@@ -259,12 +265,15 @@ _PERSISTED_SETTINGS: dict[str, tuple[str, str, bool]] = {
     "llm.base_url": ("llm", "base_url", True),
     "llm.api_key": ("llm", "api_key", True),
     "llm.model": ("llm", "model", False),
+    "llm.failover_enabled": ("llm", "failover_enabled", False),
+    "llm.failover_base_url": ("llm", "failover_base_url", True),
+    "llm.failover_api_key": ("llm", "failover_api_key", True),
+    "llm.failover_model": ("llm", "failover_model", False),
+    "llm.failover_hedge_s": ("llm", "failover_hedge_s", False),
     "terms.glossary_path": ("terms", "glossary_path", True),
-    "topics.enabled": ("topics", "enabled", False),
     "interview.enabled": ("interview", "enabled", False),
     "interview.subject_llm": ("interview", "subject_llm", False),
     "interview.answer_llm": ("interview", "answer_llm", False),
-    "interview.predict_llm": ("interview", "predict_llm", False),
     "interview.context_tracker_llm": ("interview", "context_tracker_llm", False),
     "interview.llm_primary": ("interview", "llm_primary", False),
     "interview.answer_stream": ("interview", "answer_stream", False),
@@ -272,7 +281,7 @@ _PERSISTED_SETTINGS: dict[str, tuple[str, str, bool]] = {
     "kgen.books_dir": ("kgen", "books_dir", True),
     "kgen.out_dir": ("kgen", "out_dir", True),
     "window.hide_from_capture": ("window", "hide_from_capture", False),
-    "window.simple_mode": ("window", "simple_mode", False),
+    "profile_id": ("profile_id", None, False),
 }
 
 # Map a persisted key back to the env var that overrides it, so explicit env
@@ -300,6 +309,10 @@ def apply_saved_settings(config: Config, get, env: dict | None = None) -> None:
             continue
         value = raw if (raw or not optional) else None
         if value is None:
+            continue
+        if section == "profile_id":
+            # root-level scalar, not a nested config section
+            setattr(config, "profile_id", str(value))
             continue
         # Migrate the removed "hybrid" audio mode to "loopback" so users with a
         # stored legacy value keep working (questions from system audio).
@@ -351,6 +364,9 @@ def load_config() -> Config:
             continue
         section_data = data.setdefault(section, {})
         section_data[key] = _coerce(section_data.get(key), value)
+    profile_env = os.environ.get("MOCKINGBIRD_PROFILE_ID")
+    if profile_env:
+        data["profile_id"] = profile_env
     cfg = Config(**data)
     base = app_dir()
     if not cfg.storage.db_path:

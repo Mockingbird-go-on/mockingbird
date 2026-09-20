@@ -56,6 +56,10 @@ if ($Cpu) {
     Write-Host '>>> Building GPU (CUDA 12.4) variant, needs NVIDIA driver 550 or newer'
     # CUDA build of torch/torchaudio (GTX 1070 = Pascal sm_61 is supported).
     Invoke-Pip -Arguments @("install", "--force-reinstall", "torch", "torchaudio", "--index-url", "https://download.pytorch.org/whl/cu124")
+    # cuDNN 9: CTranslate2 needs it for float16/int8_float16 on CUDA; without
+    # it get_supported_compute_types('cuda') only offers float32 and whisper
+    # runs 2x slower. The pip wheel is found by ctranslate2 at runtime.
+    Invoke-Pip -Arguments @("install", "nvidia-cudnn-cu12")
     # faster-whisper's ctranslate2 wheel from PyPI already ships CUDA 12 GPU
     # support on Windows; there is no separate -cu12 package to install.
     # Verify the installed binary can see the GPU so GPU inference really works.

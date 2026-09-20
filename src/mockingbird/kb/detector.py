@@ -5,16 +5,23 @@ Works without reliable punctuation from the ASR model.
 """
 from __future__ import annotations
 
+import logging
 import re
 
 from mockingbird.kb.index import has_topical_signal
+
+_log = logging.getLogger(__name__)
 
 _QUESTION_STARTS = (
     "как", "что", "в чём", "в чем", "зачем", "почему", "чем отличается",
     "чем отличаются", "чём отличается", "чём отличаются", "для чего", "какой",
     "какая", "какие", "какое", "какого", "каких", "каким", "когда", "где",
     "сколько", "можно ли", "что такое", "расскажи", "расскажите", "объясни", "объясните", "опиши",
-    "назови", "перечисли", "дай определение", "дайте определение", "сравни",
+    "опишите", "назови", "назовите", "перечисли", "перечислите",
+    "дай определение", "дайте определение", "сравни", "сравните",
+    "покажи", "покажите", "подскажи", "подскажите", "приведи", "приведите",
+    "кто", "кто такой", "кто такая", "кто такие", "кем", "кого", "кому", "о ком",
+    "про кого", "за кого", "что за", "который", "которая", "которые",
     "в чем разница", "в чём разница", "как работает", "как устроен",
     "как устроена", "как устроены", "what", "how", "why", "when", "where",
     "which", "explain", "describe", "tell", "compare",
@@ -25,8 +32,8 @@ _QUESTION_CONTAINS = (
     "чем отличаются", "отличие между", "разница между", "в чём разница",
     "в чем разница", "для чего", "зачем", "какие бывают", "какие есть",
     "как работает", "как устроен", "как устроена", "как устроены", "что знаешь",
-    "что знаешь про", "расскажи про", "объясни", "опиши",
-    "расскажите про", "расскажи", "расскажите", "что вы можете рассказать",
+    "что знаешь про", "расскажи про", "объясни как", "опиши как",
+    "расскажите про", "что вы можете рассказать",
     "можете рассказать", "что можете сказать", "что ты думаешь",
     "что можно делать", "что можно делать с", "как использовать",
     # Process/explanation question forms — «что происходит при X»,
@@ -36,6 +43,18 @@ _QUESTION_CONTAINS = (
     "давай разберём", "давай разберем", "давай посмотрим",
     "давай представим", "представим что", "представим, что",
     "разберём как", "разберем как", "попробуем",
+    "кто такой", "кто такая", "кто такие", "кто это", "что за",
+    # Scenario-question closers: «…прод сломан. Ваши действия?» — the ASR
+    # drops the '?' so the bare possessive form must be a marker.
+    "ваши действия", "твои действия", "ваш ход", "твой ход",
+    "как поступишь", "что предпримешь", "какие ваши шаги", "ваши шаги",
+    "что делать", "как быть", "каковы ваши действия",
+    # Yes/no question formed with the particle «ли» after a verb:
+    # «работал ли ты…», «знаешь ли ты…», «использовал ли ты…».
+    # ASR produces no '?' for these, so they must be matched by the particle.
+    "ли ты", "ли вы", "ли у", "ли в", "ли на", "ли с", "ли есть",
+    "ли бы", "ли уже", "ли вообще", "ли когда", "ли где", "ли как",
+    "ли опыт", "ли работа", "ли дело", "ли практика",
 )
 
 _BROAD_MARKERS = (
@@ -93,6 +112,18 @@ _QUESTION_MARKERS = sorted(
 # last one, the question actually starts at an earlier opener marker.
 _FOLLOWUP_MARKERS = {"для чего", "зачем", "почему", "когда", "где", "сколько"}
 
+# Dependent-clause question tails: an interrogative opener directly followed
+# by an anaphoric pronoun («как они влияют…», «чем оно отличается…»). Such a
+# clause has no subject of its own — the subject lives in the earlier part of
+# the compound question («Что такое слои в Docker и как они влияют на размер?»).
+# Clipping to the tail alone leaves the matcher and the LLM with an
+# unresolvable fragment, so ``last_question`` falls back to the full utterance.
+_DEPENDENT_TAIL_RE = re.compile(
+    r"^(?:как|что|чем|почему|зачем|для чего|где|когда|сколько)\s+"
+    r"(?:они|оно|он|она|это|эти|этот|эта|их|такие|таких|такой|такая)\b",
+    re.IGNORECASE,
+)
+
 _SENT_SPLIT = re.compile(r"[.!?…\n]+")
 
 # ASR-tolerant forms of «расскажи» / «расскажите»: faster-whisper and GigaAM
@@ -105,11 +136,143 @@ _ASR_TELL_RE = re.compile(r"(?<!рас)кажи(?:те)?\b")
 def _has_asr_tell_marker(text: str) -> bool:
     return _ASR_TELL_RE.search(text) is not None
 
+
+# Leading filler particles that ASR prepends to real questions («а почему…»,
+# «ну как…», «а можно ли…»). Stripped before marker matching so they never
+# break a ``startswith`` check. Stripping only removes a short prefix and the
+# remaining text must still carry a real marker, so a bare «а вот и всё»
+# stays a non-question.
+_LEADING_PARTICLES = (
+    "а ну ", "ну а ", "а вот ", "ну вот ", "а ", "ну ", "и ", "вот ", "так ",
+    "да ", "хм ", "блин ", "короче ", "слушай ", "смотри ",
+)
+
+
+def _strip_leading_particles(text: str) -> str:
+    t = text
+    for _ in range(3):
+        stripped = False
+        for particle in _LEADING_PARTICLES:
+            if t.startswith(particle):
+                t = t[len(particle):]
+                stripped = True
+                break
+        if not stripped:
+            break
+    return t
+
+
+# Yes/no question via the particle «ли» attached to a modal/verb: «стоит ли»,
+# «правильно ли», «верно ли», «обязательно ли», «реально ли». A precise
+# word-boundary list avoids matching «слили»/«пилили» etc.
+_MODAL_LI_RE = re.compile(
+    r"\b(?:стоит|нужно|надо|можно|правильно|верно|обязательно|реально|получится|выйдет)\s+ли\b"
+)
+
+# Modal + action-infinitive task prompts («надо развернуть», «нужно настроить»,
+# «требуется поднять»). The infinitive is a whitelist of actionable verbs, so
+# generic statements like «надо подумать» / «надо перепроверить» stay False.
+_MODAL_TASK_RE = re.compile(
+    r"\b(?:надо|нужно|необходимо|требуется|стоит)\s+"
+    r"(?:развернуть|задеплоить|настроить|поднять|установить|поставить|"
+    r"описать|объяснить|рассказать|показать|сконфигурировать|подключить|"
+    r"выкатить|собрать|запустить|починить|проверить)\b"
+)
+
+# Hypothetical / role-play scenario openers («представь что прод упал»,
+# «предположим что», «допустим что»). «представь» must be followed by «что»,
+# «будто» or «ситуаци…» — a bare «представь в общем» is not a question.
+_HYPOTHETICAL_RE = re.compile(
+    r"\bпредставь(?:те)?\s+(?:что|будто|ситуацию|ситуация|ситуации|себе)\b"
+    r"|\b(?:предположим|допустим)(?:\s+что)?\b"
+)
+
+# Imperative task verbs («разверни кластер», «настрой nginx», «подними сервис»).
+# Word boundaries keep «настройка» (noun) and «настроение» from matching.
+_IMPERATIVE_TASK_RE = re.compile(
+    r"\b(?:разверни|задеплой|настрой|подними|установи|поставь|запусти|"
+    r"выкати|собери|почини|проверь|сконфигурируй|подключи)\b"
+)
+
+# Desire-to-know forms («хочу узнать как», «интересно как»).
+_DESIRE_KNOW_RE = re.compile(
+    r"\b(?:хочу узнать|хочу понять|хочу разобраться|интересно)\s+"
+    r"(?:как|что|почему|зачем|про)\b"
+)
+
+# Clipped verb forms of «объясни» / «расскажи» under noise («бъясни», «ясни»,
+# «поясни», «разжуй», «расскажика»). The lookbehind rules out an intact
+# «объясни», so the full form is not double-matched.
+_ASR_EXPLAIN_RE = re.compile(r"(?<!о)бъясни|(?<!о)бъясните|\bпоясни|\bразжуй|\bрасскажика|\bрасскажи-ка")
+
+# Comparison questions with the subject interleaved between «чем» and the
+# comparison verb: «чем Docker отличается от виртуальной машины», «чем docker
+# лучше виртуалки», «отличие docker от vm». The fixed «чем отличается» form is
+# already covered by _QUESTION_STARTS/_QUESTION_CONTAINS; these regexes catch
+# the common spoken order where the object sits in the middle.
+#
+# Anchored to the start of the (already particle-stripped) text so that
+# statements embedding the marker mid-sentence («я знаю чем это отличается»)
+# never fire. The comparative branch additionally rejects the idiom
+# «чем больше, тем лучше» (a «тем» between the two words). The gap is bounded
+# so an unrelated «чем» far from «отличается» stays False.
+#
+# The nested branch catches a question glued to a topic shift («поговорим про
+# kubernetes чем Pod отличается от деплоя»): mid-sentence it fires ONLY when
+# the comparison verb is followed by an explicit object («от …», «чем …»,
+# «перед …») — a real comparison question almost always names both sides,
+# while indirect statements («я знаю чем это отличается») stop at the verb.
+_COMPARISON_RE = re.compile(
+    r"^\s*чем\b.{0,40}?\b(?:отличается|отличаются|отличался|отличалась|отличалось)\b"
+    r"|^\s*чем\b(?!.{0,40}?\bтем\b).{0,40}?\b(?:лучше|хуже|проще|сложнее|быстрее|медленнее|надёжнее|надежнее)\b"
+    r"|^\s*(?:отличие|отличия|разница)\b.{0,30}?\b(?:от|между)\b"
+    r"|\bчем\b.{0,40}?\b(?:отличается|отличаются|отличался|отличалась|отличалось)\b"
+    r"(?:\s+(?:от|чем|перед|среди)\b|\s*,|\s+\S)"
+    r"|\bчем\b(?!.{0,40}?\bтем\b).{0,40}?\b(?:лучше|хуже|проще|сложнее|быстрее|медленнее|надёжнее|надежнее)\b"
+    r"(?:\s+\S)"
+    # Comparison with «чем» eaten by the STT: «докер отличается от vm» is
+    # still a question. The lookbehind rejects statements of the form
+    # «мой подход не отличается от стандартного».
+    r"|(?<!не )\b(?:отличается|отличаются|отличался|отличалась)\s+от\b"
+)
+
 _CLAUSE_CONNECTORS = (
     " а ", " но ", " итак ", " вот ", " теперь ", " а теперь ", " кстати ",
     " дальше ", " следующий вопрос ", " вопрос про ", " вопрос о ", " и вопрос ",
     " по поводу ", " к слову ",
 )
+
+
+_WORD_CHAR = re.compile(r"[a-zа-я0-9+#]")
+
+# Grammatical continuations of an imperative marker: «опиши» + «те» →
+# «опишите», «объясни» + «-ка» → «объясни-ка». Only these two suffixes are
+# tolerated after the marker (followed by a word boundary), so noun prefixes
+# like «объяснительная» (continues with «тельная») stay rejected.
+_IMPERATIVE_SUFFIXES = ("те", "ка", "те-ка", "тека")
+
+
+def _starts_with_marker(text: str, marker: str) -> bool:
+    """``startswith`` with a word-boundary guard.
+
+    Markers like «объясни», «кого», «который», «сравни» are word prefixes of
+    unrelated nouns («объяснительная», «коготь», «которыйнибудь»,
+    «сравнительный»). Requiring that the char right after the marker is NOT a
+    word character keeps those false positives out while still matching the
+    imperative/question opener. Known imperative suffixes («-те», «-ка») are
+    accepted so the plural/polite forms of a listed marker still fire even
+    when the explicit «…те» spelling is missing from the marker list.
+    """
+    if not text.startswith(marker):
+        return False
+    rest = text[len(marker):]
+    for suffix in _IMPERATIVE_SUFFIXES:
+        if rest.startswith(suffix):
+            rest = rest[len(suffix):]
+            break
+    if rest and _WORD_CHAR.match(rest[0]):
+        return False
+    return True
 
 
 def is_question(text: str) -> bool:
@@ -118,9 +281,28 @@ def is_question(text: str) -> bool:
         return False
     if t.endswith("?") and len(t) > 3:
         return True
-    if any(t.startswith(marker) for marker in _QUESTION_STARTS):
+    # Strip leading filler particles («а», «ну», «и», «вот»…) so they don't
+    # break a startswith match; the remaining text still needs a real marker.
+    t = _strip_leading_particles(t)
+    if any(_starts_with_marker(t, marker) for marker in _QUESTION_STARTS):
         return True
     if any(marker in t for marker in _QUESTION_CONTAINS):
+        return True
+    # Regex-based forms: modal «ли», modal + infinitive task prompts,
+    # hypotheticals, imperative tasks, desire-to-know, clipped verbs.
+    if _MODAL_LI_RE.search(t):
+        return True
+    if _MODAL_TASK_RE.search(t):
+        return True
+    if _HYPOTHETICAL_RE.search(t):
+        return True
+    if _IMPERATIVE_TASK_RE.search(t):
+        return True
+    if _DESIRE_KNOW_RE.search(t):
+        return True
+    if _ASR_EXPLAIN_RE.search(t):
+        return True
+    if _COMPARISON_RE.search(t):
         return True
     # ASR-tolerant: clipped «расскажи» → «кажи про …» (lookbehind rules out
     # an intact «расскажи»).
@@ -155,6 +337,12 @@ _PERSONAL_MARKERS = (
     "что делал с", "что делал в", "что делал на",
     "как работал с", "как работал в", "как работали с",
     "какие задачи решал", "что настраивал", "что разворачивал",
+    # — interviewer "you"-forms (P-015): «какие команды вы используете
+    # ежедневно» must answer in personal mode, not technical —
+    "вы используете", "ты используешь", "вы применяете", "ты применяешь",
+    "вы пишете", "ты пишешь", "вы работаете с", "ты работаешь с",
+    "в вашей работе", "в твоей работе", "вы деплоите", "вы настраиваете",
+    "ты настраиваешь", "вы администрируете", "вы поддерживаете",
 )
 
 # False-positive guards: phrases that look personal but ask for a definition.
@@ -267,8 +455,30 @@ def last_question(text: str) -> str | None:
             candidate = tail.strip() or None
     if candidate is None:
         return None
+    # Dependent-tail guard: a clause starting with an interrogative marker
+    # directly followed by an anaphoric pronoun cannot stand alone («как они
+    # влияют на размер») — its subject sits earlier in the utterance. Use the
+    # full utterance so the matcher and the LLM see the whole compound
+    # question. Only applied when the clipped tail is a strict sub-clause
+    # (i.e. the utterance really has an earlier part worth keeping).
+    if (
+        _DEPENDENT_TAIL_RE.match(candidate)
+        and len(candidate) < len(t)
+    ):
+        _log.debug(
+            "last_question: dependent tail %r -> full utterance %r",
+            candidate[:80], t[:120],
+        )
+        return t
     if not has_topical_signal(candidate):
+        _log.debug(
+            "last_question: no topical signal in %r -> %s",
+            candidate[:80], "full utterance" if is_question(t) else "None",
+        )
         return t if is_question(t) else None
+    _log.debug(
+        "last_question: text=%r -> candidate=%r", t[:120], candidate[:80],
+    )
     return candidate
 
 

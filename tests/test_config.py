@@ -7,32 +7,28 @@ def test_defaults():
     assert c.audio.block_ms == 100
     assert c.audio.mode == "mic"
     assert c.audio.loopback_device is None
-    assert c.stt.backend == "gigaam"
+    assert c.stt.backend == "whisper"
     assert c.stt.end_ahead is True
-    assert c.vad.min_silence_ms == 1000
-    assert c.vad.stop_hint_delay_ms == 240
+    assert c.vad.min_silence_ms == 700
+    assert c.vad.stop_hint_delay_ms == 180
     assert c.gigaam.model_id == "ai-sage/GigaAM-v3"
     assert c.gigaam.revision == "e2e_rnnt"
     assert c.terms.llm_primary is True
     assert c.terms.context_segments == 8
-    assert c.whisper.model_size == "small"
+    assert c.whisper.model_size == "large-v3-turbo"
     assert c.whisper.beam_size == 1
     assert c.whisper.final_beam_size == 1
-    assert c.whisper.compute_type == "int8"
+    assert c.whisper.compute_type == "float32"
     assert c.whisper.device == "auto"
     assert c.whisper.partial_interval_ms == 250
     assert c.gigaam.device == "auto"
     assert c.gigaam.partial_interval_ms == 250
     assert c.storage.db_path.endswith("mockingbird.db")
     assert c.storage.log_dir.endswith("logs")
-    assert c.topics.enabled is False
-    assert c.topics.debounce_s == 3.0
     assert c.interview.enabled is True
     assert c.interview.min_match_score == 0.25
     assert c.interview.subject_llm is True
     assert c.interview.answer_llm is True
-    assert c.interview.predict_llm is True
-    assert c.interview.predict_cooldown_s == 20.0
     assert c.interview.max_next == 5
     assert c.interview.context_tracker_llm is True
     assert c.interview.context_refresh_s == 5.0
@@ -53,8 +49,6 @@ def test_bool_env_overrides(monkeypatch):
     monkeypatch.setenv("MOCKINGBIRD_INTERVIEW_ENABLED", "true")
     monkeypatch.setenv("MOCKINGBIRD_INTERVIEW_SUBJECT_LLM", "false")
     monkeypatch.setenv("MOCKINGBIRD_INTERVIEW_ANSWER_LLM", "false")
-    monkeypatch.setenv("MOCKINGBIRD_INTERVIEW_PREDICT_LLM", "false")
-    monkeypatch.setenv("MOCKINGBIRD_INTERVIEW_PREDICT_COOLDOWN_S", "5.0")
     monkeypatch.setenv("MOCKINGBIRD_INTERVIEW_MAX_NEXT", "3")
     monkeypatch.setenv("MOCKINGBIRD_INTERVIEW_CONTEXT_TRACKER_LLM", "false")
     monkeypatch.setenv("MOCKINGBIRD_INTERVIEW_CONTEXT_REFRESH_S", "2.5")
@@ -67,12 +61,9 @@ def test_bool_env_overrides(monkeypatch):
     monkeypatch.setenv("MOCKINGBIRD_INTERVIEW_PARTIAL_STABILITY_ROUNDS", "3")
     monkeypatch.setenv("MOCKINGBIRD_WINDOW_WIDTH", "1600")
     c = cfg.load_config()
-    assert c.topics.enabled is False
     assert c.interview.enabled is True
     assert c.interview.subject_llm is False
     assert c.interview.answer_llm is False
-    assert c.interview.predict_llm is False
-    assert c.interview.predict_cooldown_s == 5.0
     assert c.interview.max_next == 3
     assert c.interview.context_tracker_llm is False
     assert c.interview.context_refresh_s == 2.5
@@ -150,7 +141,6 @@ def test_saved_settings_roundtrip(monkeypatch, tmp_path):
     store.set_setting("llm.api_key", "secret")
     store.set_setting("llm.model", "llama3")
     store.set_setting("terms.glossary_path", "")
-    store.set_setting("topics.enabled", "0")
     store.set_setting("interview.enabled", "1")
     store.set_setting("interview.context_tracker_llm", "0")
     store.set_setting("interview.llm_primary", "0")
@@ -178,7 +168,6 @@ def test_saved_settings_roundtrip(monkeypatch, tmp_path):
     assert c.llm.api_key == "secret"
     assert c.llm.model == "llama3"
     assert c.terms.glossary_path is None
-    assert c.topics.enabled is False
     assert c.interview.enabled is True
     assert c.interview.context_tracker_llm is False
     assert c.interview.llm_primary is False
@@ -207,7 +196,7 @@ def test_apply_ignores_missing_settings(monkeypatch, tmp_path):
     monkeypatch.setenv("MOCKINGBIRD_HOME", str(tmp_path))
     c = cfg.load_config()
     cfg.apply_saved_settings(c, lambda key: None)
-    assert c.whisper.model_size == "small"
+    assert c.whisper.model_size == "large-v3-turbo"
     assert c.llm.model == "gpt-4o-mini"
 
 

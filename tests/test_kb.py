@@ -1,7 +1,7 @@
 import time
 
 from mockingbird import protocol
-from mockingbird.config import InterviewConfig, TopicsConfig
+from mockingbird.config import InterviewConfig
 from mockingbird.kb.detector import is_broad, is_question, last_question
 from mockingbird.kb.index import KbIndex
 from mockingbird.kb.interview_engine import InterviewEngine
@@ -9,8 +9,6 @@ from mockingbird.kb.loader import load_topics
 from mockingbird.kb.matcher import KbMatcher
 from mockingbird.kb.model import KbBlock, KbSection, KbTopic
 from mockingbird.kb.predict import next_questions_from_view
-from mockingbird.llm.client import parse_topics_json
-from mockingbird.topics.engine import TopicEngine
 
 
 def _matcher():
@@ -165,6 +163,281 @@ def test_is_question():
     assert not is_question("начинаем следующую тему")
     assert not is_question("")
     assert not is_question("документ готов к ревью")
+
+
+def test_is_question_kto_forms():
+    """«кто такой X» / «что за X» должны считаться вопросами."""
+    assert is_question("кто такой эрбак")
+    assert is_question("кто такой kubernetes")
+    assert is_question("кем ты работал")
+    assert is_question("что за инструмент")
+    assert is_question("кого это касается")
+    assert not is_question("я пошёл домой")
+
+
+def test_is_question_li_particle():
+    """Yes/no вопросы с частицей «ли» после глагола."""
+    assert is_question("работал ли ты с докерсварм")
+    assert is_question("знаешь ли ты kubernetes")
+    assert is_question("использовал ли ты терраформ")
+    assert is_question("был ли у тебя опыт")
+    assert not is_question("мы использовали docker")
+    assert not is_question("проверил лично")
+    assert not is_question("я пошёл домой")
+
+
+def test_is_question_hypothetical():
+    assert is_question("представь что прод упал")
+    assert is_question("представь ситуацию")
+    assert is_question("предположим что")
+    assert is_question("допустим что")
+    assert not is_question("представь в общем")
+
+
+def test_is_question_modal_task():
+    assert is_question("надо развернуть кластер")
+    assert is_question("нужно настроить мониторинг")
+    assert is_question("требуется поднять")
+    assert not is_question("надо подумать")
+    assert not is_question("надо перепроверить")
+
+
+def test_is_question_modal_li():
+    assert is_question("стоит ли использовать")
+    assert is_question("правильно ли я понял")
+    assert is_question("верно ли")
+    assert is_question("обязательно ли")
+
+
+def test_is_question_imperative_task():
+    assert is_question("разверни кластер")
+    assert is_question("настрой nginx")
+    assert is_question("подними сервис")
+    assert not is_question("настройка nginx")
+    assert not is_question("настроение хорошее")
+
+
+def test_is_question_desire_know():
+    assert is_question("хочу узнать как")
+    assert is_question("хочу понять как")
+    assert is_question("интересно как")
+
+
+def test_is_question_leading_particles():
+    assert is_question("а почему кубернетес")
+    assert is_question("ну как настроить")
+    assert is_question("а можно ли")
+    assert not is_question("а вот и всё")
+    assert not is_question("ну вот")
+
+
+def test_is_question_clipped_verbs():
+    assert is_question("бъясни про")
+    assert is_question("поясни")
+    assert is_question("разжуй про")
+    assert not is_question("объяснительная записка")
+
+
+def test_is_question_comparison_interleaved():
+    """«чем X отличается [от Y]» — предмет вставлен между «чем» и глаголом."""
+    assert is_question("чем Docker отличается")
+    assert is_question("чем докер отличается от виртуальной машины")
+    assert is_question("чем docker отличается от виртуалки")
+    assert is_question("а чем docker отличается от vm")
+
+
+def test_is_question_comparison_comparative():
+    """«чем X лучше/хуже/проще» — вопрос-сравнение."""
+    assert is_question("чем docker лучше виртуалки")
+    assert is_question("чем docker проще vm")
+
+
+def test_is_question_comparison_noun_forms():
+    """«отличие X от Y» / «разница между X и Y»."""
+    assert is_question("отличие docker от виртуальной машины")
+    assert is_question("разница между docker и vm")
+
+
+def test_is_question_comparison_false_positives():
+    """Косвенная речь и идиомы с «чем» — не вопросы."""
+    assert not is_question("я знаю чем это отличается")
+    assert not is_question("мы сравнивали чем они отличаются")
+    assert not is_question("чем больше тем лучше")
+    assert not is_question("мы использовали docker")
+
+
+def test_is_question_imperative_te_forms():
+    """Повелительные формы мн. числа («опишите», «сравните», «назовите») — вопросы.
+
+    Регрессия: word-boundary guard в _starts_with_marker резал «опиши» →
+    «опишите», когда явной «-те»-формы не было в списке.
+    """
+    assert is_question("опишите ваш Pipeline сиайсиди от комита до продак")
+    assert is_question("сравните kubernetes и docker swarm")
+    assert is_question("назовите основные команды git")
+    assert is_question("покажите как настроить nginx")
+    assert is_question("приведите пример деплоя")
+    assert is_question("подскажите чем отличается pod от deployment")
+    assert is_question("объясните-ка как работает ingress")
+    # FP-барьер: существительные-омофоны по-прежнему не вопросы
+    assert not is_question("объяснительная записка")
+    assert not is_question("описка в документе")
+    assert not is_question("сравнительный")
+    assert not is_question("назовиста")
+    assert not is_question("опишитехарактеристики сервера")
+
+
+def test_is_question_comparison_nested_in_shift():
+    """Сменa темы + вложенный вопрос-сравнение в одной реплике."""
+    assert is_question("поговорим про Kubernetes чем Pod отличается от деплоя")
+    assert is_question("давай обсудим docker чем docker лучше vm")
+    # Без объекта сравнения после глагола — утверждение, не вопрос
+    assert not is_question("он объяснил чем процесс отличается")
+    assert not is_question("я знаю чем это отличается")
+
+
+# -- Tier 2/3: non-question fallback + LLM rescue ---------------------------
+
+
+def test_engine_topical_fallback_opens_topic():
+    """Не-вопрос с сильным термином открывает тему (preview, без LLM)."""
+    engine = InterviewEngine(_matcher(), InterviewConfig())
+    answers = []
+    engine.on_answer = answers.append
+    engine._process(_final("мы использовали docker"))
+    assert answers
+    assert answers[0].preview is True
+    assert answers[0].topic == "docker"
+
+
+def test_engine_topical_fallback_ignores_generic_statement():
+    """Обычное утверждение без KB-термина не открывает тему."""
+    engine = InterviewEngine(_matcher(), InterviewConfig())
+    answers = []
+    engine.on_answer = answers.append
+    engine._process(_final("документ готов к ревью"))
+    assert answers == []
+
+
+def test_engine_topical_fallback_skips_shift():
+    """Topic-shift не дублирует preview от трекера."""
+    engine = InterviewEngine(_matcher(), InterviewConfig())
+    answers = []
+    engine.on_answer = answers.append
+    engine._process(_final("давай поговорим про k8s"))
+    previews = [v for v in answers if v.preview]
+    assert len(previews) == 1  # только от трекера, не от fallback
+
+
+class _FakeRescueLlm:
+    available = True
+
+    def __init__(self, result):
+        self._result = result
+        self.calls = []
+
+    def analyze_dialog_context(self, utterance, history=""):
+        self.calls.append((utterance, history))
+        return self._result
+
+    def answer_question(self, question, context="", mode="technical", previous_qa=""):
+        return None
+
+
+class _FakeDialog:
+    def __init__(self, result):
+        self._result = result
+
+    def resolve(self, utterance):
+        return self._result
+
+
+def test_question_rescue_promotes_llm_question():
+    """LLM классифицирует не-вопрос как question → полный путь."""
+    from mockingbird.kb.dialog_context import DialogContextManager
+
+    llm = _FakeRescueLlm({"type": "question", "resolved_query": "как настроить docker",
+                          "answer_mode": "technical", "confidence": 0.9})
+    dialog = DialogContextManager(llm=llm)
+    # обходим _question_rescue_available: подставим заглушку с analyze_dialog_context
+    engine = InterviewEngine(_matcher(), InterviewConfig(), llm=llm, dialog_context=dialog)
+    engine._dialog = dialog
+    questions = []
+    engine.on_question = questions.append
+    answers = []
+    engine.on_answer = answers.append
+    engine._process(_final("как настроить докер"))
+    engine._rescue_question_worker("как настроить докер", _final("как настроить докер"), engine._generation)
+    assert any(a.topic == "docker" for a in answers if not a.preview)
+
+
+def test_question_rescue_ignores_fallback_source():
+    """fallback-источник (без LLM) не превращает утверждение в вопрос."""
+    from mockingbird.kb.dialog_context import DialogContextManager
+
+    llm = _FakeRescueLlm({})
+    dialog = DialogContextManager(llm=llm)
+    engine = InterviewEngine(_matcher(), InterviewConfig(), llm=llm, dialog_context=dialog)
+    engine._dialog = dialog
+    answers = []
+    engine.on_answer = answers.append
+    engine._rescue_question_worker("как настроить докер", _final("как настроить докер"), engine._generation)
+    assert answers == []
+
+
+def test_question_rescue_ignores_other_type():
+    """LLM сказал type=other → не превращаем в вопрос."""
+    from mockingbird.kb.dialog_context import DialogContextManager
+
+    llm = _FakeRescueLlm({"type": "other", "resolved_query": "", "answer_mode": "technical",
+                          "confidence": 0.9})
+    dialog = DialogContextManager(llm=llm)
+    engine = InterviewEngine(_matcher(), InterviewConfig(), llm=llm, dialog_context=dialog)
+    engine._dialog = dialog
+    answers = []
+    engine.on_answer = answers.append
+    engine._rescue_question_worker("я пошёл домой", _final("я пошёл домой"), engine._generation)
+    assert answers == []
+
+
+class _StubDialog:
+    def add_utterance(self, text, speaker="them"):
+        pass
+
+    def history_text(self):
+        return ""
+
+
+def test_shift_utterance_still_runs_rescue():
+    """Shift-реплика не глотает вложенный вопрос: rescue запускается.
+
+    Раньше is_shift делал ранний return до Tier 3, из-за чего «поговорим про
+    X, чем Pod отличается от Y» терялся целиком. Теперь rescue обязан
+    запускаться и для shift-фраз (topical-fallback при этом подавлен).
+    """
+    from unittest.mock import patch
+
+    engine = InterviewEngine(_matcher(), InterviewConfig())
+    engine._dialog = _StubDialog()  # dialog present → rescue branch reachable
+    started = []
+
+    def fake_thread(*a, **kw):
+        started.append(kw.get("target"))
+
+        class _T:
+            def start(self):
+                pass
+
+            def is_alive(self):
+                return False
+
+        return _T()
+
+    with patch.object(engine, "_question_rescue_available", return_value=True), patch(
+        "mockingbird.kb.interview_engine.threading.Thread", side_effect=fake_thread
+    ):
+        engine._process(_final("давай поговорим про kubernetes а потом сравним"))
+    assert started, "rescue thread must be launched for a shift utterance"
 
 
 def test_is_broad():
@@ -371,7 +644,7 @@ def test_engine_subject_rescue_async_upgrades_view():
     llm = _FakeSubjectLlm(["kubernetes"])
     engine = InterviewEngine(
         _matcher(),
-        InterviewConfig(predict_llm=False),
+        InterviewConfig(),
         llm=llm,
     )
     out = []
@@ -436,8 +709,7 @@ def test_engine_llm_answer_on_miss():
     out = []
     engine.on_llm_answer = out.append
     engine._maybe_answer_llm(view, "что такое kubelet")
-    if engine._answer_thread:
-        engine._answer_thread.join(timeout=2)
+    engine._question_queue.stop(timeout=2)
     assert llm.calls and llm.calls[0][0] == "что такое kubelet"
     assert any(m.done and m.answer == "Kubelet — агент на каждой ноде." for m in out)
 
@@ -619,49 +891,9 @@ class _FakePredictLlm:
         return [{"question": "Что такое Dockerfile?", "answer": "A"}]
 
 
-def test_engine_predict_flag_off():
-    llm = _FakePredictLlm()
-    engine = InterviewEngine(_matcher(), InterviewConfig(predict_llm=False), llm=llm)
-    view = protocol.KnowledgeView(
-        topic="docker",
-        title="Docker",
-        blocks=[protocol.AnswerBlock(id="a", section="s", question="q", answer="a")],
-    )
-    engine._maybe_predict(view, "q")
-    assert llm.calls == []
-    assert engine._last_predict_ts == 0.0
-
-
-def test_engine_predict_requires_llm_topic_and_blocks():
-    engine = InterviewEngine(_matcher(), InterviewConfig())
-    view = protocol.KnowledgeView(
-        topic="docker",
-        title="Docker",
-        blocks=[protocol.AnswerBlock(id="a", section="s", question="q", answer="a")],
-    )
-    engine._maybe_predict(view, "q")
-    assert engine._last_predict_ts == 0.0
-    llm = _FakePredictLlm()
-    engine2 = InterviewEngine(_matcher(), InterviewConfig(), llm=llm)
-    empty = protocol.KnowledgeView(topic="docker", title="Docker", blocks=[])
-    engine2._maybe_predict(empty, "q")
-    assert engine2._last_predict_ts == 0.0
-    assert llm.calls == []
-
-
-def test_engine_predict_cooldown_gate():
-    llm = _FakePredictLlm()
-    engine = InterviewEngine(_matcher(), InterviewConfig(), llm=llm)
-    view = protocol.KnowledgeView(
-        topic="docker",
-        title="Docker",
-        blocks=[protocol.AnswerBlock(id="a", section="s", question="q", answer="a")],
-    )
-    engine._maybe_predict(view, "q")
-    ts1 = engine._last_predict_ts
-    assert ts1 > 0.0
-    engine._maybe_predict(view, "q")
-    assert engine._last_predict_ts == ts1
+# NOTE: the interactive `_maybe_predict` LLM-prediction path was removed from
+# InterviewEngine (offline next_questions_from_view covers the UI needs);
+# the three former predict-gate tests were deleted with it.
 
 
 # -- parallel LLM answer gating ----------------------------------------------
@@ -748,12 +980,64 @@ def test_engine_answer_llm_worker_ignores_empty():
     assert out[0].answer == ""
 
 
+def test_engine_answer_llm_worker_empty_carries_kb_fallback():
+    """Пустой ответ + KB-fallback → done-сообщение несёт текст KB-блока."""
+    llm = _FakeAnswerLlm(None)
+    engine = InterviewEngine(_matcher(), InterviewConfig(), llm=llm)
+    out = []
+    engine.on_llm_answer = out.append
+    engine._answer_llm_worker("q", "docker", "Docker", "", kb_fallback="**Вопрос**\n\nОтвет из базы")
+    assert len(out) == 1
+    assert out[0].done is True
+    assert out[0].answer == ""
+    assert out[0].kb_fallback == "**Вопрос**\n\nОтвет из базы"
+
+
+def test_engine_answer_llm_worker_nonempty_drops_kb_fallback():
+    """Непустой ответ НЕ должен нести kb_fallback (LLM победил)."""
+    llm = _FakeAnswerLlm("Ответ ИИ")
+    engine = InterviewEngine(_matcher(), InterviewConfig(), llm=llm)
+    out = []
+    engine.on_llm_answer = out.append
+    engine._answer_llm_worker("q", "docker", "Docker", "", kb_fallback="**Вопрос**\n\nОтвет из базы")
+    assert out[0].answer == "Ответ ИИ"
+    assert out[0].kb_fallback == ""
+
+
+def test_kb_fallback_text_from_view_blocks():
+    """_kb_fallback_text собирает вопрос+ответ из top-блока."""
+    engine = InterviewEngine(_matcher(), InterviewConfig(), llm=_FakeAnswerLlm(None))
+    view = protocol.KnowledgeView(
+        topic="docker",
+        title="Docker",
+        matched_query="q",
+        blocks=[
+            protocol.AnswerBlock(id="b1", section="s", question="Вопрос", answer="Ответ"),
+        ],
+    )
+    assert engine._kb_fallback_text(view) == "**Вопрос**\n\nОтвет"
+
+
+def test_kb_fallback_text_empty_without_blocks():
+    engine = InterviewEngine(_matcher(), InterviewConfig(), llm=_FakeAnswerLlm(None))
+    view = protocol.KnowledgeView(topic="general", title="", matched_query="q", blocks=[])
+    assert engine._kb_fallback_text(view) == ""
+
+
 class _FakeStreamLlm:
     available = True
 
-    def __init__(self, deltas):
+    def __init__(self, deltas, pad_to_min_chars: bool = True):
         self.deltas = deltas
         self.calls = []
+        # The engine retries streams shorter than _LLM_MIN_ANSWER_CHARS (200).
+        # Tests that count calls expect exactly one stream — pad the payload
+        # past the retry threshold unless the test opts out.
+        if pad_to_min_chars:
+            total = sum(len(d) for d in deltas)
+            if 0 < total < 200:
+                filler = " Полновесный ответ на технический вопрос для порога ретрая. " * 8
+                self.deltas = list(deltas) + [filler]
 
     def answer_question_stream(self, question, context="", mode="technical", previous_qa=""):
         self.calls.append((question, context))
@@ -762,25 +1046,55 @@ class _FakeStreamLlm:
 
 
 def test_engine_answer_llm_worker_streams_chunks():
-    llm = _FakeStreamLlm(["Привет", ", ", "мир"])
+    # Answer long enough to be above the retry threshold (200 chars).
+    long_text = "Полный ответ на вопрос о разнице entrypoint и cmd " * 6
+    deltas = [long_text[:40], long_text[40:]]
+    llm = _FakeStreamLlm(deltas)
     engine = InterviewEngine(_matcher(), InterviewConfig(), llm=llm)
     out = []
     engine.on_llm_answer = out.append
     engine._answer_llm_worker("в чём отличие entrypoint от cmd", "docker", "Docker", "контекст")
     assert llm.calls == [("в чём отличие entrypoint от cmd", "контекст")]
     chunks = [m for m in out if not m.done]
-    assert [c.delta for c in chunks] == ["Привет", ", ", "мир"]
+    assert [c.delta for c in chunks] == deltas
     assert all(not c.answer for c in chunks)
     final = out[-1]
     assert final.done is True
-    assert final.answer == "Привет, мир"
+    assert final.answer == long_text
     assert final.query == "в чём отличие entrypoint от cmd"
     assert final.topic == "docker"
     assert final.title == "Docker"
 
 
+def test_engine_answer_llm_worker_retries_broken_short_stream():
+    """P-015: a stream that dies after a couple of chunks triggers one retry."""
+    calls = {"n": 0}
+
+    class _BrokenThenGood:
+        available = True
+
+        def answer_question_stream(self, question, context="", mode="technical", previous_qa=""):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                yield "ко"
+            else:
+                good = "Полный ответ после обрыва стрима, вторая попытка успешна. " * 5
+                for i in range(0, len(good), 40):
+                    yield good[i : i + 40]
+
+    llm = _BrokenThenGood()
+    engine = InterviewEngine(_matcher(), InterviewConfig(), llm=llm)
+    out = []
+    engine.on_llm_answer = out.append
+    engine._answer_llm_worker("q", "docker", "Docker", "")
+    assert calls["n"] == 2  # broken first stream + one retry
+    final = out[-1]
+    assert final.done is True
+    assert len(final.answer) >= 200
+
+
 def test_engine_answer_llm_worker_stream_skips_empty_deltas():
-    llm = _FakeStreamLlm(["a", "", "b"])
+    llm = _FakeStreamLlm(["a", "", "b"], pad_to_min_chars=False)
     engine = InterviewEngine(_matcher(), InterviewConfig(), llm=llm)
     out = []
     engine.on_llm_answer = out.append
@@ -815,8 +1129,7 @@ def test_engine_answer_cache_serves_repeat_without_new_llm_call():
     engine.on_llm_answer = out.append
     query = "в чём отличие entrypoint от cmd"
     engine._maybe_answer_llm(_answer_view(), query)
-    if engine._answer_thread:
-        engine._answer_thread.join(timeout=2)
+    engine._question_queue.stop(timeout=2)
     engine._maybe_answer_llm(_answer_view(), query)
     engine._maybe_answer_llm(_answer_view(), query)
     assert len(llm.calls) == 1
@@ -832,11 +1145,9 @@ def test_engine_answer_cache_off_recontacts_llm():
     )
     query = "в чём отличие entrypoint от cmd"
     engine._maybe_answer_llm(_answer_view(), query)
-    if engine._answer_thread:
-        engine._answer_thread.join(timeout=2)
+    engine._question_queue.stop(timeout=2)
     engine._maybe_answer_llm(_answer_view(), query)
-    if engine._answer_thread:
-        engine._answer_thread.join(timeout=2)
+    engine._question_queue.stop(timeout=2)
     assert len(llm.calls) == 2
 
 
@@ -847,11 +1158,9 @@ def test_engine_answer_cache_does_not_store_empty():
     )
     query = "в чём отличие entrypoint от cmd"
     engine._maybe_answer_llm(_answer_view(), query)
-    if engine._answer_thread:
-        engine._answer_thread.join(timeout=2)
+    engine._question_queue.stop(timeout=2)
     engine._maybe_answer_llm(_answer_view(), query)
-    if engine._answer_thread:
-        engine._answer_thread.join(timeout=2)
+    engine._question_queue.stop(timeout=2)
     assert len(llm.calls) == 2
 
 
@@ -864,7 +1173,6 @@ def _partial(text, segment_id="seg1"):
 
 def _partial_engine(llm=None, **overrides):
     overrides.setdefault("use_partials", True)
-    overrides.setdefault("predict_llm", False)
     overrides.setdefault("subject_llm", False)
     return InterviewEngine(_matcher(), InterviewConfig(**overrides), llm=llm)
 
@@ -876,12 +1184,11 @@ def test_engine_partial_early_start_streams_answer():
     engine.on_llm_answer = out.append
     engine._process_partial(_partial("в чём отличие entrypoint от cmd"))
     engine._process_partial(_partial("в чём отличие entrypoint от cmd"))
-    if engine._answer_thread:
-        engine._answer_thread.join(timeout=2)
+    engine._question_queue.stop(timeout=2)
     assert engine._provisional_query == "в чём отличие entrypoint от cmd"
     assert llm.calls
     assert llm.calls[0][0] == "в чём отличие entrypoint от cmd"
-    assert any(m.done and m.answer == "Ответ по ранней гипотезе" for m in out)
+    assert any(m.done and m.answer.startswith("Ответ по ранней гипотезе") for m in out)
 
 
 def test_engine_partial_requires_stability_rounds():
@@ -922,8 +1229,7 @@ def test_engine_partial_final_same_query_keeps_early_answer():
     engine._process_partial(_partial(query))
     engine._process_partial(_partial(query))
     engine._process(_final(query))
-    if engine._answer_thread:
-        engine._answer_thread.join(timeout=2)
+    engine._question_queue.stop(timeout=2)
     assert len(llm.calls) == 1
     assert len([m for m in out if m.done and m.query == query]) == 1
 
@@ -937,12 +1243,8 @@ def test_engine_partial_final_differs_restarts_answer():
     engine.on_llm_answer = out.append
     engine._process_partial(_partial(q1))
     engine._process_partial(_partial(q1))
-    first = engine._answer_thread
     engine._process(_final(q2))
-    if first:
-        first.join(timeout=2)
-    if engine._answer_thread:
-        engine._answer_thread.join(timeout=2)
+    engine._question_queue.stop(timeout=2)
     queries = [c[0] for c in llm.calls]
     assert q1 in queries and q2 in queries
 
@@ -959,12 +1261,8 @@ def test_engine_partial_final_cosmetic_change_keeps_early_answer():
     engine.on_llm_answer = out.append
     engine._process_partial(_partial(q1))
     engine._process_partial(_partial(q1))
-    first = engine._answer_thread
     engine._process(_final(q2))
-    if first:
-        first.join(timeout=2)
-    if engine._answer_thread:
-        engine._answer_thread.join(timeout=2)
+    engine._question_queue.stop(timeout=2)
     # the final only adds filler words -> the early stream is kept
     assert [c[0] for c in llm.calls] == [q1]
 
@@ -976,12 +1274,8 @@ def test_engine_partial_final_semantic_change_restarts_answer():
     engine = _partial_engine(llm, answer_cooldown_s=1000.0)
     engine._process_partial(_partial(q1))
     engine._process_partial(_partial(q1))
-    first = engine._answer_thread
     engine._process(_final(q2))
-    if first:
-        first.join(timeout=2)
-    if engine._answer_thread:
-        engine._answer_thread.join(timeout=2)
+    engine._question_queue.stop(timeout=2)
     queries = [c[0] for c in llm.calls]
     assert q1 in queries and q2 in queries
 
@@ -995,8 +1289,7 @@ def test_engine_partial_does_not_consume_dedup_for_final():
     engine._process_partial(_partial(query))
     engine._process_partial(_partial(query))
     engine._process(_final(query))
-    if engine._answer_thread:
-        engine._answer_thread.join(timeout=2)
+    engine._question_queue.stop(timeout=2)
     # the RAG view is emitted early (partial) and again on the final transcript
     assert len(answers) == 2
     assert answers[0].partial is True
@@ -1022,132 +1315,7 @@ def test_engine_partial_emits_view_early():
     assert len(answers) == 1
 
 
-# -- topics engine (offline glossary grouping) -------------------------------
-
-
-class _FakeLlm:
-    available = False
-
-    def analyze_topics(self, transcript):
-        return []
-
-
-def _topic_engine(**overrides):
-    from mockingbird.terms.glossary import Glossary
-
-    overrides.setdefault("enabled", True)
-    return TopicEngine(Glossary.load(), _FakeLlm(), TopicsConfig(**overrides))
-
-
-def _detected(engine, msg):
-    blocks = []
-    engine.on_topics = blocks.append
-    engine._handle(msg)
-    engine._run_analysis()
-    return blocks[0] if blocks else None
-
-
-def test_topics_engine_offline_groups_by_category():
-    engine = _topic_engine()
-    _detected(engine, _final("Деплой через k8s прошёл успешно."))
-    _detected(
-        engine,
-        protocol.TermDetected(
-            term="Kubernetes", explanation="x", source=protocol.TermSource.GLOSSARY,
-        ),
-    )
-    _detected(
-        engine,
-        protocol.TermDetected(
-            term="Docker", explanation="x", source=protocol.TermSource.GLOSSARY,
-        ),
-    )
-    blocks = engine._glossary_blocks()
-    infra = [b for b in blocks if b.category == "infra"]
-    assert infra
-    docker_block = next(b for b in infra if "Docker" in b.terms)
-    assert any("ENTRYPOINT" in q.question for q in docker_block.questions)
-
-
-def test_topics_engine_conversation_blocks_from_kb():
-    engine = _topic_engine()
-    engine._context.add_block(
-        "docker", "Docker — всё по теме", "Dockerfile",
-        "В чём отличие ENTRYPOINT от CMD?", "Ответ про entrypoint",
-        ["Что такое Dockerfile?"], 5.0,
-    )
-    engine._context.add_block(
-        "docker", "Docker — всё по теме", "Dockerfile",
-        "Что такое Dockerfile?", "Ответ про dockerfile", [], 4.0,
-    )
-    blocks = engine._conversation_blocks()
-    assert blocks and len(blocks) == 1
-    block = blocks[0]
-    assert block.source == protocol.TopicSource.KB
-    assert block.category == "беседа"
-    assert any("ENTRYPOINT" in q.question for q in block.questions)
-
-
-def test_topics_engine_run_analysis_includes_conversation():
-    engine = _topic_engine(include_kb=True)
-    engine._context.add_block(
-        "docker", "Docker — всё по теме", "Dockerfile", "Q", "A", [], 1.0,
-    )
-    out = []
-    engine.on_topics = out.append
-    engine._run_analysis()
-    assert out and out[0][0].source == protocol.TopicSource.KB
-    engine2 = _topic_engine(include_kb=False)
-    engine2._context.add_block(
-        "docker", "Docker — всё по теме", "Dockerfile", "Q", "A", [], 1.0,
-    )
-    out2 = []
-    engine2.on_topics = out2.append
-    engine2._run_analysis()
-    assert out2 == []
-
-
-def test_topics_engine_disabled_emits_nothing():
-    engine = _topic_engine(enabled=False)
-    out = []
-    engine.on_topics = out.append
-    engine._handle(_final("поговорим про docker"))
-    assert out == []
-
-
-# -- llm topics parsing ------------------------------------------------------
-
-
-def test_parse_topics_json_plain():
-    text = (
-        '{"topics": [{"theme": "Контейнеры", "terms": ["Docker"], '
-        '"questions": [{"question": "Q1", "answer": "A1"}]}]}'
-    )
-    out = parse_topics_json(text)
-    assert out == [{"theme": "Контейнеры", "terms": ["Docker"],
-                    "questions": [{"question": "Q1", "answer": "A1"}]}]
-
-
-def test_parse_topics_json_fence_and_garbage():
-    text = '```json\n{"topics": [{"theme": "Сети", "questions": []}]}\n```'
-    assert parse_topics_json(text) == [{"theme": "Сети", "terms": [], "questions": []}]
-    assert parse_topics_json("nope") == []
-    assert parse_topics_json("") == []
-
-
 # -- protocol roundtrip ------------------------------------------------------
-
-
-def test_topic_block_roundtrip():
-    block = protocol.TopicBlock(
-        block_id="b1",
-        theme="Контейнеры",
-        questions=[protocol.RelatedQuestion(question="Q", answer="A")],
-        source=protocol.TopicSource.GLOSSARY,
-    )
-    parsed = protocol.TopicBlock.model_validate_json(block.model_dump_json())
-    assert parsed.theme == "Контейнеры"
-    assert parsed.questions[0].question == "Q"
 
 
 def test_knowledge_view_roundtrip():
@@ -1164,16 +1332,6 @@ def test_knowledge_view_roundtrip():
     assert parsed.next_questions[0].question == "Q1"
 
 
-def test_predictions_roundtrip():
-    msg = protocol.Predictions(
-        query="в чём отличие entrypoint от cmd",
-        topic="docker",
-        questions=[protocol.RelatedQuestion(question="Q1", answer="A1", topic="docker")],
-    )
-    parsed = protocol.Predictions.model_validate_json(msg.model_dump_json())
-    assert parsed.type == protocol.MessageType.PREDICTIONS
-    assert parsed.query == "в чём отличие entrypoint от cmd"
-    assert parsed.questions[0].answer == "A1"
 
 
 def test_llm_answer_roundtrip():

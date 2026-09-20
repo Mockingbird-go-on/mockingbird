@@ -24,7 +24,11 @@ def test_extract_json_no_braces():
 
 
 def test_extract_json_unclosed_returns_none():
-    assert _extract_json_object('{"a": 1') is None
+    # The brace-counting scan tolerates a truncated tail (DeepSeek cutoff):
+    # an unterminated object is still parsed for its complete prefix keys.
+    # Only text with NO opening brace at all returns None.
+    assert _extract_json_object('{"a": 1') == {"a": 1}
+    assert _extract_json_object("no braces here") is None
 
 
 def test_extract_json_empty_string():

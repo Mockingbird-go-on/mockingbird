@@ -67,9 +67,9 @@ def test_throttle_skips_llm_within_interval(explainer):
     # (on fresh CI runners time.monotonic() can be < 100, making
     # now - 0.0 < min_interval_s true and blocking the first call).
     exp._last_analysis_ts = -999.0
-    exp._process(_make_msg("first question"))
+    exp._process(_make_msg("первый вопрос достаточно длинный текст для терминального анализа"))
     assert llm.call_count == 1
-    exp._process(_make_msg("second question"))
+    exp._process(_make_msg("второй вопрос тоже достаточно длинный текст для терминального анализа"))
     assert llm.call_count == 1  # throttled, not called again
 
 
@@ -87,10 +87,10 @@ def test_throttle_allows_llm_after_interval():
     from mockingbird.terms.explainer import TermExplainer
     exp = TermExplainer(_FakeGlossary(), _FakeCache(), llm, cfg)
     exp.on_term = lambda d: None
-    exp._process(_make_msg("first"))
+    exp._process(_make_msg("первый вопрос достаточно длинный текст для терминального анализа"))
     assert llm.call_count == 1
     _time.sleep(0.06)
-    exp._process(_make_msg("second"))
+    exp._process(_make_msg("второй вопрос тоже достаточно длинный текст для терминального анализа"))
     assert llm.call_count == 2
 
 

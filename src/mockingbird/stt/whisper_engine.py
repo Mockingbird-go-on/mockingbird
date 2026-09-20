@@ -22,6 +22,7 @@ import numpy as np
 from mockingbird import protocol
 from mockingbird.config import WhisperConfig, app_dir
 from mockingbird.stt.device import ctranslate2_cuda_available, resolve_device
+from mockingbird.stt.text_merge import has_cjk, merge_chunk_texts, reconcile_final_with_partial
 
 log = logging.getLogger(__name__)
 
@@ -32,6 +33,27 @@ _CMD_STOP = "stop"
 _CMD_STOP_HINT = "stop_hint"
 _CMD_RESUME = "resume"
 
+# Segment-length cap (seconds of buffered speech): split monologues that
+# never pause so the final decode stays fast and the transcript clean.
+_MAX_OPEN_SEGMENT_S = 45.0
+
+# Max extra audio (seconds) the finalize buffer may have grown beyond the
+# speculative decode before the speculative result is considered stale. The
+# VAD silence tail adds a little silence after the stop-hint fired; anything
+# more means real speech resumed and the speculative text is incomplete.
+_SPECULATIVE_REUSE_MAX_DELTA_S = 3.0
+
+
+# Known-good repo overrides. Systran never published a turbo conversion —
+# the community CT2 build of large-v3-turbo is the standard faster-whisper
+# choice. Any turbo spelling (bare size or a wrong-but-obvious repo id)
+# resolves here instead of 401-ing on a non-existent repository.
+_REPO_OVERRIDES = {
+    "systran/faster-whisper-large-v3-turbo": "deepdml/faster-whisper-large-v3-turbo-ct2",
+    "faster-whisper-large-v3-turbo": "deepdml/faster-whisper-large-v3-turbo-ct2",
+    "deepdml/faster-whisper-large-v3-turbo": "deepdml/faster-whisper-large-v3-turbo-ct2",
+}
+
 
 def _model_repo_id(model_size: str) -> str:
     """Map a bare size name to the faster-whisper HF repo id.
@@ -39,14 +61,28 @@ def _model_repo_id(model_size: str) -> str:
     If the value already looks like a repo id (contains a slash) or is an
     existing local path it is returned unchanged by the caller before we get
     here; this handles the plain size names used by the UI and defaults.
+    Known-broken ids (e.g. the non-existent Systran turbo repo) are rewritten
+    to their community equivalents before any network call.
     """
-    return f"Systran/faster-whisper-{model_size}"
+    repo = f"Systran/faster-whisper-{model_size}"
+    return _normalize_repo_id(repo)
+
+
+def _normalize_repo_id(size: str) -> str:
+    """Resolve any user-supplied model string to a known-good repo id."""
+    lowered = (size or "").strip().lower()
+    if lowered in _REPO_OVERRIDES:
+        return _REPO_OVERRIDES[lowered]
+    return size
 
 
 # Compute-type preference for the resolved device, best first. ``int8`` is the
 # CPU-friendly bundled default; on CUDA the choice depends on the hardware:
 # fp16 on modern GPUs, native fp32 on older/Pascal cards that lack fp16/IMMA
-# kernels, and emulated int8 only as a last resort.
+# kernels, and emulated int8 only as a last resort. Note: int8_float32 is NOT
+# in the auto preference — A/B testing on GTX 1070 (Pascal, large-v3-turbo)
+# showed it degrades WER on Russian speech («Docker» → «доктор»/«RADKER»);
+# it remains available as an explicit opt-in via env/GUI only.
 _GPU_PREFERENCE = ("float16", "int8_float16", "float32", "int8")
 _CPU_PREFERENCE = ("int8", "float16", "float32")
 
@@ -60,6 +96,9 @@ def _supported_compute_types(device: str) -> tuple[str, ...]:
     try:
         import ctranslate2
 
+        from mockingbird.stt.device import ensure_cudnn_dll_dirs
+
+        ensure_cudnn_dll_dirs()
         return tuple(ctranslate2.get_supported_compute_types(device))
     except Exception:  # noqa: BLE001
         log.warning("whisper: could not query supported compute types for %s", device)
@@ -125,7 +164,7 @@ class _DownloadReporter:
         self._cb(f"Downloading {self._name}…", pct)
 
 
-def _progress_tqdm_class(reporter: "_DownloadReporter"):
+def _progress_tqdm_class(reporter: _DownloadReporter):
     """Build a tqdm subclass wired to the reporter for snapshot_download.
 
     The bar is never rendered to a console: the built Windows .exe runs with
@@ -256,6 +295,150 @@ def _probe_cuda(model, audio: np.ndarray, language: str | None, timeout: float, 
     return True, ""
 
 
+def _dedupe_repeated_words(text: str, max_repeat: int = 3) -> str:
+    """Collapse whisper repetition loops («Время, Время, Время …» ×56).
+
+    Whisper enters token loops on noisy/quiet audio; the result is one word
+    (or short n-gram) repeated dozens of times. Anything beyond ``max_repeat``
+    consecutive identical words is cut — the first repetitions usually carry
+    the real content, the rest are the loop.
+    """
+    words = text.split()
+    if len(words) < 2 * max_repeat:
+        return text
+    out: list[str] = []
+    run = 0
+    prev = None
+    for w in words:
+        if w == prev:
+            run += 1
+            if run >= max_repeat:
+                continue  # drop the loop tail
+        else:
+            run = 0
+        out.append(w)
+        prev = w
+    return " ".join(out)
+
+
+# Known whisper phantom phrases (subtitle-credit hallucinations on quiet
+# audio). A transcript consisting mostly of such boilerplate is discarded.
+_HALLUCINATION_PATTERNS = (
+    "субтитр",
+    "редактор субтитров",
+    "корректор",
+    "переводчик",
+    "dimatorzok",
+    "добавил субтитры",
+)
+
+
+def _looks_like_hallucination(text: str) -> bool:
+    """True when the transcript is whisper boilerplate, not speech."""
+    lowered = (text or "").lower()
+    if not lowered:
+        return False
+    # Mixed-script noise (CJK/Hangul inside Russian speech) is always a
+    # hallucination — no real Russian/English utterance contains it.
+    if has_cjk(text):
+        return True
+    hits = sum(1 for p in _HALLUCINATION_PATTERNS if p in lowered)
+    words = len(lowered.split())
+    # Short transcript made mostly of credit-line markers → hallucination.
+    return hits >= 1 and words <= 8
+
+
+def _has_trailing_latin_nonsense(text: str, matcher=None) -> bool:
+    """Truncated speech glued to an invented English word («…что твой Mindfuls»).
+
+    Pattern: the sentence does NOT end with terminal punctuation, and its last
+    token is a Latin word that is not a known glossary/KB term and is not a
+    prefix of one. On a cut-off quiet tail whisper frequently invents exactly
+    one such token instead of the real (quiet) speech.
+    """
+    import re as _re
+
+    t = (text or "").strip()
+    if not t or t[-1] in ".?!":
+        return False
+    words = _re.findall(r"[A-Za-z][A-Za-z0-9._/-]+", t)
+    if not words:
+        return False
+    last = words[-1]
+    if len(last) < 4 or last.isdigit():
+        return False
+    # Without a glossary matcher every Latin token looks "unknown" — the
+    # guard would suppress legitimate finals («в чем связь между Agile и»).
+    # Only run the known-term check when the matcher is actually wired.
+    if matcher is None:
+        return False
+    known = getattr(matcher, "_surfaces", None) or []
+    folded = last.lower()
+    for surf in known:
+        if folded == surf or surf.startswith(folded) or folded.startswith(surf):
+            return False
+    # Fuzzy pass: a *close* miss of a known term («Zabix» → «Zabbix») is a
+    # legitimate speech artefact, not an invented token. resolve() is
+    # Cyrillic-only by design; resolve_latin() covers whisper's Latin
+    # misspellings with a strict edit-distance budget.
+    resolve = getattr(matcher, "resolve_latin", None)
+    if callable(resolve):
+        try:
+            if resolve(last):
+                return False
+        except Exception:
+            pass
+    else:
+        try:
+            from mockingbird.terms.phonetics import levenshtein_bounded
+
+            budget = max(1, len(surf_for_budget := folded) // 4)
+            for surf in known:
+                if abs(len(surf) - len(folded)) <= budget and levenshtein_bounded(
+                    folded, surf, budget
+                ) <= budget:
+                    return False
+        except Exception:
+            pass
+    return True
+
+
+_LATIN_TOKEN_RE = None  # compiled lazily
+
+
+def _fuzzy_fix_latin_partial(text: str, matcher) -> str:
+    """Resolve mangled Latin tokens in a partial draft («Zabix» → «Zabbix»).
+
+    Latin-only by design: in Russian speech Latin tokens are rare (usually
+    tech terms), so this touches 0-2 tokens per partial and costs ~a
+    millisecond, unlike a full normalize_text pass over every Cyrillic word.
+    """
+    global _LATIN_TOKEN_RE
+    import re as _re
+
+    if _LATIN_TOKEN_RE is None:
+        _LATIN_TOKEN_RE = _re.compile(r"\b[A-Za-z][A-Za-z0-9._/-]{2,}\b")
+    if not text:
+        return text
+    resolve = getattr(matcher, "resolve_latin", None)
+    if not callable(resolve):
+        return text
+
+    def _fix(match_obj) -> str:
+        token = match_obj.group(0)
+        try:
+            hit = resolve(token)
+        except Exception:
+            return token
+        if hit:
+            canonical = hit[0] if isinstance(hit, tuple) else hit
+            if canonical and canonical.lower() != token.lower():
+                return canonical
+        return token
+
+    return _LATIN_TOKEN_RE.sub(_fix, text)
+
+
 def resolve_model_path(cfg: WhisperConfig, progress_cb=None) -> str:
     """Resolve the whisper model to a local path, checking local storage first.
 
@@ -275,13 +458,14 @@ def resolve_model_path(cfg: WhisperConfig, progress_cb=None) -> str:
     phase). On subsequent Start (Stop -> Start) the model is therefore always
     picked up from disk when present.
     """
-    size = cfg.model_size
+    size = _normalize_repo_id(cfg.model_size)
     if os.path.isfile(size) or os.path.isdir(size):
         return size
 
     from huggingface_hub import snapshot_download
 
     repo_id = size if "/" in size else _model_repo_id(size)
+    repo_id = _normalize_repo_id(repo_id)
     download_root = cfg.model_dir or str(app_dir() / "models")
 
     try:
@@ -339,12 +523,46 @@ class WhisperEngine:
         self._detected_language: str | None = None
         self._speculative: dict | None = None
         self._spec_partial_emitted = False
+        # Incremental chunk decode cache (stable prefix of the current
+        # segment; grid: window 20 s, step 18 s — see _decode_cached).
+        self._chunk_texts: list[str] = []
+        self._text_matcher = None
+        self._partial_correction_cache: dict[str, str] = {}
+        # Running count of post-STT term corrections in this session — the
+        # headline metric for term-accuracy work (hot-words / phonetics).
+        self._corrections = 0
+        # Last emitted partial text (per segment) — see _finalize safety-net.
+        self._last_partial_text: str = ""
+        # Previous full-buffer decode text — LocalAgreement-2 stability check
+        # (see is_utterance_complete).
+        self._prev_full_text: str = ""
+        # Bytes of rolling audio at the moment of the last decode (any kind).
+        # A stop_hint that arrives without NEW audio since the last decode
+        # re-decodes the identical buffer — pure GPU waste (the hold/resume
+        # cycle of the chunker re-fires hints after a continuation start).
+        self._decoded_audio_len = -1
 
         self.on_partial = None
         self.on_final = None
         self.on_ready = None
         self.on_error = None
         self.on_progress = None
+        self.on_speaker_identify = None  # callable(audio, sample_rate) -> str
+
+    def set_text_matcher(self, matcher) -> None:
+        """Inject a PhoneticMatcher for post-correction of transcripts."""
+        self._text_matcher = matcher
+        self._partial_correction_cache.clear()
+
+    def _maybe_identify_speaker(self, msg, audio: np.ndarray) -> None:
+        """If speaker identification is enabled, set msg.speaker_id."""
+        if self.on_speaker_identify is not None:
+            try:
+                speaker_id = self.on_speaker_identify(audio, self._sr)
+                if speaker_id:
+                    msg.speaker_id = speaker_id
+            except Exception:
+                log.debug("whisper: speaker identify failed", exc_info=True)
 
     @property
     def backend(self) -> str:
@@ -361,6 +579,11 @@ class WhisperEngine:
     @property
     def is_ready(self) -> bool:
         return self._ready
+
+    @property
+    def corrections(self) -> int:
+        """Number of post-STT term corrections in this session."""
+        return self._corrections
 
     # -- lifecycle --
     def start(self) -> None:
@@ -384,6 +607,8 @@ class WhisperEngine:
             self._last_decode = 0.0
             self._speculative = None
             self._spec_partial_emitted = False
+            self._chunk_texts = []
+            self._last_partial_text = ""
         return segment_id
 
     def feed(self, audio: np.ndarray) -> None:
@@ -412,7 +637,7 @@ class WhisperEngine:
     def _run(self) -> None:
         try:
             self._load_model()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log.exception("failed to load whisper model")
             if self.on_error:
                 self.on_error(f"whisper model load failed: {exc}")
@@ -443,6 +668,25 @@ class WhisperEngine:
             if cmd == _CMD_AUDIO:
                 with self._lock:
                     self._rolling = np.concatenate([self._rolling, payload])
+                # Segment-length cap: a monologue that never pauses must not
+                # grow the buffer unbounded — the final decode then takes
+                # 80-120 s, the transcript accumulates repetition-loop
+                # garbage and the LLM context bloats. Split at ~45 s: emit
+                # an intermediate final for the buffered audio and keep the
+                # segment open (same segment_id; downstream the interview
+                # engine's accumulation window re-joins adjacent finals).
+                with self._lock:
+                    buffered = len(self._rolling) / self._sr
+                if buffered >= _MAX_OPEN_SEGMENT_S:
+                    log.info(
+                        "whisper: segment cap %.0fs reached — emitting intermediate final "
+                        "(segment stays open)",
+                        buffered,
+                    )
+                    with self._lock:
+                        audio = self._rolling.copy()
+                        segment_id = self._segment_id
+                    self._finalize(audio, segment_id)
                 self._maybe_decode()
             elif cmd == _CMD_END:
                 audio, segment_id = payload
@@ -483,18 +727,34 @@ class WhisperEngine:
         elif (self._cfg.device or "auto").lower() == "cuda":
             log.warning("whisper: CUDA requested but unavailable, falling back to CPU")
         configured = self._cfg.compute_type
-        compute_type = select_compute_type(
-            device, configured, _supported_compute_types(device)
-        )
+        supported_types = _supported_compute_types(device)
+        compute_type = select_compute_type(device, configured, supported_types)
         self._compute_type = compute_type
         if compute_type != configured:
-            log.info(
-                "whisper: %s is not optimal for %s, using %s "
-                "(pin via MOCKINGBIRD_WHISPER_COMPUTE_TYPE to override)",
-                configured,
-                device,
-                compute_type,
-            )
+            # Log the full supported list so the effective type is always
+            # auditable. "float16 missing" on a CUDA device means the GPU's
+            # compute capability is < 7.0 (Pascal) — float16 tensor kernels do
+            # not exist there, no driver/package can add them; the engine then
+            # stays on float32 (int8_float32 is NOT auto-selected: A/B showed
+            # it degrades WER on Russian speech; it remains an explicit opt-in).
+            if device == "cuda" and "float16" not in set(supported_types):
+                log.info(
+                    "whisper: GPU compute capability < 7.0 (float16 unavailable), "
+                    "using %s for CUDA (supported=%s; configure via "
+                    "MOCKINGBIRD_WHISPER_COMPUTE_TYPE)",
+                    compute_type,
+                    ",".join(supported_types) or "unknown",
+                )
+            else:
+                log.info(
+                    "whisper: %s is not optimal for %s, using %s "
+                    "(supported=%s; float16 missing => install nvidia-cudnn-cu12; "
+                    "pin via MOCKINGBIRD_WHISPER_COMPUTE_TYPE to override)",
+                    configured,
+                    device,
+                    compute_type,
+                    ",".join(supported_types) or "unknown",
+                )
         try:
             self._model = WhisperModel(
                 model_path,
@@ -554,11 +814,12 @@ class WhisperEngine:
             return
         self._decoding = True
         try:
-            text, confidence, duration = self._transcribe(
+            text, _confidence, duration = self._transcribe(
                 audio, kind="partial", beam_size=self._cfg.beam_size
             )
             self._last_decode = time.monotonic()
             if text:
+                self._last_partial_text = text
                 msg = protocol.PartialTranscript(
                     segment_id=segment_id or "",
                     text=text,
@@ -581,6 +842,13 @@ class WhisperEngine:
         The decoded text is also emitted immediately as a partial so the
         pipeline (interview early start) receives the full wording as soon as
         the VAD hears silence, well before the final transcript.
+
+        GPU-budget guards:
+        - a hint with no NEW audio since the last decode re-decodes the same
+          buffer (the chunker's hold/resume cycle re-fires hints) — skipped;
+        - on long buffers only the fresh tail beyond the cached prefix is
+          decoded (speculative quality on the head adds nothing — the chunk
+          cache already holds it and the final pass re-decodes anyway).
         """
         if not self._end_ahead or self._model is None or self._decoding:
             return
@@ -591,12 +859,55 @@ class WhisperEngine:
             segment_id = self._segment_id
         if len(audio) < int(self._sr * 0.5):
             return
+        if len(audio) == self._decoded_audio_len:
+            log.debug("whisper: stop_hint skipped — no new audio since last decode")
+            return
+        # P0-3: long buffer — decode only the tail past the cached prefix.
+        # The tail is decoded DIRECTLY (not via _decode_cached): its chunk
+        # grid starts at tail_start and would misalign with the cached chunk
+        # slots, corrupting the cache.
+        cached_seconds = len(self._chunk_texts) * 18.0
+        if cached_seconds >= 18.0 and len(audio) > (cached_seconds + 2.0) * self._sr:
+            tail_start = max(0, int(cached_seconds * self._sr - 2.0 * self._sr))
+            tail = audio[tail_start:]
+            self._decoding = True
+            try:
+                text, confidence, duration = self._transcribe(
+                    tail, kind="speculative", beam_size=self._cfg.final_beam_size
+                )
+                self._decoded_audio_len = len(audio)
+                prefix = " ".join(self._chunk_texts).strip()
+                if text:
+                    text = merge_chunk_texts([prefix, text]) if prefix else text
+                if text:
+                    self._speculative = {
+                        "segment_id": segment_id,
+                        "text": text,
+                        "confidence": confidence,
+                        "duration": len(audio) / self._sr,
+                    }
+                    self._spec_partial_emitted = True
+                    self._last_partial_text = text
+                    msg = protocol.PartialTranscript(
+                        segment_id=segment_id or "",
+                        text=text,
+                        start=0.0,
+                        end=len(audio) / self._sr,
+                    )
+                    if self.on_partial:
+                        self.on_partial(msg)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("speculative tail decode failed: %s", exc)
+            finally:
+                self._decoding = False
+            return
         self._decoding = True
         try:
-            text, confidence, duration = self._transcribe(
+            text, confidence, duration = self._decode_cached(
                 audio, kind="speculative", beam_size=self._cfg.final_beam_size
             )
             if text:
+                self._prev_full_text = self._last_partial_text or ""
                 self._speculative = {
                     "segment_id": segment_id,
                     "text": text,
@@ -604,6 +915,7 @@ class WhisperEngine:
                     "duration": duration,
                 }
                 self._spec_partial_emitted = True
+                self._last_partial_text = text
                 msg = protocol.PartialTranscript(
                     segment_id=segment_id or "",
                     text=text,
@@ -617,45 +929,87 @@ class WhisperEngine:
         finally:
             self._decoding = False
 
-    def _take_speculative(self, segment_id: str | None) -> tuple | None:
-        spec = self._speculative
+    def _cleanup_segment(self) -> None:
+        """Reset per-segment decode state (all finalize paths share this)."""
         self._speculative = None
-        if spec is not None and spec.get("segment_id") == segment_id:
-            return spec["text"], spec["confidence"], spec["duration"]
-        return None
+        self._spec_partial_emitted = False
+        self._chunk_texts = []
+        self._last_partial_text = ""
+        self._prev_full_text = ""
+        with self._lock:
+            self._rolling = np.zeros(0, dtype=np.float32)
+
+    # Sentence-terminal punctuation (whisper emits it reliably on completed
+    # utterances; a mid-question VAD cut ends without any of these).
+    _TERMINAL_CHARS = (".", "?", "!", "…")
+
+    def is_utterance_complete(self) -> bool:
+        """LocalAgreement-style completeness check for the current segment.
+
+        An utterance is considered complete when either
+        (a) the latest full-buffer decode ends with terminal punctuation
+            («?», «.», «!», «…») — whisper punctuates finished sentences, or
+        (b) two consecutive decodes of the growing buffer produced the SAME
+            text of ≥3 words — a stabilized transcript during the silence
+            tail (LocalAgreement-2: agreement across decodes == confirmed).
+
+        The chunker consults this on the VAD ``end`` event: an incomplete
+        utterance (the interviewer paused mid-question) must NOT close the
+        segment — the pause is held open for the continuation.
+        """
+        text = (self._last_partial_text or "").strip()
+        if not text:
+            return True  # nothing decoded — nothing to hold open
+        if text.rstrip()[-1:] in self._TERMINAL_CHARS:
+            return True
+        prev = (self._prev_full_text or "").strip()
+        if prev and text == prev and len(text.split()) >= 3:
+            return True
+        return False
 
     def _finalize(self, audio: np.ndarray, segment_id: str | None) -> None:
         if self._model is None:
             return
         if len(audio) < int(self._sr * 0.25):
-            with self._lock:
-                self._rolling = np.zeros(0, dtype=np.float32)
-            self._speculative = None
+            self._cleanup_segment()
             return
-        cached = self._take_speculative(segment_id)
-        if cached is not None:
-            text, confidence, duration = cached
-            log.info("final transcript (end-ahead): %r", text)
-            msg = protocol.FinalTranscript(
-                segment_id=segment_id or "",
-                text=text,
-                start=0.0,
-                end=duration,
-                confidence=confidence,
-            )
-            if self.on_final:
-                self.on_final(msg)
-            with self._lock:
-                self._rolling = np.zeros(0, dtype=np.float32)
-            self._spec_partial_emitted = False
-            return
+        # Quality-first finalize normally re-decodes the complete segment (the
+        # speculative stop-hint cut can end mid-word). But when the speculative
+        # decode already covered the whole buffer (only the VAD silence tail
+        # was added since), re-decoding the identical audio is pure GPU waste:
+        # reuse the speculative result. The last partial stays the safety-net.
+        last_partial = self._last_partial_text if segment_id == self._segment_id else ""
+        spec = self._speculative
+        reusable = (
+            spec is not None
+            and spec.get("segment_id") == segment_id
+            and spec.get("text")
+            and len(audio) - spec.get("duration", 0.0) * self._sr
+            <= _SPECULATIVE_REUSE_MAX_DELTA_S * self._sr
+        )
+        self._speculative = None
         self._decoding = True
-        try:
-            text, confidence, duration = self._transcribe(
-                audio, kind="final", beam_size=self._cfg.final_beam_size
-            )
-            if text:
-                log.info("final transcript: %r", text)
+        if reusable:
+            try:
+                text = spec["text"]
+                confidence = spec.get("confidence")
+                duration = len(audio) / self._sr
+                text, ratio, replaced = reconcile_final_with_partial(text, last_partial)
+                if replaced:
+                    log.warning(
+                        "whisper: final decode lost content (final/partial ratio %.2f) — using last partial",
+                        ratio,
+                    )
+                if _has_trailing_latin_nonsense(text, self._text_matcher):
+                    log.warning(
+                        "stt: low-confidence final suppressed (trailing latin nonsense): %r",
+                        text[:80],
+                    )
+                    text = ""
+                if text:
+                    log.info(
+                        "whisper: final reused speculative (no re-decode): %r", text
+                    )
                 msg = protocol.FinalTranscript(
                     segment_id=segment_id or "",
                     text=text,
@@ -663,6 +1017,49 @@ class WhisperEngine:
                     end=duration,
                     confidence=confidence,
                 )
+                self._maybe_identify_speaker(msg, audio)
+                if self.on_final:
+                    self.on_final(msg)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("finalize (reuse) failed: %s", exc)
+                if self.on_error:
+                    self.on_error(f"whisper finalize failed: {exc}")
+            finally:
+                self._decoding = False
+                self._cleanup_segment()
+            return
+        try:
+            text, confidence, duration = self._decode_cached(
+                audio, kind="final", beam_size=self._cfg.final_beam_size
+            )
+            if text:
+                text, ratio, replaced = reconcile_final_with_partial(text, last_partial)
+                if replaced:
+                    log.warning(
+                        "whisper: final decode lost content (final/partial ratio %.2f) — using last partial",
+                        ratio,
+                    )
+                # Low-confidence guard: truncated Russian sentence glued to an
+                # invented Latin token («…что твой Mindfuls») is whisper
+                # covering for a quiet cut-off tail. Suppress the final so the
+                # garbage question never reaches the LLM; the interviewer will
+                # repeat/finish the question anyway.
+                if _has_trailing_latin_nonsense(text, self._text_matcher):
+                    log.warning(
+                        "stt: low-confidence final suppressed (trailing latin nonsense): %r",
+                        text[:80],
+                    )
+                    text = ""
+                if text:
+                    log.info("final transcript: %r", text)
+                msg = protocol.FinalTranscript(
+                    segment_id=segment_id or "",
+                    text=text,
+                    start=0.0,
+                    end=duration,
+                    confidence=confidence,
+                )
+                self._maybe_identify_speaker(msg, audio)
                 if self.on_final:
                     self.on_final(msg)
         except Exception as exc:  # noqa: BLE001
@@ -671,23 +1068,135 @@ class WhisperEngine:
                 self.on_error(f"whisper finalize failed: {exc}")
         finally:
             self._decoding = False
-            self._speculative = None
-            self._spec_partial_emitted = False
-            with self._lock:
-                self._rolling = np.zeros(0, dtype=np.float32)
+            self._cleanup_segment()
+
+    def _decode_cached(self, audio: np.ndarray, kind: str = "final", beam_size: int = 1):
+        """Decode with a stable-prefix chunk cache.
+
+        Splits the segment on a fixed grid (window 20 s, step 18 s — a 2 s
+        overlap). Chunks fully inside the already-decoded prefix are reused
+        from ``_chunk_texts``; only the not-yet-cached chunks are decoded.
+        The last (incomplete) chunk is never cached, so repeated stop-hint /
+        finalize decodes during one long monologue re-decode only the tail
+        instead of the whole buffer.
+        """
+        t0 = time.monotonic()
+        duration = len(audio) / self._sr
+        window = int(20.0 * self._sr)
+        step = int(18.0 * self._sr)
+        texts: list[str] = []
+        confidences: list[float] = []
+        idx = 0
+        start = 0
+        decoded_now = 0.0
+        while start < len(audio):
+            chunk = audio[start : start + window]
+            last = start + window >= len(audio)
+            if idx < len(self._chunk_texts):
+                texts.append(self._chunk_texts[idx])
+            elif len(chunk) > int(self._sr * 0.5) or (idx == 0 and last):
+                # Cross-chunk context: the previous chunk's tail gives the
+                # decoder the left-side wording, so terms split across the
+                # chunk boundary («...настраивал Zab|bix-агенты...») stay
+                # consistent. Kept SHORT (~20 words) to stay inside whisper's
+                # prompt budget on top of the hot-word prompt.
+                ctx_prompt = self._cfg.initial_prompt
+                prev_tail = ""
+                if idx > 0 and texts:
+                    prev_tail = " ".join(texts[-1].split()[-20:])
+                if prev_tail:
+                    ctx_prompt = (
+                        f"{prev_tail}. {ctx_prompt}" if ctx_prompt else f"{prev_tail}."
+                    )
+                piece, conf, _ = self._transcribe_chunk(
+                    chunk, kind=kind, beam_size=beam_size, prompt=ctx_prompt
+                )
+                decoded_now += len(chunk) / self._sr
+                if piece:
+                    texts.append(piece)
+                    if conf is not None:
+                        confidences.append(conf)
+                if not last:
+                    # Stable chunk (audio continues past it) — cache the text.
+                    while len(self._chunk_texts) <= idx:
+                        self._chunk_texts.append("")
+                    self._chunk_texts[idx] = piece
+            idx += 1
+            start += step
+        text = merge_chunk_texts(texts)
+        if self._text_matcher is not None and text:
+            corrected = self._text_matcher.normalize_text(text)
+            if corrected != text:
+                self._corrections += 1
+                log.info(
+                    "whisper: corrected (#%d) %r → %r",
+                    self._corrections, text, corrected,
+                )
+                text = corrected
+        confidence = float(np.mean(confidences)) if confidences else None
+        elapsed = time.monotonic() - t0
+        # Track the last decoded buffer size: a stop_hint without new audio
+        # since this point re-decodes the identical buffer (GPU waste).
+        self._decoded_audio_len = len(audio)
+        log.info(
+            "whisper: %s decoded %.2fs of audio in %.2fs (cached %d chunks, fresh %.2fs)",
+            kind, duration, elapsed, len(self._chunk_texts), decoded_now,
+        )
+        return text, confidence, duration
+
+    def _transcribe_chunk(
+        self,
+        audio: np.ndarray,
+        kind: str = "decode",
+        beam_size: int = 1,
+        prompt: str | None = None,
+    ):
+        """``_transcribe`` with a per-call initial_prompt override.
+
+        Used by the chunk decoder to prepend the previous chunk's tail
+        (cross-chunk context) on top of the hot-word prompt.
+        """
+        saved = self._cfg.initial_prompt
+        try:
+            if prompt is not None:
+                self._cfg.initial_prompt = prompt
+            return self._transcribe(audio, kind=kind, beam_size=beam_size)
+        finally:
+            self._cfg.initial_prompt = saved
 
     def _transcribe(self, audio: np.ndarray, kind: str = "decode", beam_size: int = 1):
         # Reuse the language detected on the first decode instead of re-detecting
         # on every partial/final pass (~a second+ each on CPU).
         language = self._cfg.language or self._detected_language
+        # The hot-word prompt is only used where quality matters (speculative
+        # stop-hint and final passes). On the frequent rolling partial decodes
+        # it inflated prefill 4-10x (0.5 s audio decoded in 3.8-5 s) for no
+        # benefit — partials exist to trigger early answering, and the final
+        # pass re-decodes the segment with the prompt anyway.
+        prompt = self._cfg.initial_prompt if kind != "partial" else None
+        # Decoder-level term bias (faster-whisper ``hotwords=``): the compact
+        # priority/session/topic list gets extra probability mass during beam
+        # search, complementing initial_prompt. Final/speculative passes only
+        # (same cost rationale as the prompt above).
+        hotwords = None
+        if kind != "partial":
+            hw = getattr(self._cfg, "hotwords_param", None)
+            if hw:
+                hotwords = hw
+        # VAD-filter the final/speculative decodes: trailing silence in the
+        # segment buffer is the main source of whisper hallucinations (SLO /
+        # NAUMEN-style phantom terms on quiet tails). Partials skip it — they
+        # feed on already VAD-gated audio and the filter adds latency.
+        vad_filter = kind != "partial"
         t0 = time.monotonic()
         segments, info = self._model.transcribe(
             audio,
             beam_size=beam_size,
             language=language,
             condition_on_previous_text=False,
-            vad_filter=False,
-            initial_prompt=self._cfg.initial_prompt,
+            vad_filter=vad_filter,
+            initial_prompt=prompt,
+            hotwords=hotwords,
         )
         pieces = []
         probs = []
@@ -695,6 +1204,31 @@ class WhisperEngine:
             pieces.append(seg.text)
             probs.append(seg.avg_logprob)
         text = "".join(pieces).strip()
+        text = _dedupe_repeated_words(text)
+        if _looks_like_hallucination(text):
+            log.warning("whisper: hallucination guard tripped on %r", text[:80])
+            text = ""
+        # Post-STT correction runs on final/speculative passes only: partials
+        # are UI drafts re-decoded moments later, and normalize_text on every
+        # 250 ms partial adds pure latency to the decode loop for text the
+        # final pass rewrites anyway.
+        if self._text_matcher is not None and kind != "partial":
+            corrected = self._text_matcher.normalize_text(text)
+            if corrected != text:
+                self._corrections += 1
+                log.info(
+                    "whisper: corrected (#%d) %r → %r",
+                    self._corrections, text, corrected,
+                )
+                text = corrected
+        elif self._text_matcher is not None and kind == "partial":
+            # Cheap Latin-only fuzzy fix for UI drafts: a mangled Latin term
+            # («Zabix») looks broken in the live transcript even though the
+            # final pass will correct it. Resolve ONLY Latin tokens (rare in
+            # Russian speech, 1-2 per partial) through the matcher's fuzzy
+            # resolver — full normalize_text on Cyrillic text is the expensive
+            # path we deliberately skip for partials.
+            text = _fuzzy_fix_latin_partial(text, self._text_matcher)
         confidence = float(np.mean(probs)) if probs else None
         if self._detected_language is None:
             detected = getattr(info, "language", None)
@@ -702,7 +1236,6 @@ class WhisperEngine:
                 self._detected_language = detected
                 log.info("whisper: cached detected language %s", detected)
         elapsed = time.monotonic() - t0
-        prompt = self._cfg.initial_prompt or ""
         log.info(
             "whisper: %s decoded %.2fs of audio in %.2fs (lang=%s, beam=%d, prompt=%d words)",
             kind,
@@ -710,6 +1243,6 @@ class WhisperEngine:
             elapsed,
             language or "auto",
             beam_size,
-            len(prompt.split()),
+            len((prompt or "").split()),
         )
         return text, confidence, info.duration

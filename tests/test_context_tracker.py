@@ -234,6 +234,106 @@ def test_engine_does_not_emit_duplicate_previews():
     assert len(previews) == 1
 
 
+class _StreamingEngineLlm:
+    available = True
+
+    def __init__(self, streaming):
+        self._streaming = streaming
+
+    @property
+    def is_streaming(self):
+        return self._streaming
+
+
+def _shifted_state(topic="kubernetes"):
+    return protocol.DiscussionState(topic=topic, shifted=True, confident=True)
+
+
+def test_engine_suppresses_preview_while_answer_streaming():
+    engine = InterviewEngine(_matcher(), InterviewConfig(), llm=_StreamingEngineLlm(True))
+    answers = []
+    engine.on_answer = answers.append
+    engine._on_tracker_state(_shifted_state())
+    assert not [v for v in answers if v.preview]
+
+
+def test_engine_suppresses_preview_right_after_answer():
+    engine = InterviewEngine(_matcher(), InterviewConfig(), llm=_StreamingEngineLlm(False))
+    engine._last_answer_ts = time.monotonic()  # answer just delivered
+    answers = []
+    engine.on_answer = answers.append
+    engine._on_tracker_state(_shifted_state())
+    assert not [v for v in answers if v.preview]
+
+
+def test_engine_emits_preview_when_answer_stale():
+    engine = InterviewEngine(_matcher(), InterviewConfig(), llm=_StreamingEngineLlm(False))
+    engine._last_answer_ts = 0.0  # no recent answer
+    answers = []
+    engine.on_answer = answers.append
+    engine._on_tracker_state(_shifted_state())
+    previews = [v for v in answers if v.preview]
+    assert previews
+    assert previews[0].topic == "kubernetes"
+
+
+def test_engine_suppresses_topical_fallback_while_answer_streaming():
+    engine = InterviewEngine(_matcher(), InterviewConfig(), llm=_StreamingEngineLlm(True))
+    answers = []
+    engine.on_answer = answers.append
+    engine._emit_topical_fallback("про docker поговорим", _final("про docker поговорим"))
+    assert not [v for v in answers if v.preview]
+
+
+def test_engine_suppresses_topical_fallback_right_after_answer():
+    engine = InterviewEngine(_matcher(), InterviewConfig(), llm=_StreamingEngineLlm(False))
+    engine._last_answer_ts = time.monotonic()
+    answers = []
+    engine.on_answer = answers.append
+    engine._emit_topical_fallback("про docker поговорим", _final("про docker поговорим"))
+    assert not [v for v in answers if v.preview]
+
+
+def test_engine_mode_lock_consistent_under_concurrent_writes():
+    """Reader thread always sees a value that some writer has actually set.
+
+    Without the lock, a torn read could observe a half-updated string
+    while another thread is between assignments; with the lock in
+    place, reads/writes are serialised and values are well-defined.
+    """
+    import threading
+
+    engine = InterviewEngine(_matcher(), InterviewConfig())
+    modes = ["technical", "personal", "mixed", "behavioral"]
+    stop = threading.Event()
+    reads = []
+
+    def writer():
+        while not stop.is_set():
+            with engine._mode_lock:
+                engine._current_answer_mode = modes[len(reads) % len(modes)]
+
+    def reader():
+        while not stop.is_set():
+            with engine._mode_lock:
+                reads.append(engine._current_answer_mode)
+
+    w = threading.Thread(target=writer, daemon=True)
+    r = threading.Thread(target=reader, daemon=True)
+    w.start()
+    r.start()
+    time.sleep(0.2)
+    stop.set()
+    w.join(timeout=1.0)
+    r.join(timeout=1.0)
+    # Every read value must come from the writer's set, i.e. one of the modes.
+    assert reads
+    assert all(v in modes for v in reads)
+    # The reader observed multiple distinct values (proves writes happened
+    # while reads were in flight) — otherwise the lock would be a no-op.
+    assert len(set(reads)) > 1
+
+
 def test_engine_pronoun_question_resolves_offline():
     engine = InterviewEngine(_matcher(), InterviewConfig())
     engine._process(_final("давай поговорим про k8s"))

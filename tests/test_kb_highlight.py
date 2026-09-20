@@ -86,3 +86,24 @@ def test_render_highlighted_html_overlap_skipped():
 def test_render_highlighted_html_newlines_kept():
     out = render_highlighted_html("a\nb", [(0, 1)])
     assert "<br/>" in out
+
+
+def test_highlight_resolve_memoization():
+    """highlight_resolve should cache results so repeated calls are fast."""
+    index = KbIndex(load_topics())
+    # First call computes and caches.
+    r1 = index.highlight_resolve("Kubernetes")
+    # Second call returns the cached value (same result).
+    r2 = index.highlight_resolve("Kubernetes")
+    assert r1 == r2
+    assert r1 is not None
+    # The cache should have an entry for the token.
+    assert "Kubernetes" in index._resolve_cache
+
+
+def test_highlight_resolve_memoization_none():
+    """Non-matching tokens should also be cached (as None)."""
+    index = KbIndex(load_topics())
+    assert index.highlight_resolve("зззззз") is None
+    assert "зззззз" in index._resolve_cache
+    assert index._resolve_cache["зззззз"] is None

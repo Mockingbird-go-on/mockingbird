@@ -8,11 +8,11 @@ audio:
 vad:
   threshold: 0.5
   min_speech_ms: 250
-  min_silence_ms: 1000
-  stop_hint_delay_ms: 240
+  min_silence_ms: 700
+  stop_hint_delay_ms: 180
   model_path: null
 stt:
-  backend: gigaam
+  backend: whisper
   end_ahead: true
   mic_backend: whisper
   mic_model_size: base
@@ -26,12 +26,12 @@ gigaam:
   window_seconds: 3.5
   partial_interval_ms: 250
 whisper:
-  model_size: small
+  model_size: large-v3-turbo
   device: auto
-  compute_type: int8
+  compute_type: float32
   beam_size: 1
   final_beam_size: 1
-  language: null
+  language: ru
   window_seconds: 3.5
   partial_interval_ms: 250
   model_dir: null
@@ -40,6 +40,11 @@ llm:
   api_key: null
   model: gpt-4o-mini
   timeout_s: 20.0
+  failover_enabled: false
+  failover_base_url: null
+  failover_api_key: null
+  failover_model: null
+  failover_hedge_s: 2.0
 terms:
   explanation_language: ru
   llm_fallback: true
@@ -48,12 +53,7 @@ terms:
   cache_ttl_days: 30
   max_terms_per_segment: 5
   glossary_path: null
-topics:
-  enabled: false
-  llm_primary: true
-  debounce_s: 3.0
-  max_topics: 8
-  max_questions_per_topic: 4
+  llm_min_chars: 40
 interview:
   enabled: true
   kb_path: null
@@ -65,8 +65,6 @@ interview:
   cooldown_s: 20.0
   subject_llm: true
   answer_llm: true
-  predict_llm: true
-  predict_cooldown_s: 20.0
   max_next: 5
   context_tracker_llm: true
   context_refresh_s: 5.0

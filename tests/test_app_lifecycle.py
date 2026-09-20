@@ -121,10 +121,8 @@ def test_save_settings_roundtrip(app_instance, tmp_path):
 
 
 def test_save_settings_persists_window_flags(app_instance):
-    app_instance.config.window.simple_mode = True
     app_instance.config.window.hide_from_capture = True
     app_instance.save_settings()
-    assert app_instance.store.get_setting("window.simple_mode") == "1"
     assert app_instance.store.get_setting("window.hide_from_capture") == "1"
 
 
