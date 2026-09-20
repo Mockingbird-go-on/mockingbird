@@ -1,6 +1,6 @@
 """Phonetic matching helpers: RU->EN transliteration and fuzzy term lookup.
 
-STT backends (GigaAM and whisper) transcribe English technical terms as
+STT backends (whisper) transcribe English technical terms as
 Russian phonetic renderings ("кубернетес" instead of "kubernetes"). The
 bundled glossary and KB index only match exact spellings/aliases, so any
 variant that was not hand-written is lost. This module bridges the gap by
@@ -248,7 +248,7 @@ class PhoneticMatcher:
         self._multiword_surfaces: list[str] = []
         self._multiword_terms: list[str] = []
         # Consonant-skeleton fallback: Latin-sourced surfaces collapsed to
-        # their consonant keys (vowels dropped, c→s) — recovers terms GigaAM
+        # their consonant keys (vowels dropped, c→s) — recovers terms whisper
         # rendered with the vowels eaten («argocd» → «ргсд»).
         self._consonant_surfaces: list[str] = []
         self._consonant_terms: list[str] = []
@@ -356,7 +356,7 @@ class PhoneticMatcher:
 
         Vowels are dropped and ``c`` is normalized to ``s`` so the vowel-less
         Russian rendering «ргсд» (fold "rgsd") collapses to the same key as
-        «argocd» (fold "argocd" → "rgcd" → "rgsd"). GigaAM has no hot-word
+        «argocd» (fold "argocd" → "rgcd" → "rgsd").
         prompt and often drops vowels from foreign terms, so this is the
         primary recovery path for them.
         """
@@ -468,7 +468,7 @@ class PhoneticMatcher:
 
         KB keywords never reach the glossary YAML, yet the interviewer says
         them just as often — without this the post-STT correction only knows
-        glossary terms (which matters most for GigaAM, where hotword prompts
+        glossary terms (decoder-level hotword bias covers
         are impossible). Multi-word terms land in the bigram index, short ones
         in the acronym dict, the rest in the fuzzy surfaces.
         """
@@ -767,7 +767,7 @@ class PhoneticMatcher:
     def _resolve_consonant(self, folded: str) -> tuple[str, float] | None:
         """Last-resort match on the consonant skeleton (vowels dropped, c→s).
 
-        GigaAM frequently drops the vowels of foreign terms («argocd» →
+        whisper occasionally drops the vowels of foreign terms («argocd» →
         «ргсд»), which classic edit distance cannot match (fold "rgsd" vs
         "argocd" = 0.5). The consonant skeleton makes them collide ("rgsd").
 

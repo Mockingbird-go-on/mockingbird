@@ -13,7 +13,6 @@
 # GPU (CUDA) is the DEFAULT build and needs an NVIDIA driver >= 550 and a
 # CUDA-capable GPU. Pass -Cpu to produce a smaller CPU-only exe instead.
 param(
-    [switch]$Cpu,
     # Also build the Inno Setup installer (requires ISCC.exe on PATH or in
     # the default Program Files location). The PyInstaller dist\ outputs
     # must already exist — this script builds them first anyway.
@@ -47,44 +46,26 @@ if ($LASTEXITCODE -ne 0) {
     throw "pip upgrade failed with exit code $LASTEXITCODE."
 }
 
-# Baseline install (deps as declared; on GPU builds we override torch below so
-# the final state is the CUDA one regardless of resolver order).
-Invoke-Pip -Arguments @("install", "-e", ".[gigaam,dev]")
+# Baseline install.
+Invoke-Pip -Arguments @("install", "-e", ".[dev]")
 Invoke-Pip -Arguments @("install", "pyinstaller")
 
-if ($Cpu) {
-    Write-Host ">>> Building CPU-only variant"
-    # Prefer the CPU-only wheels on Windows to keep the install smaller.
-    Invoke-Pip -Arguments @("install", "torch", "torchaudio", "--index-url", "https://download.pytorch.org/whl/cpu")
+# cuDNN 9: CTranslate2 needs it for float16/int8_float16 on CUDA; without
+# it get_supported_compute_types('cuda') only offers float32 and whisper
+# runs 2x slower. The pip wheel is found by ctranslate2 at runtime.
+Invoke-Pip -Arguments @("install", "nvidia-cudnn-cu12")
+# faster-whisper's ctranslate2 wheel from PyPI already ships CUDA 12 GPU
+# support on Windows; there is no separate -cu12 package to install.
+# Verify the installed binary can see the GPU so GPU inference really works.
+$ct2Devices = python -c "import ctranslate2; print(ctranslate2.get_cuda_device_count())" 2>$null
+if ($LASTEXITCODE -ne 0 -or $ct2Devices -notmatch '^\d+$') {
+    Write-Host "WARNING: could not probe ctranslate2 CUDA support (is faster-whisper installed?)."
+    Write-Host "        faster-whisper will fall back to CPU."
+} elseif ([int]$ct2Devices -eq 0) {
+    Write-Host "NOTE: ctranslate2 reports 0 CUDA devices on this machine."
+    Write-Host "      faster-whisper will run on CPU here."
 } else {
-    Write-Host '>>> Building GPU (CUDA 12.4) variant, needs NVIDIA driver 550 or newer'
-    # CUDA build of torch/torchaudio (GTX 1070 = Pascal sm_61 is supported).
-    Invoke-Pip -Arguments @("install", "--force-reinstall", "torch", "torchaudio", "--index-url", "https://download.pytorch.org/whl/cu124")
-    # cuDNN 9: CTranslate2 needs it for float16/int8_float16 on CUDA; without
-    # it get_supported_compute_types('cuda') only offers float32 and whisper
-    # runs 2x slower. The pip wheel is found by ctranslate2 at runtime.
-    Invoke-Pip -Arguments @("install", "nvidia-cudnn-cu12")
-    # faster-whisper's ctranslate2 wheel from PyPI already ships CUDA 12 GPU
-    # support on Windows; there is no separate -cu12 package to install.
-    # Verify the installed binary can see the GPU so GPU inference really works.
-    $ct2Devices = python -c "import ctranslate2; print(ctranslate2.get_cuda_device_count())" 2>$null
-    if ($LASTEXITCODE -ne 0 -or $ct2Devices -notmatch '^\d+$') {
-        Write-Host "WARNING: could not probe ctranslate2 CUDA support (is faster-whisper installed?)."
-        Write-Host "        faster-whisper will fall back to CPU; GigaAM still uses torch CUDA."
-    } elseif ([int]$ct2Devices -eq 0) {
-        Write-Host "NOTE: ctranslate2 reports 0 CUDA devices on this machine."
-        Write-Host "      faster-whisper will run on CPU here; GigaAM still uses torch CUDA."
-    } else {
-        Write-Host "ctranslate2 sees $ct2Devices CUDA device(s); faster-whisper GPU inference enabled."
-    }
-}
-
-# Fix a known torch + PyInstaller issue on Python 3.12 (NameError in
-# torch/_numpy/_ufuncs.py) by patching the installed torch source in place, so
-# PyInstaller freezes the corrected bytecode. Idempotent; see the script.
-python scripts\patch_torch_sources.py
-if ($LASTEXITCODE -ne 0) {
-    throw "Failed to patch torch sources. See error above."
+    Write-Host "ctranslate2 sees $ct2Devices CUDA device(s); faster-whisper GPU inference enabled."
 }
 
 # Whisper models are downloaded at first run, not bundled.
@@ -121,8 +102,4 @@ if ($Installer) {
     }
     Write-Host ""
     Write-Host "Installer complete: installer\"
-}
-if (-not $Cpu) {
-    Write-Host 'GPU build: the target machine needs an NVIDIA driver 550 or newer (and a CUDA-capable GPU).'
-    Write-Host 'If CUDA is missing the app falls back to CPU automatically.'
 }

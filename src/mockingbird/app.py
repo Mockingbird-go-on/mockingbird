@@ -155,7 +155,7 @@ class App:
         return related_topic_ids(self.kb_topics, active_topic, max_topics)
 
     def _rebuild_hotwords(self, active_topic: str | None = None) -> None:
-        """Feed glossary/KB terms to whisper's initial_prompt (gigaam ignores it).
+        """Feed glossary/KB terms to whisper's initial_prompt.
 
         The engine reads ``config.whisper.initial_prompt`` at decode time from
         the shared config object, so assigning here (after glossary/KB load,
@@ -233,8 +233,8 @@ class App:
 
         The matcher (post-STT correction of «кубернетес» → Kubernetes) is
         built from the glossary only; KB keywords reach whisper through
-        hot-words but GigaAM has no prompt hook at all — extending the matcher
-        is the only way those terms get corrected there.
+        hot-words, but the decoder-level bias does not cover every surface
+        form — extending the matcher is the safety net for those terms.
         """
         from mockingbird.terms.phonetics import word_tokens
 
@@ -870,8 +870,6 @@ class App:
             "whisper.beam_size",
             "whisper.final_beam_size",
             "whisper.language",
-            "gigaam.revision",
-            "gigaam.device",
             "llm.base_url",
             "llm.api_key",
             "llm.model",

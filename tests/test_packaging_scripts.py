@@ -86,7 +86,6 @@ def test_linux_spec_keeps_shared_core():
     spec = _read("mockingbird_linux.spec")
     for fragment in (
         "sound.mp3",
-        "pyannote",
         "PySide6.QtSvg",
         "faster_whisper",
         "sounddevice",
@@ -94,6 +93,16 @@ def test_linux_spec_keeps_shared_core():
         assert fragment in spec, fragment
     # Windows-only CUDA flattening must not leak into the Linux spec.
     assert "_flat_nvidia_libs" not in spec
+
+
+def test_specs_no_gigaam_leftovers():
+    """GigaAM was removed: specs must not bundle pyannote or torch anymore."""
+    for name in ("mockingbird.spec", "mockingbird_linux.spec"):
+        spec = _read(name)
+        assert "pyannote" not in spec, name
+        assert '_collect_optional("torch")' not in spec, name
+        assert "collect_submodules(\"torch\")" not in spec, name
+        assert "vendor" not in spec, name
 
 
 def test_linux_spec_two_exes_one_collect():

@@ -34,25 +34,6 @@ def _find_project_root(start: str) -> str:
 _ROOT = _find_project_root(SPECPATH)
 _ENTRY = os.path.join(_ROOT, "src", "mockingbird", "main.py")
 _SRC = os.path.join(_ROOT, "src")
-_VENDOR = os.path.join(_ROOT, "vendor")
-
-_pyannote_modules = []
-try:
-    _pyannote_modules = (
-        collect_submodules("pyannote")
-        + collect_submodules("pyannote.audio")
-        + collect_submodules("speechbrain")
-    )
-except Exception:
-    pass
-
-_vendor_datas = []
-_vendor_hidden = []
-_vendor_pathex = []
-if not _pyannote_modules:
-    _vendor_datas = [(os.path.join(_VENDOR, "pyannote"), "pyannote")]
-    _vendor_hidden = ["pyannote"]
-    _vendor_pathex = [_VENDOR]
 
 datas = (
     collect_data_files("mockingbird")
@@ -63,7 +44,6 @@ datas = (
     + collect_data_files("ctranslate2")
     + collect_data_files("transformers")
     + collect_data_files("tokenizers")
-    + _vendor_datas
 )
 
 
@@ -78,7 +58,6 @@ binaries = (
     collect_dynamic_libs("ctranslate2")
     + collect_dynamic_libs("onnxruntime")
     + collect_dynamic_libs("sentencepiece")
-    + _collect_optional("torch")
 )
 
 hiddenimports = (
@@ -93,8 +72,6 @@ hiddenimports = (
     + collect_submodules("sentencepiece")
     + collect_submodules("hydra")
     + collect_submodules("omegaconf")
-    + _pyannote_modules
-    + _vendor_hidden
     + [
         "PySide6.QtSvg",
         # Linux windowing: Qt 6.7+ splits xcb/wayland into plugins that
@@ -105,7 +82,7 @@ hiddenimports = (
 
 a = Analysis(
     [_ENTRY],
-    pathex=[_SRC] + _vendor_pathex,
+    pathex=[_SRC],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,

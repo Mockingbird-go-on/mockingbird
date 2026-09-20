@@ -125,37 +125,6 @@ def _set_app_user_model_id() -> None:
         pass
 
 
-def _ensure_vendor_on_path() -> None:
-    """Add vendor/ to sys.path so the stub ``pyannote`` is importable.
-
-    GigaAM's remote modeling file imports ``pyannote`` top-level; transformers'
-    ``check_imports`` requires the package to exist even though the app never
-    calls ``transcribe_longform``. If the real ``pyannote.audio`` is installed
-    (diarization feature), it takes precedence and the stub is skipped.
-    """
-    if getattr(sys, "frozen", False):
-        return  # spec handles bundling
-    import importlib.util
-    # Only skip the stub if the *real* pyannote.audio package is installed.
-    try:
-        _has_real_pyannote = importlib.util.find_spec("pyannote.audio") is not None
-    except (ImportError, ModuleNotFoundError, ValueError):
-        _has_real_pyannote = False
-    if _has_real_pyannote:
-        return
-    here = os.path.dirname(os.path.abspath(__file__))
-    vendor = os.path.normpath(os.path.join(here, "..", "..", "vendor"))
-    if os.path.isdir(vendor) and vendor not in sys.path:
-        sys.path.insert(0, vendor)
-    # Also purge any stale partial pyannote from sys.modules so the stub
-    # is used instead of a half-loaded namespace.
-    for key in list(sys.modules):
-        if key == "pyannote" or key.startswith("pyannote."):
-            mod = sys.modules.pop(key, None)
-            if mod is not None:
-                del mod
-
-
 def _resolve_icon_path() -> str | None:
     """Locate ``logo_mockingbird.ico`` in dev and frozen (PyInstaller) modes."""
     candidates: list[str] = []
@@ -179,7 +148,6 @@ def _resolve_icon_path() -> str | None:
 
 
 def main() -> int:
-    _ensure_vendor_on_path()
     _harden_hf_symlinks()
     _set_app_user_model_id()
     if "--cli" in sys.argv:
@@ -224,12 +192,7 @@ def main() -> int:
             # torch/transformers here warms the module cache for the STT engine
             # and run_system_checks that run later on the GUI thread.
             try:
-                backend = (config.stt.backend or "gigaam").lower()
-                if backend == "gigaam":
-                    import transformers  # noqa: F401
-                    import torch  # noqa: F401
-                else:
-                    import faster_whisper  # noqa: F401
+                import faster_whisper  # noqa: F401
             except Exception:
                 pass
             topics = load_topics(config.interview.kb_path)

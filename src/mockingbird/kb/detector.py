@@ -126,7 +126,7 @@ _DEPENDENT_TAIL_RE = re.compile(
 
 _SENT_SPLIT = re.compile(r"[.!?…\n]+")
 
-# ASR-tolerant forms of «расскажи» / «расскажите»: faster-whisper and GigaAM
+# ASR-tolerant forms of «расскажи» / «расскажите»: faster-whisper
 # sometimes clip the first syllable under background noise, producing «кажи»,
 # «кажи про», «кажите». The lookbehind ensures we only match the clipped form
 # (i.e. NOT preceded by «рас»), so a clean «расскажи» does not double-match.

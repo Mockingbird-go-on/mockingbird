@@ -29,29 +29,7 @@ def _find_project_root(start: str) -> str:
 _ROOT = _find_project_root(SPECPATH)
 _ENTRY = os.path.join(_ROOT, "src", "mockingbird", "main.py")
 _SRC = os.path.join(_ROOT, "src")
-_VENDOR = os.path.join(_ROOT, "vendor")
 _ICON = os.path.join(SPECPATH, "logo_mockingbird.ico")
-
-# If pyannote.audio is installed, collect it; otherwise fall back to the
-# vendor stub so GigaAM's check_imports still passes.
-_pyannote_modules = []
-try:
-    _pyannote_modules = (
-        collect_submodules("pyannote")
-        + collect_submodules("pyannote.audio")
-        + collect_submodules("speechbrain")
-    )
-except Exception:
-    pass
-
-_vendor_datas = []
-_vendor_hidden = []
-_vendor_pathex = []
-if not _pyannote_modules:
-    # No real pyannote.audio — use the vendor stub.
-    _vendor_datas = [(os.path.join(_VENDOR, "pyannote"), "pyannote")]
-    _vendor_hidden = ["pyannote"]
-    _vendor_pathex = [_VENDOR]
 
 datas = (
     collect_data_files("mockingbird")
@@ -63,7 +41,6 @@ datas = (
     + collect_data_files("ctranslate2")
     + collect_data_files("transformers")
     + collect_data_files("tokenizers")
-    + _vendor_datas
 )
 
 def _collect_optional(name: str):
@@ -121,7 +98,6 @@ _base_binaries = (
     # cuDNN/cuBLAS/etc. live in the nvidia-* wheels and are picked up by
     # PyInstaller's nvidia hooks; the guarded collections below are a fallback
     # for any lib the hooks miss on GPU builds (and are no-ops on CPU builds).
-    + _collect_optional("torch")
     + _collect_optional("nvidia.cudnn")
     + _collect_optional("nvidia.cublas")
     + _collect_optional("nvidia.cufft")
@@ -153,14 +129,12 @@ hiddenimports = (
     + collect_submodules("sentencepiece")
     + collect_submodules("hydra")
     + collect_submodules("omegaconf")
-    + _pyannote_modules
-    + _vendor_hidden
     + ["PySide6.QtSvg"]
 )
 
 a = Analysis(
     [_ENTRY],
-    pathex=[_SRC] + _vendor_pathex,
+    pathex=[_SRC],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
