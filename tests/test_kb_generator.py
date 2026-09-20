@@ -277,7 +277,7 @@ class FakeLlm:
         self._texts = texts
         self.calls = 0
 
-    def generate_kb_topics(self, chunk, max_topics=5, max_blocks=24, temperature=0.3, max_tokens=3000):
+    def generate_kb_topics(self, chunk, max_topics=5, max_blocks=24, temperature=0.3, max_tokens=3000, context_hint=""):
         self.calls += 1
         text = self._texts[min(self.calls - 1, len(self._texts) - 1)]
         return [
@@ -311,7 +311,7 @@ def test_generator_merges_all_chunks():
 
 def test_generator_handles_empty_llm_output():
     class EmptyLlm(FakeLlm):
-        def generate_kb_topics(self, chunk, max_topics=5, max_blocks=24, temperature=0.3, max_tokens=3000):
+        def generate_kb_topics(self, chunk, max_topics=5, max_blocks=24, temperature=0.3, max_tokens=3000, context_hint=""):
             self.calls += 1
             return []
 

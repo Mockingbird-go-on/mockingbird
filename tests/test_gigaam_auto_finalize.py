@@ -27,7 +27,8 @@ def _make_engine():
     eng._queue = _queue.Queue()
     eng._lock = threading.Lock()
     eng._sr = 16000
-    eng._rolling = np.zeros(0, dtype=np.float32)
+    # Auto-finalize only fires when the rolling buffer is non-empty.
+    eng._rolling = np.zeros(16000, dtype=np.float32)
     eng._segment_id = "seg-test"
     eng._speculative = {"text": "test partial"}  # simulate buffered partial
     eng.on_ready = None
@@ -46,9 +47,9 @@ def test_run_auto_finalizes_when_queue_stalls_with_speculative():
     eng._finalize = fake_finalize
     eng._load_model = MagicMock()  # bypass heavy model load
 
-    # Run the worker in a thread; stop after it has had a chance to auto-finalize.
+    # The auto-finalize timeout is 5 s; give the worker a bit more, then stop.
     def stop_after_delay():
-        time.sleep(0.7)
+        time.sleep(6.0)
         eng._queue.put((ge._CMD_STOP, None))
 
     threading.Thread(target=stop_after_delay, daemon=True).start()

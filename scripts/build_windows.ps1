@@ -13,7 +13,11 @@
 # GPU (CUDA) is the DEFAULT build and needs an NVIDIA driver >= 550 and a
 # CUDA-capable GPU. Pass -Cpu to produce a smaller CPU-only exe instead.
 param(
-    [switch]$Cpu
+    [switch]$Cpu,
+    # Also build the Inno Setup installer (requires ISCC.exe on PATH or in
+    # the default Program Files location). The PyInstaller dist\ outputs
+    # must already exist — this script builds them first anyway.
+    [switch]$Installer
 )
 $ErrorActionPreference = "Stop"
 
@@ -95,6 +99,29 @@ if (-not (Test-Path "dist\mockingbird\mockingbird.exe")) {
 Write-Host ""
 Write-Host "Build complete: dist\mockingbird\"
 Write-Host "Run: dist\mockingbird\mockingbird.exe"
+
+# --- Optional: Inno Setup installer ----------------------------------------
+if ($Installer) {
+    $iscc = Get-Command "ISCC.exe" -ErrorAction SilentlyContinue
+    if (-not $iscc) {
+        $candidates = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+        )
+        $found = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+        if ($found) { $iscc = $found } else {
+            throw "Inno Setup compiler (ISCC.exe) not found. Install Inno Setup 6 (https://jrsoftware.org/isdl.php) or omit -Installer."
+        }
+    } else { $iscc = $iscc.Source }
+
+    New-Item -ItemType Directory -Force -Path "installer" | Out-Null
+    & $iscc "scripts\installer.iss"
+    if ($LASTEXITCODE -ne 0) {
+        throw "Inno Setup failed with exit code $LASTEXITCODE."
+    }
+    Write-Host ""
+    Write-Host "Installer complete: installer\"
+}
 if (-not $Cpu) {
     Write-Host 'GPU build: the target machine needs an NVIDIA driver 550 or newer (and a CUDA-capable GPU).'
     Write-Host 'If CUDA is missing the app falls back to CPU automatically.'

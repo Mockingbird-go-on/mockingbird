@@ -906,6 +906,11 @@ class WhisperEngine:
             text, confidence, duration = self._decode_cached(
                 audio, kind="speculative", beam_size=self._cfg.final_beam_size
             )
+            # Record the decoded length in BOTH branches so the no-new-audio
+            # guard (len(audio) == self._decoded_audio_len) also holds for
+            # short buffers — otherwise every re-fired hint re-decodes the
+            # same 2-second tail.
+            self._decoded_audio_len = len(audio)
             if text:
                 self._prev_full_text = self._last_partial_text or ""
                 self._speculative = {
