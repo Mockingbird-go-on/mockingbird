@@ -349,7 +349,7 @@ class SettingsDialog(QDialog):
         self._profiles_btn.clicked.connect(self._open_profiles_editor)
 
         # === Build tabbed layout ===
-        from PySide6.QtWidgets import QTabWidget, QPushButton, QFileDialog, QMessageBox
+        from PySide6.QtWidgets import QTabWidget, QFileDialog, QMessageBox
 
         tabs = QTabWidget()
 

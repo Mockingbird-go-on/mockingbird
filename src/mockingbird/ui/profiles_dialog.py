@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QComboBox,
     QDialog,
     QFileDialog,
     QFormLayout,
@@ -167,12 +166,14 @@ class ProfilesDialog(QDialog):
         pid = self._prompt_id()
         if not pid:
             return
+        if not self._check_no_collision(pid):
+            return
         prof = Profile(
             id=pid,
             title=pid.capitalize(),
-            persona=f"специалист с 5-летним опытом",
-            persona_senior=f"специалист 6+ лет",
-            stack="",
+            persona="специалист с 5-летним опытом",
+            persona_senior="специалист 6+ лет",
+            stack="укажите стек технологий",
         )
         save_profile(prof)
         self._reload(select_id=pid)
@@ -184,6 +185,8 @@ class ProfilesDialog(QDialog):
             return
         pid = self._prompt_id(default=f"{prof.id}-copy")
         if not pid:
+            return
+        if not self._check_no_collision(pid):
             return
         copy = Profile(
             id=pid,
@@ -197,6 +200,17 @@ class ProfilesDialog(QDialog):
         save_profile(copy)
         self._reload(select_id=pid)
         self.profile_changed = True
+
+    def _check_no_collision(self, pid: str) -> bool:
+        existing = load_profiles()
+        if pid in existing:
+            QMessageBox.warning(
+                self,
+                "Профиль",
+                f"Профиль с id «{pid}» уже существует ({existing[pid].title}).",
+            )
+            return False
+        return True
 
     def _prompt_id(self, default: str = "") -> str:
         from PySide6.QtWidgets import QInputDialog
@@ -229,21 +243,24 @@ class ProfilesDialog(QDialog):
         prof = self._current()
         if prof is None or not prof.user_defined:
             return
-        prof.title = self._title.text().strip() or prof.id
-        prof.persona = self._persona.toPlainText().strip()
-        prof.persona_senior = self._persona_senior.toPlainText().strip()
-        prof.stack = self._stack.toPlainText().strip()
-        prof.glossary = self._glossary.text().strip() or None
-        if not (prof.persona and prof.persona_senior and prof.stack):
+        title = self._title.text().strip() or prof.id
+        persona = self._persona.toPlainText().strip()
+        persona_senior = self._persona_senior.toPlainText().strip()
+        stack = self._stack.toPlainText().strip()
+        glossary = self._glossary.text().strip() or None
+        if not (persona and persona_senior and stack):
             QMessageBox.warning(
                 self, "Профиль", "Персона (оба поля) и стек обязательны."
             )
             return
+        prof.title = title
+        prof.persona = persona
+        prof.persona_senior = persona_senior
+        prof.stack = stack
+        prof.glossary = glossary
         save_profile(prof)
         self.profile_changed = True
         self._reload(select_id=prof.id)
-        if self.current_id == prof.id:
-            self.profile_changed = True
 
     def _pick_glossary(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
