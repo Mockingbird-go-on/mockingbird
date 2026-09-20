@@ -485,17 +485,37 @@ def resolve_model_path(cfg: WhisperConfig, progress_cb=None) -> str:
         pass
 
     log.info("whisper model not cached, downloading %s to %s", repo_id, download_root)
-    kwargs: dict = {"cache_dir": download_root}
+    kwargs: dict = {
+        "cache_dir": download_root,
+        # etag_timeout bounds the initial HTTP HEAD: without it a flaky
+        # proxy can hold the connection open forever ("Загрузка модели…"
+        # with no error and no way out but a restart).
+        "etag_timeout": 10,
+    }
     if progress_cb is not None:
         progress_cb("Downloading whisper model…", 0.0)
         reporter = _DownloadReporter(progress_cb)
         kwargs["tqdm_class"] = _progress_tqdm_class(reporter)
-    try:
-        path = snapshot_download(repo_id, **kwargs)
-    except TypeError:
-        # Older huggingface_hub may not accept tqdm_class.
-        kwargs.pop("tqdm_class", None)
-        path = snapshot_download(repo_id, **kwargs)
+    last_exc: Exception | None = None
+    for attempt in (1, 2):
+        try:
+            path = snapshot_download(repo_id, **kwargs)
+            break
+        except TypeError:
+            # Older huggingface_hub may not accept tqdm_class/etag_timeout.
+            kwargs.pop("tqdm_class", None)
+            kwargs.pop("etag_timeout", None)
+            path = snapshot_download(repo_id, **kwargs)
+            break
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            log.warning(
+                "whisper model download attempt %d failed: %s", attempt, exc
+            )
+    else:
+        raise RuntimeError(
+            f"whisper model download failed after retries: {last_exc}"
+        ) from last_exc
     problem = _model_dir_problem(path)
     if problem is not None:
         raise RuntimeError(f"downloaded whisper model at {path} is corrupted: {problem}")
@@ -588,15 +608,47 @@ class WhisperEngine:
     # -- lifecycle --
     def start(self) -> None:
         if self._thread is not None:
-            return
+            # A previous stop() timed out mid-decode: wait for the old worker
+            # to drain its queue instead of racing it with a second consumer.
+            if not self._wait_for_stopped_worker():
+                raise RuntimeError(
+                    "Распознавание ещё завершает предыдущую сессию "
+                    "(долгий финальный декод). Подождите пару секунд "
+                    "и нажмите «Старт» снова."
+                )
         self._thread = threading.Thread(target=self._run, name="whisper-engine", daemon=True)
         self._thread.start()
 
     def stop(self, timeout: float = 8.0) -> None:
         self._queue.put((_CMD_STOP, None))
-        if self._thread is not None:
-            self._thread.join(timeout=timeout)
-            self._thread = None
+        thread = self._thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=timeout)
+        if thread is not None and thread.is_alive():
+            # The worker is stuck in a long decode; dropping the reference
+            # would let start() spawn a SECOND consumer of the same queue
+            # (duplicated/lost finals, corrupted chunk cache). Keep the
+            # reference: start() waits for it to exit or raises.
+            log.warning(
+                "whisper: worker did not stop within %.1fs (stuck in decode?)",
+                timeout,
+            )
+            return
+        self._thread = None
+
+    def _wait_for_stopped_worker(self, timeout: float = 30.0) -> bool:
+        """Wait for a leftover (timed-out) worker thread to exit.
+
+        Returns True when the thread is gone (safe to start a new one).
+        """
+        thread = self._thread
+        if thread is None:
+            return True
+        thread.join(timeout=timeout)
+        if thread.is_alive():
+            return False
+        self._thread = None
+        return True
 
     # -- audio-worker API (called from the capture thread) --
     def start_segment(self) -> str:
@@ -936,12 +988,12 @@ class WhisperEngine:
 
     def _cleanup_segment(self) -> None:
         """Reset per-segment decode state (all finalize paths share this)."""
-        self._speculative = None
-        self._spec_partial_emitted = False
-        self._chunk_texts = []
-        self._last_partial_text = ""
-        self._prev_full_text = ""
         with self._lock:
+            self._speculative = None
+            self._spec_partial_emitted = False
+            self._chunk_texts = []
+            self._last_partial_text = ""
+            self._prev_full_text = ""
             self._rolling = np.zeros(0, dtype=np.float32)
 
     # Sentence-terminal punctuation (whisper emits it reliably on completed
@@ -983,8 +1035,13 @@ class WhisperEngine:
         # decode already covered the whole buffer (only the VAD silence tail
         # was added since), re-decoding the identical audio is pure GPU waste:
         # reuse the speculative result. The last partial stays the safety-net.
-        last_partial = self._last_partial_text if segment_id == self._segment_id else ""
-        spec = self._speculative
+        # Snapshot the segment state under the lock: start_segment() runs on
+        # the audio-callback thread and may swap the segment mid-finalize
+        # (the next question arriving while this one is still finalizing).
+        with self._lock:
+            last_partial = self._last_partial_text if segment_id == self._segment_id else ""
+            spec = self._speculative
+            self._speculative = None
         reusable = (
             spec is not None
             and spec.get("segment_id") == segment_id
@@ -992,7 +1049,6 @@ class WhisperEngine:
             and len(audio) - spec.get("duration", 0.0) * self._sr
             <= _SPECULATIVE_REUSE_MAX_DELTA_S * self._sr
         )
-        self._speculative = None
         self._decoding = True
         if reusable:
             try:
@@ -1159,17 +1215,20 @@ class WhisperEngine:
         """``_transcribe`` with a per-call initial_prompt override.
 
         Used by the chunk decoder to prepend the previous chunk's tail
-        (cross-chunk context) on top of the hot-word prompt.
+        (cross-chunk context) on top of the hot-word prompt. Passed through
+        as a parameter — mutating ``self._cfg.initial_prompt`` here used to
+        race ``App._rebuild_hotwords`` (which rewrites the prompt from other
+        threads), restoring a stale prompt over the fresh one.
         """
-        saved = self._cfg.initial_prompt
-        try:
-            if prompt is not None:
-                self._cfg.initial_prompt = prompt
-            return self._transcribe(audio, kind=kind, beam_size=beam_size)
-        finally:
-            self._cfg.initial_prompt = saved
+        return self._transcribe(audio, kind=kind, beam_size=beam_size, prompt_override=prompt)
 
-    def _transcribe(self, audio: np.ndarray, kind: str = "decode", beam_size: int = 1):
+    def _transcribe(
+        self,
+        audio: np.ndarray,
+        kind: str = "decode",
+        beam_size: int = 1,
+        prompt_override: str | None = None,
+    ):
         # Reuse the language detected on the first decode instead of re-detecting
         # on every partial/final pass (~a second+ each on CPU).
         language = self._cfg.language or self._detected_language
@@ -1177,8 +1236,13 @@ class WhisperEngine:
         # stop-hint and final passes). On the frequent rolling partial decodes
         # it inflated prefill 4-10x (0.5 s audio decoded in 3.8-5 s) for no
         # benefit — partials exist to trigger early answering, and the final
-        # pass re-decodes the segment with the prompt anyway.
-        prompt = self._cfg.initial_prompt if kind != "partial" else None
+        # pass re-decodes the segment with the prompt anyway. A chunk-context
+        # ``prompt_override`` (cross-chunk term consistency) wins over the
+        # hot-word prompt.
+        if prompt_override is not None:
+            prompt = prompt_override if kind != "partial" else None
+        else:
+            prompt = self._cfg.initial_prompt if kind != "partial" else None
         # Decoder-level term bias (faster-whisper ``hotwords=``): the compact
         # priority/session/topic list gets extra probability mass during beam
         # search, complementing initial_prompt. Final/speculative passes only

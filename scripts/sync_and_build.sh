@@ -6,15 +6,14 @@
 # build from WSL, streaming PowerShell output back to the terminal.
 #
 # Usage (from anywhere in WSL):
-#   bash scripts/sync_and_build.sh            # default GPU build
-#   bash scripts/sync_and_build.sh -Cpu       # CPU-only build
+#   bash scripts/sync_and_build.sh            # default build
 #   bash scripts/sync_and_build.sh --no-build # sync only, skip the build
 #
 # Requires: rsync, /mnt/e mounted, Windows Python 3.11+ on the target machine.
 
 set -euo pipefail
 
-SRC="/home/tetra10/razor-agent/project/project/mockingbird"
+SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DST="/mnt/e/mockingbird"
 WIN_DST="E:\\mockingbird"
 
@@ -49,6 +48,8 @@ rsync -a --delete \
     --exclude='.pytest_cache' \
     --exclude='.mypy_cache' \
     --exclude='onnxenv' \
+    --exclude='docs' \
+    --exclude='*:Zone.Identifier' \
     "$SRC/" "$DST/"
 echo ">>> Sync complete."
 

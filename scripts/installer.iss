@@ -80,7 +80,9 @@ var
 begin
   if CurUninstallStep = usUninstall then
   begin
-    DataDir := ExpandConstant('{userappdata}') + '\' + DataDirName;
+    // The app stores data in Path.home()/.mockingbird == %USERPROFILE%\.mockingbird
+    // (NOT %APPDATA%). Ask about the real directory.
+    DataDir := ExpandConstant('{%USERPROFILE}') + '\' + DataDirName;
     if DirExists(DataDir) then
     begin
       RemoveData := MsgBox(

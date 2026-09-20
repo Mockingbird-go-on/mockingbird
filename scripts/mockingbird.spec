@@ -39,7 +39,6 @@ datas = (
         os.path.join("mockingbird", "assets", "icons"))]
     + collect_data_files("faster_whisper")
     + collect_data_files("ctranslate2")
-    + collect_data_files("transformers")
     + collect_data_files("tokenizers")
 )
 
@@ -124,12 +123,9 @@ hiddenimports = (
     + collect_submodules("sounddevice")
     + collect_submodules("pyaudiowpatch")
     + collect_submodules("openai")
-    + collect_submodules("transformers")
     + collect_submodules("tokenizers")
     + collect_submodules("sentencepiece")
-    + collect_submodules("hydra")
-    + collect_submodules("omegaconf")
-    + ["PySide6.QtSvg"]
+    + ["PySide6.QtSvg", "PySide6.QtMultimedia"]
 )
 
 a = Analysis(
@@ -147,6 +143,62 @@ a = Analysis(
 
 pyz = PYZ(a.pure)
 
+
+def _version_file():
+    """Write a temporary VSVersionInfo file for the current app version.
+
+    The version string lives in ``mockingbird.__version__`` (single source of
+    truth); the Windows exe must carry it so Inno Setup's
+    ``GetVersionNumbersString`` produces ``Mockingbird-Setup-<ver>.exe``
+    instead of a 0.0.0 default.
+    """
+    import sys
+
+    sys.path.insert(0, _SRC)
+    from mockingbird import __version__  # noqa: E402
+
+    quad = ".".join((__version__.split(".") + ["0", "0", "0"])[:4])
+    path = os.path.join(SPECPATH, "build", f"version_info_{__version__}.txt")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(
+            f"""# UTF-8
+#
+# Generated from mockingbird.__version__ by mockingbird.spec — do not edit.
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=({", ".join(quad.split("."))}),
+    prodvers=({", ".join(quad.split("."))}),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo(
+      [
+        StringTable(
+          '040904B0',
+          [StringStruct('CompanyName', 'Mockingbird'),
+          StringStruct('FileDescription', 'Mockingbird — live interview assistant'),
+          StringStruct('FileVersion', '{__version__}'),
+          StringStruct('InternalName', 'mockingbird'),
+          StringStruct('OriginalFilename', 'mockingbird.exe'),
+          StringStruct('ProductName', 'Mockingbird'),
+          StringStruct('ProductVersion', '{__version__}')])
+      ]),
+    VarFileInfo([VarStruct('Translation', [1033, 1200])])
+  ]
+)
+"""
+        )
+    return path
+
+
+_VERSION_FILE = _version_file()
+
 exe = EXE(
     pyz,
     a.scripts,
@@ -158,6 +210,7 @@ exe = EXE(
     upx=False,
     console=False,
     icon=_ICON,
+    version=_VERSION_FILE,
 )
 # Console (CLI) variant for headless testing: same code, but with a console
 # window so the interactive REPL (``mockingbird-cli`` / ``--cli``) works when
@@ -173,6 +226,7 @@ exe_cli = EXE(
     upx=False,
     console=True,
     icon=_ICON,
+    version=_VERSION_FILE,
 )
 coll = COLLECT(
     exe,

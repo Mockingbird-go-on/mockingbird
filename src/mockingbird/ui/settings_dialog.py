@@ -659,6 +659,12 @@ class SettingsDialog(QDialog):
                 except Exception as exc:
                     self_.done.emit(f"❌ {exc!s:.80}", False)
 
+        # Retire any previous worker before replacing the reference: an
+        # orphaned running QThread gets destroyed by GC ("QThread: Destroyed
+        # while thread is still running" crash).
+        old = getattr(self, "_check_worker", None)
+        if old is not None:
+            old.wait(0)
         self._check_worker = _CheckWorker()
 
         def _on_done(msg: str, ok: bool):

@@ -27,7 +27,7 @@ for arg in "$@"; do
     esac
 done
 
-VERSION="$(python -c 'import tomllib;print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')"
+VERSION="$(PYTHONPATH=src python -c 'from mockingbird import __version__; print(__version__)')"
 echo "== Mockingbird Linux build v$VERSION =="
 
 # --- 1. PyInstaller ----------------------------------------------------------

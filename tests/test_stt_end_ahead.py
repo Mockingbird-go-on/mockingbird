@@ -23,7 +23,7 @@ def engine(request):
 def _stub_transcribe(engine, text="Вопрос?", confidence=0.9):
     calls = []
 
-    def fake(audio, kind="decode", beam_size=1):
+    def fake(audio, kind="decode", beam_size=1, **kw):
         calls.append((kind, len(audio)))
         return text, confidence, len(audio) / 16000.0
 
@@ -89,7 +89,7 @@ def test_final_shorter_than_partial_uses_partial(engine):
     on the fresh final text."""
     texts = iter(["в чем связь между Agile и", "в чем связь между и"])
 
-    def fake(audio, kind="decode", beam_size=1):
+    def fake(audio, kind="decode", beam_size=1, **kw):
         return next(texts), 0.9, len(audio) / 16000.0
 
     engine._transcribe = fake
@@ -107,7 +107,7 @@ def test_final_ok_keeps_final_not_partial(engine):
     Forces a re-decode (audio grew >3s)."""
     texts = iter(["в чем связь", "в чем связь между Agile и DevOps"])
 
-    def fake(audio, kind="decode", beam_size=1):
+    def fake(audio, kind="decode", beam_size=1, **kw):
         return next(texts), 0.9, len(audio) / 16000.0
 
     engine._transcribe = fake
@@ -124,7 +124,7 @@ def test_finalize_different_text_partial_not_applied(engine):
     Forces a re-decode (audio grew >3s)."""
     texts = iter(["совсем другой вопрос про сети", "в чем связь между и"])
 
-    def fake(audio, kind="decode", beam_size=1):
+    def fake(audio, kind="decode", beam_size=1, **kw):
         return next(texts), 0.9, len(audio) / 16000.0
 
     engine._transcribe = fake
@@ -204,7 +204,7 @@ def test_whisper_speculative_uses_final_beam():
     engine._model = object()
     seen = {}
 
-    def fake(audio, kind="decode", beam_size=1):
+    def fake(audio, kind="decode", beam_size=1, **kw):
         seen[kind] = beam_size
         return "ok", 0.9, 2.0
 

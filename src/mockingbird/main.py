@@ -148,6 +148,11 @@ def _resolve_icon_path() -> str | None:
 
 
 def main() -> int:
+    if "--version" in sys.argv or "-V" in sys.argv:
+        from mockingbird import __version__
+
+        print(f"mockingbird {__version__}")
+        return 0
     _harden_hf_symlinks()
     _set_app_user_model_id()
     if "--cli" in sys.argv:

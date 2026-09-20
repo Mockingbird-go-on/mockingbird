@@ -166,24 +166,43 @@ class OnboardingWizard(QDialog):
         self._test_result.setText("Проверка...")
         self._test_result.setStyleSheet("color: #8a99a8;")
         self._test_btn.setEnabled(False)
-        try:
-            from mockingbird.llm.client import LlmClient
-            from mockingbird.config import LlmConfig
 
-            cfg = LlmConfig(base_url=url, api_key=key, model=model)
-            client = LlmClient(cfg)
-            result = client.explain_term("docker")
-            if result:
-                self._test_result.setText("✅ Подключение работает!")
-                self._test_result.setStyleSheet("color: #3DDC84;")
-            else:
-                self._test_result.setText("⚠ Нет ответа (проверьте URL/ключ)")
-                self._test_result.setStyleSheet("color: #FFB020;")
-        except Exception as exc:
-            self._test_result.setText(f"❌ Ошибка: {exc!s:.60}")
-            self._test_result.setStyleSheet("color: #FF5148;")
-        finally:
+        # Never run the network call on the GUI thread — with a slow/dead
+        # endpoint the wizard would freeze for the whole LLM timeout (~20 s).
+        # Same QThread pattern as the settings dialog's connection check.
+        from PySide6.QtCore import Signal
+
+        class _TestWorker(QThread):
+            done = Signal(str, bool)
+
+            def run(self_):
+                try:
+                    from mockingbird.llm.client import LlmClient
+                    from mockingbird.config import LlmConfig
+
+                    client = LlmClient(LlmConfig(base_url=url, api_key=key, model=model))
+                    result = client.explain_term("docker")
+                    if result:
+                        self_.done.emit("✅ Подключение работает!", True)
+                    else:
+                        self_.done.emit("⚠ Нет ответа (проверьте URL/ключ)", False)
+                except Exception as exc:
+                    self_.done.emit(f"❌ Ошибка: {exc!s:.60}", False)
+
+        # Keep a reference (GC would kill a running QThread) and retire any
+        # previous worker before starting a new one.
+        old = getattr(self, "_test_worker", None)
+        if old is not None:
+            old.wait(0)
+        self._test_worker = _TestWorker()
+
+        def _on_done(msg: str, ok: bool):
+            self._test_result.setText(msg)
+            self._test_result.setStyleSheet("color: #3DDC84;" if ok else "color: #FF5148;")
             self._test_btn.setEnabled(True)
+
+        self._test_worker.done.connect(_on_done)
+        self._test_worker.start()
 
     # -- Step 2: Audio -----------------------------------------------------
 

@@ -42,7 +42,6 @@ datas = (
         os.path.join("mockingbird", "assets", "icons"))]
     + collect_data_files("faster_whisper")
     + collect_data_files("ctranslate2")
-    + collect_data_files("transformers")
     + collect_data_files("tokenizers")
 )
 
@@ -67,16 +66,11 @@ hiddenimports = (
     + collect_submodules("onnxruntime")
     + collect_submodules("sounddevice")
     + collect_submodules("openai")
-    + collect_submodules("transformers")
     + collect_submodules("tokenizers")
     + collect_submodules("sentencepiece")
-    + collect_submodules("hydra")
-    + collect_submodules("omegaconf")
     + [
         "PySide6.QtSvg",
-        # Linux windowing: Qt 6.7+ splits xcb/wayland into plugins that
-        # PyInstaller's PySide6 hooks may miss when building headless.
-        "PySide6.QtXcbQpa",
+        "PySide6.QtMultimedia",
     ]
 )
 

@@ -44,7 +44,8 @@ def test_iss_uninstall_preserves_user_data_by_default():
     # auto-delete (no [UninstallDelete] entry for user data).
     assert "CurUninstallStepChanged" in iss
     assert "mbConfirmation" in iss
-    assert "{userappdata}" in iss
+    # The app stores data in Path.home()/.mockingbird == %USERPROFILE%\.mockingbird
+    assert "{%USERPROFILE}" in iss
     assert ".mockingbird" in iss
 
 

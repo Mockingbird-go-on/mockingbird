@@ -12,9 +12,17 @@ from mockingbird.kb.model import KbBlock, KbSection, KbTopic
 _WS = re.compile(r"\s+")
 
 
-def clean(text: str) -> str:
-    """Collapse whitespace/newlines in a single YAML scalar into one line."""
-    return _WS.sub(" ", text or "").strip()
+def clean(text) -> str:
+    """Collapse whitespace/newlines in a single YAML scalar into one line.
+
+    YAML parses bare ``1``/``1.5`` as int/float — coerce any scalar to str
+    instead of crashing the whole topic file (silently dropped otherwise).
+    """
+    if text is None:
+        return ""
+    if not isinstance(text, str):
+        text = str(text)
+    return _WS.sub(" ", text).strip()
 
 
 def _parse_topic(raw: dict) -> KbTopic | None:

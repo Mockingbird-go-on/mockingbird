@@ -176,9 +176,22 @@ mockingbird-cli --cli
 GUI: запустить приложение → вкладка «Интервью» → «Старт» без микрофона —
 должно упасть с понятной ошибкой в статус-баре (не крешем).
 
-## 4. macOS
+## 4. macOS (Stage 3 — не реализовано)
 
-(зарезервировано)
+Блокеры, которые нужно закрыть перед macOS-сборкой:
+
+- **Loopback-режим («Динамик»)**: нет ветки для macOS — нужен ScreenCaptureKit
+  / Core Audio tap (`audio/loopback.py` диспетчеризует только win/linux).
+  Микрофонный режим работает (sounddevice/PortAudio).
+- **PyInstaller spec**: нет mac-spec; нужен `.icns`-иконка, `.app`-bundle
+  (BUNDLE()), codesign/notarization для распространения.
+- **Глобальный hotkey** (`ui/global_hotkey.py` — WinAPI RegisterHotKey):
+  на macOS недоступен (`is_supported()` → False), нужен Carbon RegisterEventHotKey.
+- **Звук готовности**: QMediaPlayer-fallback требует QtMultimedia-плагины
+  (уже в hiddenimports, проверить сборку на macOS).
+- Скрытие от захвата экрана (`capture_guard.py`) — Windows-only API;
+  на macOS аналога нет, фича отключается.
+- Инсталлятор: `.dmg`/`pkg` вместо Inno Setup.
 
 ---
 

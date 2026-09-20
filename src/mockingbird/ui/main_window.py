@@ -52,7 +52,9 @@ class MainWindow(QMainWindow):
         super().__init__()
         self._app = app
         self._sig = app.signals
-        self.setWindowTitle("Mockingbird")
+        from mockingbird import __version__
+
+        self.setWindowTitle(f"Mockingbird {__version__}")
         self.resize(app.config.window.width, app.config.window.height)
 
         self._settings = QSettings("Mockingbird", "Mockingbird")
@@ -393,7 +395,11 @@ class MainWindow(QMainWindow):
         from PySide6.QtWidgets import QApplication
 
         if getattr(sys, "frozen", False):
-            argv = [sys.executable]
+            # Linux AppImage: sys.executable points INTO the mounted squashfs
+            # (/tmp/.mount_*), which is unmounted on exit — relaunch the
+            # original .AppImage path instead.
+            appimage = os.environ.get("APPIMAGE")
+            argv = [appimage] if appimage else [sys.executable]
         else:
             argv = [sys.executable, "-m", "mockingbird"]
         # Tear the session down BEFORE spawning the new process: the old

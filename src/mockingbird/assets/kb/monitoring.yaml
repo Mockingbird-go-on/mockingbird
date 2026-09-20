@@ -146,7 +146,7 @@ sections:
     name: Loki и логирование
     blocks:
       - q: "Что такое Grafana Loki и чем отличается от ELK?"
-        keywords: [loki, логи, grafana, elasticsearch, elk, сравнение, label, index,成本低]
+        keywords: [loki, логи, grafana, elasticsearch, elk, сравнение, label, index, дешёвый]
         a: "**Loki** — log aggregation от Grafana Labs. В отличие от **ELK/ Elasticsearch**, Loki **не индексирует содержимое логов** — индексирует только **лейблы** (metadata), сами логи хранятся в сжатом виде (chunks). **Преимущества**: дешевле в 10-100 раз (нет full-text index), простая интеграция с Prometheus/Grafana (тот же Label-подход). **Недостатки**: медленный full-text search (grep по несжатым данным), нет аналитики на уровне ES aggregations. **LogQL** — язык запросов (похож на PromQL + regex grep): `{job=\"nginx\"} |= \"error\" | json | duration > 1s`. **Выбор**: Loki для cheap log retention + Grafana-интеграция; ELK для сложного full-text search и analytics."
         related: ["Что такое Promtail?", "Чем Loki отличается от Elasticsearch?"]
       - q: "Что такое Promtail и как он собирает логи?"

@@ -65,7 +65,7 @@ def _state_shape(session) -> tuple[int, ...]:
     return (2, 1, 128)
 
 
-def ensure_vad_model(model_path: str | None) -> str:
+def ensure_vad_model(model_path: str | None, timeout_s: float = 15.0) -> str:
     if model_path:
         p = Path(model_path)
         if not p.exists():
@@ -78,7 +78,7 @@ def ensure_vad_model(model_path: str | None) -> str:
     log.info("downloading Silero VAD model to %s", target)
     tmp = target.with_suffix(".onnx.part")
     request = urllib.request.Request(SILERO_VAD_URL, headers={"User-Agent": "mockingbird"})
-    with urllib.request.urlopen(request, timeout=60) as resp, open(tmp, "wb") as fh:
+    with urllib.request.urlopen(request, timeout=timeout_s) as resp, open(tmp, "wb") as fh:
         fh.write(resp.read())
     os.replace(tmp, target)
     return str(target)

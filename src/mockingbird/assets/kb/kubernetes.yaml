@@ -229,3 +229,42 @@ sections:
         keywords: [headless, service без clusterip, dns, кластер ip]
         a: "**Headless Service** (`clusterIP: None`) не создаёт виртуальный IP: **DNS возвращает IP всех подов** напрямую. Используется для stateful-приложений (прямые адреса pod-0, pod-1), service discovery «вручную», mesh. Балансировку тогда делают клиент/приложение."
         related: ["Как работает Service?"]
+  - id: extensibility
+    name: CRD и Operator pattern
+    blocks:
+      - q: "Что такое CRD (CustomResourceDefinition)?"
+        keywords: [crd, customresourcedefinition, кастомный ресурс, расширение api]
+        a: "**CRD** — механизм расширения API Kubernetes: вы описываете новый тип ресурса (как Deployment, но свой), и k8s сохраняет его в etcd, обслуживает через apiserver. Пример: `PostgresCluster`, `Certificate`, `Application`. CRUD через kubectl, валидация через OpenAPI v3 схему или **admission webhooks**. Основа для операторов и контроллеров."
+        related: ["Что такое Operator pattern?"]
+      - q: "Что такое Operator pattern и зачем он нужен?"
+        keywords: [operator, оператор, контроллер, автоматизация, domain knowledge, day 2]
+        a: "**Operator** — контроллер для управления жизненным циклом сложного stateful-приложения через CRD + control loop: инкапсулирует экспертные знания (бэкапы, репликация, failover, upgrade). Примеры: **Postgres operator** (Patroni/CloudNativePG), **cert-manager** (сертификаты), **ArgoCD** (GitOps), **Prometheus operator**. Пишется через **Operator SDK** (Go/Ansible/Helm) или **Kubebuilder**. Day-2 операции (backup, restore, scale, upgrade) — автоматизированы, а не ручные runbooks."
+        related: ["Что такое CRD?", "Что такое control loop?"]
+      - q: "Чем Operator SDK отличается от Kubebuilder?"
+        keywords: [operator sdk, kubebuilder, framework, go, controller-runtime, сравнение]
+        a: "**Kubebuilder** — фреймворк для написания k8s API и контроллеров на Go (под капотом `controller-runtime` + `controller-gen` для CRD/Deepcopy). **Operator SDK** — надстройка над Kubebuilder (Go), плюс поддержка **Helm** и **Ansible** операторов (без Go). SDK добавляет scaffolding, scorecard (проверка качества), OLM-интеграцию. Для Go-операторов разницы почти нет (SDK использует Kubebuilder); для Ansible/Helm — SDK единственный выбор."
+        related: ["Что такое Operator pattern?"]
+      - q: "Что такое OLM (Operator Lifecycle Manager)?"
+        keywords: [olm, operator lifecycle, каталог, install, upgrade operators]
+        a: "**OLM** — управление жизненным циклом операторов: каталог (OperatorHub), установка/обновление/удаление операторов через CRD (`Subscription`, `ClusterServiceVersion`). Отслеживает зависимости, права (RBAC), обновления. Альтернатива: установка через Helm/ArgoCD без OLM. Популярен в OpenShift."
+        related: ["Что такое Operator pattern?"]
+      - q: "Что такое Native Sidecar (K8s 1.29+)?"
+        keywords: [native sidecar, 1.29, restartable init, sidecar containers]
+        a: "**Native sidecar** (GA в K8s 1.29) — init-контейнер с `restartPolicy: Always`: запускается **до основных** и живёт параллельно с ними, но имеет свой lifecycle. Решает проблемы классического sidecar: корректный startup/shutdown порядок, job completion (раньше sidecar не давал Job'у завершиться), probe-семантика. Заменяет хаки с препатченными deployment-шаблонами."
+        related: ["Что такое init container?"]
+      - q: "Что такое Karpenter и чем отличается от Cluster Autoscaler?"
+        keywords: [karpenter, cluster autoscaler, сравнение, node provisioning, gpu]
+        a: "**Cluster Autoscaler** — добавляет/удаляет ноды через cloud provider node groups (заранее заданные шаблоны). **Karpenter** (AWS, CNCF Sandbox) — гибкий провижинер: сам выбирает тип инстанса/зону под требования подов (GPU, spot/on-demand, topology), без преднастроенных groups. Быстрее стартует ноды (секунды), лучше использует spot, оптимизирует cost. Минус — AWS-only (community расширяет)."
+        related: ["Что такое HPA?"]
+      - q: "Что такое KEDA и event-driven autoscaling?"
+        keywords: [keda, event driven, autoscaling, queue, kafka, scale to zero]
+        a: "**KEDA** (Kubernetes Event-driven Autoscaling) — масштабирует Deployment'ы на основе **внешних событий** (длина Kafka-очереди, AWS SQS, Redis streams, Prometheus-метрики), а не только CPU/RAM. Подключается к HPA как источник метрик. Позволяет **scale-to-zero** (0 → N подов по нагрузке). Идеален для consumer-workers, batch-обработки."
+        related: ["Что такое HPA?"]
+      - q: "Что такое Pod Security Admission (PSA) и PSS?"
+        keywords: [psa, pss, pod security admission, pod security standards, privileged, baseline, restricted]
+        a: "**PSA** (встроен в apiserver с 1.25, заменил удалённый **PSP** PodSecurityPolicy) — применяет **PSS** (Pod Security Standards): три уровня — **privileged** (без ограничений), **baseline** (минимум защиты), **restricted** (hardened: non-root, drop capabilities, seccomp). Режимы: **enforce** (запрет), **audit** (лог), **warn** (warning). Включается per-namespace через лейблы."
+        related: ["Что такое securityContext?"]
+      - q: "Что такое NetworkPolicy и default-deny паттерн?"
+        keywords: [networkpolicy, default deny, ingress, egress, isolation, cni]
+        a: "**NetworkPolicy** — firewall на уровне подов (требует поддерживающий CNI: Calico, Cilium). `ingress`/`egress` правила по лейблам/namespace/ports. **Default-deny**: политика, запрещающая весь трафик, затем точечные allow-правила. По умолчанию k8s **разрешает всё** — это дыра, закрываемая NetworkPolicy."
+        related: ["Что такое namespace изоляция?"]
