@@ -22,11 +22,14 @@ def _read(base: Path, name: str) -> str:
 
 # 3.1
 def test_specs_no_dead_hiddenimports():
+    """collect_*/hiddenimports must not reference the dead packages; explicit
+    excludes[] entries are fine (and required on dirty build envs)."""
     for name in ("mockingbird.spec", "mockingbird_linux.spec"):
         spec = _read(SCRIPTS, name)
-        assert "transformers" not in spec, name
-        assert "hydra" not in spec, name
-        assert "omegaconf" not in spec, name
+        collected = spec.split("excludes")[0]
+        assert "transformers" not in collected, name
+        assert "hydra" not in collected, name
+        assert "omegaconf" not in collected, name
 
 
 def test_specs_have_qtmultimedia():
