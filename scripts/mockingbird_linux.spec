@@ -1,8 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
-# Linux build spec: produces dist/mockingbird/ (onedir, GUI) and
-# dist/mockingbird-cli/ — packaged into an AppImage and a .deb by
-# scripts/build_linux.sh. Mirrors scripts/mockingbird.spec minus the
-# Windows-specific parts:
+# Linux build spec: produces dist/mockingbird/ — packaged into an AppImage
+# and a .deb by scripts/build_linux.sh. Mirrors scripts/mockingbird.spec
+# minus the Windows-specific parts:
 #   - no icon (icons are irrelevant for ELF, the .desktop file carries SVG)
 #   - no pyaudiowpatch (loopback uses PulseAudio monitors via sounddevice)
 #   - no flat nvidia-DLL layout (the Linux loader uses RPATH/LD_LIBRARY_PATH)
@@ -114,20 +113,8 @@ exe = EXE(
     upx=False,
     console=False,
 )
-exe_cli = EXE(
-    pyz,
-    a.scripts,
-    [],
-    exclude_binaries=True,
-    name="mockingbird-cli",
-    debug=False,
-    strip=False,
-    upx=False,
-    console=True,
-)
 coll = COLLECT(
     exe,
-    exe_cli,
     a.binaries,
     a.datas,
     strip=False,

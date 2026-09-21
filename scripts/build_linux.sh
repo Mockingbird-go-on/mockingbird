@@ -33,7 +33,6 @@ echo "== Mockingbird Linux build v$VERSION =="
 # --- 1. PyInstaller ----------------------------------------------------------
 python -m PyInstaller --clean --noconfirm scripts/mockingbird_linux.spec
 test -x dist/mockingbird/mockingbird || { echo "PyInstaller produced no executable"; exit 1; }
-test -x dist/mockingbird/mockingbird-cli || { echo "CLI executable missing"; exit 1; }
 
 # --- 2. AppImage -------------------------------------------------------------
 if [[ $MAKE_APPIMAGE -eq 1 ]]; then

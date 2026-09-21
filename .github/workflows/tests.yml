@@ -76,7 +76,7 @@ jobs:
         shell: cmd
         run: |
           set "PATH=C:\Users\Happy\AppData\Local\Programs\Python\Python312;C:\Users\Happy\AppData\Local\Programs\Python\Python312\Scripts;%PATH%"
-          E:\mockingbird\dist\mockingbird\mockingbird-cli.exe --cli < NUL
+          E:\mockingbird\dist\mockingbird\mockingbird.exe --version
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

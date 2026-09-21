@@ -147,12 +147,12 @@ beam, endpoint/ключ LLM, путь к глоссарию). Смена бэк�
 Из WSL:
 
 ```bash
-bash scripts/sync_and_build.sh        # rsync → PowerShell → PyInstaller
+bash scripts/sync_and_build.sh        # rsync → PowerShell → PyInstaller (инкрементально)
+bash scripts/sync_and_build.sh --clean # полная пересборка без кэша PyInstaller
 bash scripts/sync_and_build.sh -Cpu   # CPU-only сборка
 ```
 
-Собираются два exe: `mockingbird.exe` (оконный) и `mockingbird-cli.exe`
-(консольный REPL `--cli`). Модели скачиваются при первом запуске и в дистрибутив
+Собирается один exe: `mockingbird.exe` (оконный). Модели скачиваются при первом запуске и в дистрибутив
 не включаются.
 
 ## Тесты

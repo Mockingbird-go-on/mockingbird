@@ -234,25 +234,8 @@ exe = EXE(
     icon=_ICON,
     version=_VERSION_FILE,
 )
-# Console (CLI) variant for headless testing: same code, but with a console
-# window so the interactive REPL (``mockingbird-cli`` / ``--cli``) works when
-# launched from Explorer or as a scheduled task.
-exe_cli = EXE(
-    pyz,
-    a.scripts,
-    [],
-    exclude_binaries=True,
-    name="mockingbird-cli",
-    debug=False,
-    strip=False,
-    upx=False,
-    console=True,
-    icon=_ICON,
-    version=_VERSION_FILE,
-)
 coll = COLLECT(
     exe,
-    exe_cli,
     a.binaries,
     a.datas,
     strip=False,

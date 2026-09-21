@@ -27,7 +27,6 @@ dev = [
 
 [project.scripts]
 mockingbird = "mockingbird.main:main"
-mockingbird-cli = "mockingbird.main:main"
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]

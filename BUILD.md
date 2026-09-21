@@ -66,8 +66,8 @@ nvrtc 12.9, чьи DLL требуют драйвер ≥575 — на драйв�
 
 ### 1.4. Результаты
 
-- `dist\mockingbird\` — onedir: `mockingbird.exe` (GUI) + `mockingbird-cli.exe`
-  (консольный, для `--cli` REPL и smoke-тестов). Запускается без установки.
+- `dist\mockingbird\` — onedir: `mockingbird.exe` (GUI). Запускается без
+  установки.
 - `installer\Mockingbird-Setup-<ver>.exe` — установщик для конечного
   пользователя.
 
@@ -175,12 +175,9 @@ sudo apt remove mockingbird                       # удаление (~/.mocking
 
 ## 3. Проверка после сборки (smoke)
 
-Обе платформы:
-
-```bash
-# консольный REPL (двойной клик по mockingbird-cli или):
-mockingbird-cli --cli
-```
+- Windows: `dist\mockingbird\mockingbird.exe --version` (печатает версию и
+  выходит, не открывая окно).
+- Linux: `dist/mockingbird/mockingbird --version`.
 
 GUI: запустить приложение → вкладка «Интервью» → «Старт» без микрофона —
 должно упасть с понятной ошибкой в статус-баре (не крешем).

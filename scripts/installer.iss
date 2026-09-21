@@ -1,8 +1,8 @@
 ; Inno Setup script for Mockingbird (Windows).
 ; Builds a single installer with CUDA support and automatic CPU fallback.
 ;
-; Prerequisites: run scripts/build_windows.ps1 first (produces dist\mockingbird\
-; and dist\mockingbird-cli\). Then compile this script with ISCC.exe.
+; Prerequisites: run scripts/build_windows.ps1 first (produces dist\mockingbird\).
+; Then compile this script with ISCC.exe.
 ;
 ; User data (~/.mockingbird) is NEVER removed automatically; the uninstaller
 ; offers an optional cleanup task instead.
@@ -18,7 +18,6 @@
 #define MyAppVersion GetVersionNumbersString(RootDir + "dist\mockingbird\mockingbird.exe")
 #define MyAppPublisher "Mockingbird"
 #define MyAppExeName "mockingbird.exe"
-#define MyAppCliExeName "mockingbird-cli.exe"
 
 [Setup]
 AppId={{7C1B6D9E-2A55-4B7E-9A1F-0C3D5E8B9A42}
@@ -47,7 +46,6 @@ Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
-Name: "cliicon"; Description: "Create Start Menu shortcut for mockingbird-cli (headless REPL)"; GroupDescription: "Additional icons:"
 
 [Files]
 Source: "{#RootDir}dist\mockingbird\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -58,7 +56,6 @@ Source: "{#RootDir}dist\mockingbird\*"; DestDir: "{app}"; Flags: ignoreversion r
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
-Name: "{group}\Mockingbird CLI"; Filename: "{app}\{#MyAppCliExeName}"; Tasks: cliicon; Parameters: "--cli"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]

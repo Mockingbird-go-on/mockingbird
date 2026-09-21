@@ -157,14 +157,6 @@ def main() -> int:
     _set_app_user_model_id()
     from mockingbird import diagnostics
 
-    if "--cli" in sys.argv:
-        from mockingbird.cli import run_cli
-
-        config = load_config()
-        setup_logging(config.storage.log_dir, _log_level())
-        diagnostics.install_crash_capture(config.storage.log_dir)
-        diagnostics.log_environment_banner(config)
-        return run_cli(config)
     config = load_config()
     setup_logging(config.storage.log_dir, _log_level())
     diagnostics.install_crash_capture(config.storage.log_dir)

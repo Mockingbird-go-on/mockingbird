@@ -29,9 +29,10 @@ def test_iss_exists():
 
 def test_iss_uses_single_collect_dir():
     iss = _read("installer.iss")
-    # Both exes live in dist\mockingbird\ (single COLLECT in the spec).
+    # The single onedir contains only mockingbird.exe (CLI variant was
+    # removed; mockingbird-cli is not shipped anymore).
     assert 'Source: "{#RootDir}dist\\mockingbird\\*"' in iss
-    assert "mockingbird-cli" in iss
+    assert "mockingbird" in iss
     # The [Files] section must package exactly one source dir (single COLLECT).
     import re
     files_section = iss.split("[Files]", 1)[1].split("[", 1)[0]
@@ -55,9 +56,23 @@ def test_iss_version_from_exe():
     assert "GetVersionNumbersString" in iss
 
 
-def test_iss_cli_shortcut_has_cli_flag():
-    iss = _read("installer.iss")
-    assert '--cli' in iss
+def test_specs_have_only_one_exe():
+    """Both Windows and Linux specs must produce exactly one exe (the GUI
+    one). The CLI variant was removed (regression: extra exe in dist
+    bloat, an extra Inno shortcut, no actual usage)."""
+    for name in ("mockingbird.spec", "mockingbird_linux.spec"):
+        spec = _read(name)
+        # The GUI exe.
+        assert 'name="mockingbird"' in spec
+        # No CLI variant.
+        assert "mockingbird-cli" not in spec
+        assert "exe_cli" not in spec
+        # Exactly one EXE( ... ) block (not counting the COLLECT at the
+        # bottom which is `COLLECT(`, not `EXE(`).
+        assert spec.count("EXE(") == 1, (name, spec.count("EXE("))
+        # COLLECT must reference exactly that one exe (no exe_cli).
+        coll = spec.split("COLLECT(", 1)[1].split(")", 1)[0]
+        assert "exe_cli" not in coll, name
 
 
 # --- build_windows.ps1 --------------------------------------------------------
@@ -109,11 +124,10 @@ def test_specs_no_gigaam_leftovers():
         assert "vendor" not in spec, name
 
 
-def test_linux_spec_two_exes_one_collect():
+def test_linux_spec_has_single_collect():
     spec = _read("mockingbird_linux.spec")
-    assert spec.count('name="mockingbird-cli"') == 1
     assert spec.count("COLLECT(") == 1
-    assert 'console=False' in spec and 'console=True' in spec
+    assert 'console=False' in spec
 
 
 # --- build_linux.sh ------------------------------------------------------------
