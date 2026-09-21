@@ -271,6 +271,7 @@ class App:
         self.engine.on_final = self._on_engine_final
         self.engine.on_ready = self._on_engine_ready
         self.engine.on_error = self.signals.error.emit
+        self.engine.on_cuda_fallback = self.signals.cuda_fallback.emit
         self.engine.on_progress = self.signals.model_load.emit
         # SQLite writes are marshalled to the GUI thread via this signal.
         self.signals.save_segment_request.connect(self._on_save_segment)

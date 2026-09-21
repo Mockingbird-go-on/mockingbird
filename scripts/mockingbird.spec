@@ -70,16 +70,25 @@ def _flat_nvidia_libs(collected):
     if not pkg_root:
         return []
     pairs = []
-    # Skip DLLs already shipped by collect_dynamic_libs: duplicate dest paths
-    # make COLLECT fail. Note: collect_dynamic_libs entries carry the DEST
-    # DIRECTORY (e.g. "ctranslate2"), not the full file path — the effective
-    # file name is basename(src) in that case.
-    def _dest_name(src: str, dest: str) -> str:
-        if dest.lower().endswith(".dll"):
-            return os.path.basename(dest)
-        return os.path.basename(src)
+    # Skip DLLs already shipped FLAT next to ctranslate2.dll: duplicate dest
+    # paths make COLLECT fail. Entries that land in a nested tree
+    # (nvidia/<lib>/bin/...) do NOT count — the Windows loader cannot see
+    # them there, so those DLLs still need a flat copy.
+    def _is_flat(src: str, dest: str) -> bool:
+        # collect_dynamic_libs entries carry the DEST DIRECTORY (e.g.
+        # "ctranslate2"), not the file path; the effective location is
+        # basename(src) directly under that directory.
+        norm = dest.replace("\\", "/").strip("/")
+        parts = norm.split("/")
+        if norm.lower().endswith(".dll"):
+            return len(parts) == 2 and parts[0].lower() == "ctranslate2"
+        return len(parts) == 1 and parts[0].lower() == "ctranslate2"
 
-    already = {_dest_name(src, dest) for src, dest in collected}
+    already = {
+        os.path.basename(dest) if dest.lower().endswith(".dll") else os.path.basename(src)
+        for src, dest in collected
+        if _is_flat(src, dest)
+    }
     for dll in glob.glob(os.path.join(pkg_root, "*", "bin", "*.dll")):
         base = os.path.basename(dll)
         if base in already:

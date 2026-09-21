@@ -249,6 +249,7 @@ class MainWindow(QMainWindow):
         self._sig.source.connect(self._source_badge.set_source)
         self._sig.speech.connect(self._activity.flash_speech)
         self._sig.error.connect(self._on_error)
+        self._sig.cuda_fallback.connect(self._on_cuda_fallback)
         # log_line is wired lazily — see _on_log_panel_toggled.
         self._sig.model_load.connect(self._activity.set_loading)
         # Async session stop completion (marshalled from the stop worker).
@@ -427,6 +428,27 @@ class MainWindow(QMainWindow):
         # disabled forever with no live session behind it.
         if self._app.session_id is None:
             self._set_running(False)
+
+    def _on_cuda_fallback(self, detail: str) -> None:
+        """Configured CUDA turned out unusable; the engine already reloaded
+        on CPU. Ask the user how to proceed (info-only — CPU already works)."""
+        from PySide6.QtWidgets import QMessageBox
+
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("GPU недоступен")
+        box.setText(
+            "GPU (CUDA) настроен, но не работает:\n"
+            f"{detail}\n\n"
+            "Приложение уже переключилось на CPU (распознавание медленнее). "
+            "Продолжить на CPU?"
+        )
+        stay = box.addButton("Работать на CPU", QMessageBox.ButtonRole.YesRole)
+        restart = box.addButton("Перезапустить", QMessageBox.ButtonRole.NoRole)
+        box.setDefaultButton(stay)
+        box.exec()
+        if box.clickedButton() is restart:
+            self._restart_app()
 
     def _set_running(self, running: bool) -> None:
         self._start_btn.setEnabled(not running)

@@ -128,3 +128,32 @@ def test_specs_exclude_torch_stack():
         spec = _read(SCRIPTS, name)
         for mod in ("torch", "torchaudio", "transformers", "pyannote", "hydra"):
             assert f'"{mod}"' in spec.split("excludes")[1].split("]")[0], f"{name} must exclude {mod}"
+
+
+def test_flat_nvidia_dedup_only_flat_entries():
+    """Regression: the flat-copy dedup used to skip DLLs that PyInstaller's
+    nvidia hooks placed into the nvidia/<lib>/bin TREE — invisible to the
+    Windows loader — so cublas64_12.dll never got its flat copy and CUDA
+    probes failed at runtime."""
+    import ast
+
+    spec = _read(SCRIPTS, "mockingbird.spec")
+    tree = ast.parse(spec)
+    fn = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_flat_nvidia_libs"
+    )
+    src = ast.unparse(fn)
+    assert "_is_flat" in src, "flat dedup must ignore nested-tree entries"
+
+
+def test_cuda_fallback_signal_wired():
+    """Engine fallback → signal → dialog (source guards)."""
+    eng = _read(SRC / "mockingbird", "stt/whisper_engine.py")
+    app = _read(SRC / "mockingbird", "app.py")
+    win = _read(SRC / "mockingbird", "ui/main_window.py")
+    ev = _read(SRC / "mockingbird", "events.py")
+    assert "on_cuda_fallback" in eng
+    assert "cuda_fallback = Signal(str)" in ev
+    assert "on_cuda_fallback = self.signals.cuda_fallback.emit" in app
+    assert "_on_cuda_fallback" in win and "Работать на CPU" in win
