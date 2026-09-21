@@ -171,9 +171,10 @@ def test_flat_nvidia_libs_dest_is_directory():
 
 
 def test_installer_iss_valid_setup_directives():
-    """ExtraDiskSpaceMB does not exist in Inno Setup 6 (regression:
-    ISCC 'Unrecognized [Setup] section directive'); the bytes-based
-    ExtraDiskSpace must be used instead."""
+    """ExtraDiskSpace/ExtraDiskSpaceMB do not exist in Inno Setup 6
+    (regression: ISCC 'Unrecognized [Setup] section directive'); the
+    correct directive is the bytes-based ExtraDiskSpaceRequired."""
     iss = _read("installer.iss")
     assert "ExtraDiskSpaceMB" not in iss
-    assert "ExtraDiskSpace=" in iss
+    assert "ExtraDiskSpace=" not in iss.replace("ExtraDiskSpaceRequired=", "")
+    assert "ExtraDiskSpaceRequired=" in iss

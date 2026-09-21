@@ -33,8 +33,8 @@ PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 ; Large CUDA bundle: raise the size checks so installs on full drives
 ; fail with a clear message instead of a mid-copy error.
-; ExtraDiskSpace is in BYTES (there is no MB variant): 5 GiB.
-ExtraDiskSpace=5368709120
+; ExtraDiskSpaceRequired is in BYTES (per Inno Setup docs): 5 GiB.
+ExtraDiskSpaceRequired=5368709120
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
