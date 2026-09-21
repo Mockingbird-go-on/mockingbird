@@ -44,9 +44,13 @@ powershell -ExecutionPolicy Bypass -File E:\mockingbird\scripts\build_windows.ps
 ```
 
 `build_windows.ps1` сам: ставит зависимости (`pip install -e ".[dev]"` +
-PyInstaller + cuDNN 9 для GPU-инференса ctranslate2), запускает
-PyInstaller (`scripts\mockingbird.spec`), затем ищет `ISCC.exe` и собирает
-инсталлятор.
+PyInstaller + пинненный nvidia-стек CUDA 12.4 для GPU-инференса ctranslate2),
+запускает PyInstaller (`scripts\mockingbird.spec`), затем ищет `ISCC.exe` и
+собирает инсталлятор.
+
+⚠️ nvidia-пакеты пиннуты к 12.4 (nvrtc 12.4.127 и т.д.): без пина pip ставит
+nvrtc 12.9, чьи DLL требуют драйвер ≥575 — на драйвере 550 DLL не
+инициализируется (WinError 5) и ctranslate2 падает с «CUDA недоступна».
 
 ### 1.3. Флаги build_windows.ps1
 

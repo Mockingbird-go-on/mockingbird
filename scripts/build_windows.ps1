@@ -50,10 +50,27 @@ if ($LASTEXITCODE -ne 0) {
 Invoke-Pip -Arguments @("install", "-e", ".[dev]")
 Invoke-Pip -Arguments @("install", "pyinstaller")
 
-# cuDNN 9: CTranslate2 needs it for float16/int8_float16 on CUDA; without
-# it get_supported_compute_types('cuda') only offers float32 and whisper
-# runs 2x slower. The pip wheel is found by ctranslate2 at runtime.
-Invoke-Pip -Arguments @("install", "nvidia-cudnn-cu12")
+# Drop any previously-resolved nvidia-* packages first: pip does not
+# downgrade on plain `install` if a newer version is already present, and a
+# 12.9 nvrtc left over from an earlier build would ship broken DLLs.
+python -m pip uninstall -y nvidia-cudnn-cu12 nvidia-cublas-cu12 nvidia-cuda-nvrtc-cu12 nvidia-cuda-runtime-cu12 nvidia-cufft-cu12 nvidia-curand-cu12 2>$null
+if ($LASTEXITCODE -ne 0) { Write-Host "(no nvidia packages were installed — clean env)" }
+
+# cuDNN 9 + the CUDA runtime DLLs ctranslate2 needs for float16/int8 on GPU.
+# IMPORTANT: pin the nvidia-* stack to CUDA 12.4 — without torch in the env
+# (removed with GigaAM) pip resolves nvidia-cuda-nvrtc-cu12 to the NEWEST
+# release (12.9), whose DLLs require driver >= 575. On a 550-era driver the
+# DLL loads but fails to initialize (WinError 5) and ctranslate2 dies with
+# "CUDA unavailable". Same 12.4 line the old torch cu124 install enforced.
+Invoke-Pip -Arguments @(
+    "install",
+    "nvidia-cudnn-cu12==9.1.0.70",
+    "nvidia-cublas-cu12==12.4.5.8",
+    "nvidia-cuda-nvrtc-cu12==12.4.127",
+    "nvidia-cuda-runtime-cu12==12.4.127",
+    "nvidia-cufft-cu12==11.2.1.3",
+    "nvidia-curand-cu12==10.3.5.147"
+)
 # faster-whisper's ctranslate2 wheel from PyPI already ships CUDA 12 GPU
 # support on Windows; there is no separate -cu12 package to install.
 # Verify the installed binary can see the GPU so GPU inference really works.
