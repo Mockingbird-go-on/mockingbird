@@ -104,6 +104,25 @@ if (-not (Test-Path "dist\mockingbird\mockingbird.exe")) {
     throw "Build produced no executable: dist\mockingbird\mockingbird.exe is missing."
 }
 
+# Flatten DLL-directory artifacts: on some PyInstaller versions a binaries
+# pair (src, "ctranslate2\<name>.dll") is materialized as a DIRECTORY
+# named <name>.dll containing the file (WinError 5 / "CUDA unavailable" at
+# runtime). Move the file up and drop the directory.
+$ct2dir = "dist\mockingbird\_internal\ctranslate2"
+if (Test-Path $ct2dir) {
+    Get-ChildItem -Path $ct2dir -Directory -Filter "*.dll" | ForEach-Object {
+        $inner = Get-ChildItem -Path $_.FullName -File | Select-Object -First 1
+        if ($inner) {
+            Move-Item -Force $inner.FullName (Join-Path $ct2dir $_.Name)
+            Write-Host "flattened $($_.Name)"
+        }
+        Remove-Item -Recurse -Force $_.FullName
+    }
+    # sanity: every remaining .dll entry must be a FILE
+    $badDirs = Get-ChildItem -Path $ct2dir -Directory -Filter "*.dll"
+    if ($badDirs) { throw "ctranslate2 still contains .dll directories after flattening" }
+}
+
 Write-Host ""
 Write-Host "Build complete: dist\mockingbird\"
 Write-Host "Run: dist\mockingbird\mockingbird.exe"
