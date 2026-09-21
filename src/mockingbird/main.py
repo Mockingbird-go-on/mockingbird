@@ -155,14 +155,21 @@ def main() -> int:
         return 0
     _harden_hf_symlinks()
     _set_app_user_model_id()
+    from mockingbird import diagnostics
+
     if "--cli" in sys.argv:
         from mockingbird.cli import run_cli
 
         config = load_config()
         setup_logging(config.storage.log_dir, _log_level())
+        diagnostics.install_crash_capture(config.storage.log_dir)
+        diagnostics.log_environment_banner(config)
         return run_cli(config)
     config = load_config()
     setup_logging(config.storage.log_dir, _log_level())
+    diagnostics.install_crash_capture(config.storage.log_dir)
+    diagnostics.log_environment_banner(config)
+    prev_crash = diagnostics.check_crash_marker(config.storage.log_dir)
     app = QApplication(sys.argv)
     app.setApplicationName("Mockingbird")
     app.setStyle("Fusion")
@@ -315,6 +322,34 @@ def main() -> int:
 
     if sys_warnings:
         _show_system_warnings(window, sys_warnings)
+
+    # Previous run crashed (excepthook marker): offer a diagnostics bundle
+    # while the process is alive and the logs are still on disk.
+    if prev_crash:
+        diagnostics.clear_crash_marker(config.storage.log_dir)
+        from PySide6.QtWidgets import QMessageBox
+
+        answer = QMessageBox.question(
+            window,
+            "Аварийное завершение",
+            "Предыдущий запуск Mockingbird завершился аварийно.\n"
+            "Собрать архив с логами для диагностики?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            try:
+                zip_path = diagnostics.collect_diagnostics(config)
+                QMessageBox.information(
+                    window, "Готово",
+                    f"Архив создан:\n{zip_path}",
+                )
+            except Exception:
+                log.exception("diagnostics collection failed")
+                QMessageBox.critical(
+                    window, "Ошибка",
+                    "Не удалось собрать архив диагностики "
+                    "(подробности в файле лога).",
+                )
 
     # Global hotkey Ctrl+Alt+H (Windows only; no-op elsewhere).
     from mockingbird.ui.global_hotkey import GlobalHotkey
