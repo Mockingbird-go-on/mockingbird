@@ -759,7 +759,6 @@ class SettingsDialog(QDialog):
             effective_loopback = loopback.split(": ", 1)[-1] if ": " in loopback else loopback
         else:
             effective_loopback = None
-        compute_device = self._device_choice.currentData() if hasattr(self, "_device_choice") else "auto"
         checks: list[tuple[str, object, object]] = [
             ("audio.device", effective_device, self.config.audio.device),
             ("audio.mode", mode, self.config.audio.mode),
@@ -820,7 +819,8 @@ class SettingsDialog(QDialog):
         else:
             self.config.audio.loopback_device = None
         self.config.stt.backend = "whisper"
-        self.config.whisper.device = compute_device
+        # whisper.device: the STT tab has no device combo anymore — keep the
+        # configured value (auto/cpu/cuda) untouched.
         self.config.whisper.model_size = self._model.currentText()
         self.config.whisper.compute_type = self._compute.currentData() or self._compute.currentText()
         beam_raw = self._beam.currentData() or self._beam.currentText()

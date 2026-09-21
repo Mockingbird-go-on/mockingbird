@@ -229,3 +229,51 @@ def test_onboarding_llm_check_runs_in_qthread():
     assert "explain_term" not in outside_run, (
         "explain_term must not run synchronously in the button slot"
     )
+
+
+def test_settings_apply_no_undefined_locals():
+    """Regression: apply() referenced a deleted gigaam-era local
+    (compute_device) and crashed BEFORE the theme was applied — the theme
+    switch silently did nothing. Source guard: every name assigned in
+    apply() must be defined there; cheap AST check for NameError-prone
+    locals."""
+    import ast
+
+    src = _read("ui/settings_dialog.py")
+    tree = ast.parse(src)
+    apply_fn = next(
+        n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "apply"
+    )
+    assigned = set()
+    for node in ast.walk(apply_fn):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    assigned.add(target.id)
+        elif isinstance(node, (ast.AugAssign, ast.AnnAssign)):
+            if isinstance(node.target, ast.Name):
+                assigned.add(node.target.id)
+        elif isinstance(node, ast.For):
+            if isinstance(node.target, ast.Name):
+                assigned.add(node.target.id)
+    used = {
+        n.id
+        for n in ast.walk(apply_fn)
+        if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
+    }
+    params = {"self"}
+    # module-level imports are fine; only flag names that look like locals
+    # (snake_case, assigned in apply, or obviously gigaam-era leftovers)
+    unresolved = used - assigned - params
+    # resolve against module-level names + builtins + imports
+    module_names = {
+        n.names[0].asname or n.names[0].name
+        for n in ast.walk(tree)
+        if isinstance(n, (ast.Import, ast.ImportFrom))
+    }
+    class_names = {n.name for n in ast.walk(tree) if isinstance(n, ast.ClassDef)}
+    fn_names = {n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+    import builtins
+
+    unresolved -= module_names | class_names | fn_names | set(dir(builtins))
+    assert not unresolved, f"apply() uses undefined names: {unresolved}"
