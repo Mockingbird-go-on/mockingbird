@@ -41,3 +41,6 @@ STABILITY_PLAN.md
 
 # ─── Прочее ─────────────────────────────────────────────
 .cache/
+
+# Offline install bundles (huge; rebuilt from scripts/build_offline_bundle.sh)
+installer/Mockingbird-OfflineBundle-*.zip

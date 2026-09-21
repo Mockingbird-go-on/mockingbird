@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 SCRIPTS = os.path.join(ROOT, "scripts")
@@ -213,3 +214,15 @@ def test_installer_uninstall_wipes_app_dir():
     in ~/.mockingbird and is handled by the uninstall dialog instead."""
     iss = _read("installer.iss")
     assert 'Type: filesandordirs; Name: "{app}"' in iss
+
+
+def test_offline_bundle_script_exists_and_resolves():
+    """scripts/build_offline_bundle.sh: the offline install bundle script
+    exists and looks for the installer in the canonical locations (project
+    root + /mnt/e/mockingbird/installer)."""
+    script = (Path(SCRIPTS) / "build_offline_bundle.sh").read_text(encoding="utf-8")
+    assert "snapshot_download" in script
+    assert "Mockingbird-OfflineBundle-" in script
+    assert "/mnt/e/mockingbird/installer" in script
+    assert "cache_dir" in script
+    assert "hf_hub" in script or "huggingface_hub" in script
