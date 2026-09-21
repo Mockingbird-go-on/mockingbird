@@ -218,14 +218,20 @@ def test_installer_uninstall_wipes_app_dir():
 
 def test_offline_bundle_script_exists_and_resolves():
     """scripts/build_offline_bundle.sh: the offline install bundle script
-    exists and looks for the installer in the canonical locations (project
-    root + /mnt/e/mockingbird/installer)."""
+    exists, looks for the installer in the canonical locations (project
+    root + /mnt/e/mockingbird/installer), and re-uses a model already
+    present in the cache (no download when cache hit)."""
     script = (Path(SCRIPTS) / "build_offline_bundle.sh").read_text(encoding="utf-8")
     assert "snapshot_download" in script
     assert "Mockingbird-OfflineBundle-" in script
     assert "/mnt/e/mockingbird/installer" in script
-    assert "cache_dir" in script
-    assert "hf_hub" in script or "huggingface_hub" in script
+    # Cache hit path MUST be tried before the network path.
+    assert "local_files_only=True" in script
+    assert "resume_download=True" in script
+    # Standalone ``model/`` dir is intentionally absent — the app reads
+    # the bundled HF cache directly via its own local_files_only path,
+    # so duplicating files under model/ would just bloat the zip.
+    assert "Каталог модели" not in script  # removed from README
 
 
 def test_uninstaller_kills_process_and_strips_attrs():

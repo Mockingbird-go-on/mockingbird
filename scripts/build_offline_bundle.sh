@@ -2,13 +2,17 @@
 # Build the Mockingbird offline bundle:
 #   Mockingbird-OfflineBundle-<ver>.zip
 #     ├── Mockingbird-Setup-<ver>.exe   (the Windows installer)
-#     ├── model/                          (HuggingFace snapshot of the default
-#     │                                    whisper model, ready to drop into
-#     │                                    %USERPROFILE%\.mockingbird\models\)
-#     └── README.txt                      (copy-paste instructions)
+#     ├── cache/                        (HuggingFace snapshot of the default
+#     │                                  whisper model, ready to drop into
+#     │                                  %USERPROFILE%\.mockingbird\models\)
+#     └── README.txt                    (copy-paste instructions)
 #
 # Designed for air-gapped / corporate-proxy / slow-link installs where
 # pulling ~1.6 GB from huggingface.co at first launch is impossible.
+#
+# Re-uses the model already present in the HF cache (default location or
+# the project's build/offline_model_cache/) — NEVER re-downloads what is
+# already on disk. Pass --clean to force a fresh download from scratch.
 #
 # Usage:
 #   bash scripts/build_offline_bundle.sh                 # default: large-v3-turbo
@@ -16,7 +20,7 @@
 #   bash scripts/build_offline_bundle.sh --clean         # purge any cached model
 #
 # Requires:
-#   - python3 with `huggingface_hub` and `huggingface_hub[snapshot]` installed
+#   - python3 with `huggingface_hub` installed
 #   - the Windows installer already built at installer/Mockingbird-Setup-<ver>.exe
 #     (run scripts/sync_and_build.sh -Installer first)
 
@@ -24,22 +28,24 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-MODEL="${1:-large-v3-turbo}"
+MODEL=""
 CLEAN=0
-if [[ "${1:-}" == "--clean" ]]; then
-  CLEAN=1
-  MODEL="large-v3-turbo"
-fi
-if [[ "${2:-}" == "--clean" ]] || [[ "${3:-}" == "--clean" ]]; then
-  CLEAN=1
-fi
+for a in "$@"; do
+  case "$a" in
+    --clean) CLEAN=1 ;;
+    -h|--help)
+      sed -n '2,30p' "$0"
+      exit 0
+      ;;
+    *) MODEL="${a}" ;;
+  esac
+done
+MODEL="${MODEL:-large-v3-turbo}"
 
 VERSION="$(python3 -c "import sys; sys.path.insert(0, '$ROOT_DIR/src'); from mockingbird import __version__; print(__version__)")"
 echo "=== Mockingbird offline bundle — version $VERSION, model $MODEL ==="
 
-# Find the installer. The script also looks under /mnt/e (the synced WSL
-# copy of E:\mockingbird) so users running this from WSL don't have to
-# mirror the installer back to the repo root.
+# Locate the installer (project root or /mnt/e/mockingbird/installer).
 INSTALLER_CANDIDATES=(
   "$ROOT_DIR/installer/Mockingbird-Setup-$VERSION.exe"
   "$ROOT_DIR/installer/Mockingbird-Setup-$VERSION.0.exe"
@@ -63,13 +69,6 @@ if [[ -z "$INSTALLER" || ! -f "$INSTALLER" ]]; then
 fi
 echo "  installer: $INSTALLER ($(du -h "$INSTALLER" | cut -f1))"
 
-CACHE_DIR="$ROOT_DIR/build/offline_model_cache"
-if [[ "$CLEAN" == "1" ]]; then
-  echo "  --clean: removing $CACHE_DIR"
-  rm -rf "$CACHE_DIR"
-fi
-mkdir -p "$CACHE_DIR"
-
 # Resolve repo id the same way the engine does.
 REPO_ID="$(python3 -c "
 import sys; sys.path.insert(0, '$ROOT_DIR/src')
@@ -80,37 +79,58 @@ print(_normalize_repo_id(repo))
 ")"
 echo "  hf repo: $REPO_ID"
 
-python3 - "$REPO_ID" "$CACHE_DIR" <<'PY'
-import sys, os
-from huggingface_hub import snapshot_download
-repo = sys.argv[1]
-cache = sys.argv[2]
-os.makedirs(cache, exist_ok=True)
-# We want the snapshot path so we can copy it verbatim into the bundle; the
-# engine's loader resolves HF cache symlinks transparently.
-path = snapshot_download(repo_id=repo, cache_dir=cache)
-print(f"  snapshot at: {path}")
-PY
+# Project-local cache (skipped on --clean; survives between runs so the
+# second bundle build does NOT re-download the 1.6 GB).
+CACHE_DIR="$ROOT_DIR/build/offline_model_cache"
+if [[ "$CLEAN" == "1" ]]; then
+  echo "  --clean: removing $CACHE_DIR"
+  rm -rf "$CACHE_DIR"
+fi
+mkdir -p "$CACHE_DIR"
 
-SNAPSHOT_DIR="$(ls -1d "$CACHE_DIR"/models--*/snapshots/* 2>/dev/null | head -1 || true)"
+# Step 1: try to use the model already on disk (HF default cache OR
+# project cache). No network call when the snapshot is present.
+SNAPSHOT_DIR="$(python3 - <<PY 2>/dev/null || true
+import os, sys
+os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+from huggingface_hub import snapshot_download
+try:
+    p = snapshot_download("$REPO_ID", cache_dir="$CACHE_DIR", local_files_only=True)
+    print(p)
+except Exception:
+    pass
+PY
+)"
+if [[ -n "$SNAPSHOT_DIR" && -d "$SNAPSHOT_DIR" ]]; then
+  echo "  cache hit: $SNAPSHOT_DIR (no download)"
+else
+  echo "  cache miss: downloading $REPO_ID (resume_download=True)…"
+  SNAPSHOT_DIR="$(python3 - <<PY
+import os, sys
+os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+from huggingface_hub import snapshot_download
+p = snapshot_download("$REPO_ID", cache_dir="$CACHE_DIR", resume_download=True)
+print(p)
+PY
+)"
+fi
 if [[ -z "$SNAPSHOT_DIR" || ! -d "$SNAPSHOT_DIR" ]]; then
-  echo "ERROR: snapshot directory not found under $CACHE_DIR"
+  echo "ERROR: snapshot not resolved (download failed?)"
   exit 1
 fi
-echo "  bundle model: $SNAPSHOT_DIR ($(du -sh "$SNAPSHOT_DIR" | cut -f1))"
+echo "  snapshot: $SNAPSHOT_DIR ($(du -sh "$SNAPSHOT_DIR" | cut -f1))"
 
+# Step 2: assemble bundle. Only cache/ — the HF format the app already
+# reads via its own local_files_only resolution. README documents the
+# xcopy path.
 BUNDLE_DIR="$ROOT_DIR/build/offline_bundle_stage"
 rm -rf "$BUNDLE_DIR"
-mkdir -p "$BUNDLE_DIR/model"
-# Copy snapshot contents (no symlinks — Windows-side target dir is NTFS).
-cp -RL "$SNAPSHOT_DIR/." "$BUNDLE_DIR/model/"
-cp "$INSTALLER" "$BUNDLE_DIR/"
-
-# Also include the repo's blob tree so the offline copy is a fully-functional
-# HF cache: app's resolve_model_path calls snapshot_download(..., local_files_only=True),
-# which looks up the snapshot path inside the cache_dir.
-mkdir -p "$BUNDLE_DIR/cache"
+mkdir -p "$BUNDLE_DIR"
+# Copy the entire HF cache dir (blobs + snapshots + refs + trees). The
+# snapshot resolution walks this layout via snapshot_download(...) so the
+# bundled cache is a drop-in for %USERPROFILE%\.mockingbird\models.
 cp -RL "$CACHE_DIR/." "$BUNDLE_DIR/cache/"
+cp "$INSTALLER" "$BUNDLE_DIR/"
 
 cat > "$BUNDLE_DIR/README.txt" <<EOF
 Mockingbird $VERSION — Offline Bundle
@@ -120,7 +140,6 @@ Contents
 --------
   Mockingbird-Setup-$VERSION.exe      Windows installer (1.9 GB)
   cache/                              HuggingFace model cache (large-v3-turbo)
-  model/                              Standalone snapshot of the same files
   README.txt                          This file
 
 When to use
@@ -138,15 +157,12 @@ Install instructions
 --------------------
 1. Run Mockingbird-Setup-$VERSION.exe and install Mockingbird normally.
 2. Quit Mockingbird if it auto-started.
-3. Copy the cache/ directory over your user model dir, e.g.
+3. Copy the cache/ directory over your user model dir:
 
      xcopy /E /I cache  "%USERPROFILE%\.mockingbird\models"
 
    The app will pick up the snapshot on next launch and the warm-start
    download will be skipped (no network needed).
-
-Alternatively, point Mockingbird at the model/ folder directly via the
-Settings dialog: "Каталог модели" → browse to model/.
 
 Verify
 ------
