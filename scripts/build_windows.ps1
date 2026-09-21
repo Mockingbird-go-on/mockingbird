@@ -53,8 +53,18 @@ Invoke-Pip -Arguments @("install", "pyinstaller")
 # Drop any previously-resolved nvidia-* packages first: pip does not
 # downgrade on plain `install` if a newer version is already present, and a
 # 12.9 nvrtc left over from an earlier build would ship broken DLLs.
-python -m pip uninstall -y nvidia-cudnn-cu12 nvidia-cublas-cu12 nvidia-cuda-nvrtc-cu12 nvidia-cuda-runtime-cu12 nvidia-cufft-cu12 nvidia-curand-cu12 2>$null
-if ($LASTEXITCODE -ne 0) { Write-Host "(no nvidia packages were installed - clean env)" }
+# stderr noise (e.g. "Ignoring invalid distribution ~orch") must NOT abort
+# the script: PowerShell wraps native stderr in NativeCommandError under
+# $ErrorActionPreference=Stop.
+$nvPkgs = @(
+    "nvidia-cudnn-cu12", "nvidia-cublas-cu12", "nvidia-cuda-nvrtc-cu12",
+    "nvidia-cuda-runtime-cu12", "nvidia-cufft-cu12", "nvidia-curand-cu12"
+)
+$prevEAP = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+python -m pip uninstall -y @nvPkgs 2>$null | Out-Null
+$ErrorActionPreference = $prevEAP
+Write-Host "(nvidia packages reset - reinstalling the pinned 12.4 line)"
 
 # cuDNN 9 + the CUDA runtime DLLs ctranslate2 needs for float16/int8 on GPU.
 # IMPORTANT: pin the nvidia-* stack to CUDA 12.4 - without torch in the env
