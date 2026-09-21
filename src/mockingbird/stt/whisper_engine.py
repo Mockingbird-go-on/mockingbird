@@ -512,6 +512,18 @@ def resolve_model_path(cfg: WhisperConfig, progress_cb=None) -> str:
             log.warning(
                 "whisper model download attempt %d failed: %s", attempt, exc
             )
+            if "CERTIFICATE_VERIFY_FAILED" in str(exc) or (
+                isinstance(exc, Exception)
+                and "certificate verify failed" in str(exc).lower()
+            ):
+                log.error(
+                    "whisper model download blocked by TLS interception "
+                    "(self-signed certificate in certificate chain). This is "
+                    "usually a corporate proxy / antivirus MITM. Workarounds: "
+                    "disable SSL inspection for huggingface.co, or download "
+                    "the model on another machine and copy it to the models "
+                    "directory."
+                )
     else:
         raise RuntimeError(
             f"whisper model download failed after retries: {last_exc}"

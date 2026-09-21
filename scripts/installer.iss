@@ -65,7 +65,12 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
-; Only remove build artifacts; user knowledge bases under {userdocs} stay.
+; Inno only removes what it installed; runtime artifacts (logs, __pycache__,
+; crash dumps) created under {app} after install would otherwise leave an
+; "could not remove some elements" notice. The app keeps ALL user data in
+; ~/.mockingbird (handled by the dialog below), so wiping {app} on
+; uninstall is safe.
+Type: filesandordirs; Name: "{app}"
 
 [UninstallRun]
 ; Optional data cleanup is handled via the custom uninstall page below.

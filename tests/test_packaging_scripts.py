@@ -204,3 +204,12 @@ def test_installer_iss_paths_are_cwd_independent():
         s = line.strip()
         if s.lower().startswith(("sourcedist", "setupiconfile=scripts", "outputdir=installer")):
             raise AssertionError(f"bare relative path: {s}")
+
+
+def test_installer_uninstall_wipes_app_dir():
+    """UninstallDelete must clean the whole {app} tree: Inno removes only
+    what it installed, runtime artifacts (logs, __pycache__) under {app}
+    otherwise trigger 'some elements could not be removed'. User data lives
+    in ~/.mockingbird and is handled by the uninstall dialog instead."""
+    iss = _read("installer.iss")
+    assert 'Type: filesandordirs; Name: "{app}"' in iss

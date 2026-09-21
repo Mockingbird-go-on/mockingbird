@@ -289,13 +289,10 @@ def main() -> int:
     context, window, sys_warnings = _build_app()
     app.processEvents()
 
-    # Kick the STT model load off as early as possible: the worker thread
-    # loads the weights while the window is still being shown / onboarding /
-    # system checks run. By the time the user reaches the UI, the model is
-    # already loading (or ready) instead of waiting for warm_start later.
-    context.warm_start()
-
-    # First-launch onboarding: show wizard if LLM is not configured.
+    # First-launch onboarding: show wizard if LLM is not configured. This
+    # MUST run before warm_start() — on a clean profile warm start would
+    # immediately download the DEFAULT whisper model before the user picked
+    # one in the wizard (and before the theme/LLM choices were saved).
     if not config.llm.base_url or not config.llm.api_key:
         from mockingbird.ui.onboarding import OnboardingWizard
         from PySide6.QtWidgets import QDialog
@@ -311,6 +308,12 @@ def main() -> int:
         theme_name = wizard._theme_choice  # noqa: SLF001
         settings.setValue("ui/theme", theme_name)
         apply_theme(app, theme_name)
+
+    # Kick the STT model load off as early as possible: the worker thread
+    # loads the weights while the window is still being shown / system
+    # checks run. By the time the user reaches the UI, the model is already
+    # loading (or ready) instead of waiting for warm_start later.
+    context.warm_start()
 
     window.show()
     window.raise_()
