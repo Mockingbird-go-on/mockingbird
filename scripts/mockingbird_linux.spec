@@ -82,7 +82,21 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     runtime_hooks=[],
-    excludes=["pyaudiowpatch"],
+    excludes=[
+        "pyaudiowpatch",
+        # GigaAM leftovers — nothing imports them; keep the bundle lean.
+        "torch",
+        "torchaudio",
+        "torchvision",
+        "transformers",
+        "speechbrain",
+        "pyannote",
+        "hydra",
+        "omegaconf",
+        "matplotlib",
+        "tkinter",
+        "IPython",
+    ],
     noarchive=False,
 )
 

@@ -116,3 +116,12 @@ def test_store_close_idempotent():
     except Exception:
         raised = True
     assert raised, "closed store must refuse further work"
+
+
+def test_specs_exclude_torch_stack():
+    """torch/transformers still sit in some build envs as user packages —
+    the specs must exclude them explicitly (bundle was ~2 GB bigger)."""
+    for name in ("mockingbird.spec", "mockingbird_linux.spec"):
+        spec = _read(SCRIPTS, name)
+        for mod in ("torch", "torchaudio", "transformers", "pyannote", "hydra"):
+            assert f'"{mod}"' in spec.split("excludes")[1].split("]")[0], f"{name} must exclude {mod}"

@@ -136,7 +136,22 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     runtime_hooks=[],
-    excludes=[],
+    excludes=[
+        # GigaAM leftovers in the build env (installed as user packages):
+        # nothing in mockingbird imports them anymore, but PyInstaller still
+        # follows them through transitive deps and ships ~2 GB of torch.
+        "torch",
+        "torchaudio",
+        "torchvision",
+        "transformers",
+        "speechbrain",
+        "pyannote",
+        "hydra",
+        "omegaconf",
+        "matplotlib",
+        "tkinter",
+        "IPython",
+    ],
     noarchive=False,
 )
 
