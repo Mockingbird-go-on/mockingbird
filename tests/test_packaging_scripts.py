@@ -35,7 +35,7 @@ def test_iss_uses_single_collect_dir():
     import re
     files_section = iss.split("[Files]", 1)[1].split("[", 1)[0]
     sources = re.findall(r'Source: "([^"]+)"', files_section)
-    assert sources == ["dist\\mockingbird\\*"], sources
+    assert sources == ["{#RootDir}dist\\mockingbird\\*"], sources
 
 
 def test_iss_uninstall_preserves_user_data_by_default():
