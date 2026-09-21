@@ -226,3 +226,20 @@ def test_offline_bundle_script_exists_and_resolves():
     assert "/mnt/e/mockingbird/installer" in script
     assert "cache_dir" in script
     assert "hf_hub" in script or "huggingface_hub" in script
+
+
+def test_uninstaller_kills_process_and_strips_attrs():
+    """The uninstall must taskkill any running mockingbird.exe and strip
+    system/hidden/read-only attrs from {app} before Inno's own file
+    delete. Without these, Windows-owned desktop.ini / folder.ico
+    survive uninstall with the 'could not remove some elements' notice."""
+    iss = _read("installer.iss")
+    assert "taskkill /F /IM mockingbird.exe" in iss
+    assert "stripappattrs" in iss
+    assert "attrib -S -H -R" in iss
+    # strip step MUST come before the [UninstallDelete] entry in the file.
+    strip_idx = iss.index("stripappattrs")
+    delete_idx = iss.index("Type: filesandordirs; Name: \"{app}\"")
+    assert strip_idx < delete_idx, (
+        "attrib strip must run BEFORE Inno's [UninstallDelete]"
+    )

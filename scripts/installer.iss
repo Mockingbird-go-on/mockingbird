@@ -64,6 +64,18 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent
 
+[UninstallRun]
+; Aggressive cleanup BEFORE file deletion:
+;   (1) kill any running Mockingbird process (without this the uninstaller
+;       cannot remove mockingbird.exe — "some elements could not be
+;       removed");
+;   (2) strip system/hidden/read-only attributes from {app} so Windows-
+;       owned files like desktop.ini / folder.ico do not survive.
+; The cmd ``2>nul & exit /b 0`` keeps uninstall going even if there is no
+; running instance (taskkill returns 128 then).
+Filename: "{cmd}"; Parameters: "/C taskkill /F /IM mockingbird.exe /T 2>nul & exit /b 0"; Flags: runhidden; RunOnceId: "killmockingbird"
+Filename: "{cmd}"; Parameters: "/C attrib -S -H -R ""{app}\*.*"" /S /D 2>nul & exit /b 0"; Flags: runhidden; RunOnceId: "stripappattrs"
+
 [UninstallDelete]
 ; Inno only removes what it installed; runtime artifacts (logs, __pycache__,
 ; crash dumps) created under {app} after install would otherwise leave an
@@ -71,9 +83,6 @@ Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}
 ; ~/.mockingbird (handled by the dialog below), so wiping {app} on
 ; uninstall is safe.
 Type: filesandordirs; Name: "{app}"
-
-[UninstallRun]
-; Optional data cleanup is handled via the custom uninstall page below.
 
 [Code]
 const
@@ -84,6 +93,14 @@ begin
   Result := True;
 end;
 
+// Strip read-only / hidden / system attributes from every file under
+// {app} BEFORE Inno runs its own file delete. Windows sometimes marks
+// desktop.ini / folder.ico RO, and the install-time "ignoreversion"
+// flag on those files does not help at uninstall time — Inno skips
+// them silently and the user sees "some elements could not be removed".
+// Done via [UninstallRun] (attrib -S -H -R /S /D) — Inno's Pascal
+// Exec() signature is fragile across versions, and a dedicated
+// UninstallRun entry is what every Inno docs example uses.
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   DataDir: String;
