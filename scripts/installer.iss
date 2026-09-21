@@ -7,8 +7,12 @@
 ; User data (~/.mockingbird) is NEVER removed automatically; the uninstaller
 ; offers an optional cleanup task instead.
 
+; All relative paths below are anchored to the PROJECT ROOT (E:\mockingbird
+; in the standard layout): {#SourcePath} is the scripts\ directory where
+; this .iss lives.
+#define RootDir AddBackslash(ExtractFilePath(ExtractFilePath(SourcePath)))
 #define MyAppName "Mockingbird"
-#define MyAppVersion GetVersionNumbersString("dist\mockingbird\mockingbird.exe")
+#define MyAppVersion GetVersionNumbersString(RootDir + "dist\mockingbird\mockingbird.exe")
 #define MyAppPublisher "Mockingbird"
 #define MyAppExeName "mockingbird.exe"
 #define MyAppCliExeName "mockingbird-cli.exe"
@@ -22,9 +26,11 @@ AppPublisher={#MyAppPublisher}
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
-OutputDir=installer
+OutputDir={#RootDir}installer
 OutputBaseFilename=Mockingbird-Setup-{#MyAppVersion}
-SetupIconFile=scripts\logo_mockingbird.ico
+; {#SourcePath} = directory of this .iss file (works no matter what the
+; current directory is when ISCC is invoked).
+SetupIconFile={#SourcePath}\logo_mockingbird.ico
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
@@ -45,7 +51,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Name: "cliicon"; Description: "Create Start Menu shortcut for mockingbird-cli (headless REPL)"; GroupDescription: "Additional icons:"
 
 [Files]
-Source: "dist\mockingbird\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#RootDir}dist\mockingbird\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Dirs]
 ; Per-user data dir is created at runtime, not by the installer.

@@ -29,7 +29,7 @@ def test_iss_exists():
 def test_iss_uses_single_collect_dir():
     iss = _read("installer.iss")
     # Both exes live in dist\mockingbird\ (single COLLECT in the spec).
-    assert 'Source: "dist\\mockingbird\\*"' in iss
+    assert 'Source: "{#RootDir}dist\\mockingbird\\*"' in iss
     assert "mockingbird-cli" in iss
     # The [Files] section must package exactly one source dir (single COLLECT).
     import re
@@ -178,3 +178,20 @@ def test_installer_iss_valid_setup_directives():
     assert "ExtraDiskSpaceMB" not in iss
     assert "ExtraDiskSpace=" not in iss.replace("ExtraDiskSpaceRequired=", "")
     assert "ExtraDiskSpaceRequired=" in iss
+
+
+def test_installer_iss_paths_are_cwd_independent():
+    """ISCC resolves relative Source/SetupIconFile paths against the CURRENT
+    DIRECTORY, not the .iss location (regression: 'Системе не удается найти
+    указанный путь' when the cwd differed). Every path must be anchored via
+    {#SourcePath}/{#RootDir}."""
+    iss = _read("installer.iss")
+    assert '#define RootDir' in iss
+    assert 'SetupIconFile={#SourcePath}' in iss
+    assert 'Source: "{#RootDir}dist' in iss
+    assert 'OutputDir={#RootDir}installer' in iss
+    # no bare relative paths left
+    for line in iss.splitlines():
+        s = line.strip()
+        if s.lower().startswith(("sourcedist", "setupiconfile=scripts", "outputdir=installer")):
+            raise AssertionError(f"bare relative path: {s}")
