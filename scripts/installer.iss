@@ -10,7 +10,10 @@
 ; All relative paths below are anchored to the PROJECT ROOT (E:\mockingbird
 ; in the standard layout): {#SourcePath} is the scripts\ directory where
 ; this .iss lives.
-#define RootDir AddBackslash(ExtractFilePath(ExtractFilePath(SourcePath)))
+; SourcePath = "E:\mockingbird\scripts\" (WITH trailing backslash, verified
+; against ISCC 6.7.3). Two RPos cuts drop the trailing delimiter and the
+; "scripts" component, yielding the project root with a trailing backslash.
+#define RootDir Copy(SourcePath, 1, RPos("\", Copy(SourcePath, 1, Len(SourcePath)-1)) - 1) + "\"
 #define MyAppName "Mockingbird"
 #define MyAppVersion GetVersionNumbersString(RootDir + "dist\mockingbird\mockingbird.exe")
 #define MyAppPublisher "Mockingbird"

@@ -180,6 +180,15 @@ def test_installer_iss_valid_setup_directives():
     assert "ExtraDiskSpaceRequired=" in iss
 
 
+def test_installer_iss_rootdir_formula():
+    """RootDir must end with a backslash (regression: 'E:\\mockingbirddist'
+    — concatenations like RootDir + "dist\\..." lost the separator)."""
+    iss = _read("installer.iss")
+    assert '#define RootDir Copy' in iss
+    assert 'RPos("\\", Copy(SourcePath, 1, Len(SourcePath)-1))' in iss
+    assert iss.count('+ "\\"') >= 1
+
+
 def test_installer_iss_paths_are_cwd_independent():
     """ISCC resolves relative Source/SetupIconFile paths against the CURRENT
     DIRECTORY, not the .iss location (regression: 'Системе не удается найти
