@@ -1,4 +1,4 @@
-# Build a Windows .exe with PyInstaller. Run on a Windows 10/11 machine.
+﻿# Build a Windows .exe with PyInstaller. Run on a Windows 10/11 machine.
 #
 # IMPORTANT:
 #   1) Copy the project to a Windows-native path FIRST (do NOT build from
@@ -15,7 +15,7 @@
 param(
     # Also build the Inno Setup installer (requires ISCC.exe on PATH or in
     # the default Program Files location). The PyInstaller dist\ outputs
-    # must already exist — this script builds them first anyway.
+    # must already exist - this script builds them first anyway.
     [switch]$Installer
 )
 $ErrorActionPreference = "Stop"
@@ -54,10 +54,10 @@ Invoke-Pip -Arguments @("install", "pyinstaller")
 # downgrade on plain `install` if a newer version is already present, and a
 # 12.9 nvrtc left over from an earlier build would ship broken DLLs.
 python -m pip uninstall -y nvidia-cudnn-cu12 nvidia-cublas-cu12 nvidia-cuda-nvrtc-cu12 nvidia-cuda-runtime-cu12 nvidia-cufft-cu12 nvidia-curand-cu12 2>$null
-if ($LASTEXITCODE -ne 0) { Write-Host "(no nvidia packages were installed — clean env)" }
+if ($LASTEXITCODE -ne 0) { Write-Host "(no nvidia packages were installed - clean env)" }
 
 # cuDNN 9 + the CUDA runtime DLLs ctranslate2 needs for float16/int8 on GPU.
-# IMPORTANT: pin the nvidia-* stack to CUDA 12.4 — without torch in the env
+# IMPORTANT: pin the nvidia-* stack to CUDA 12.4 - without torch in the env
 # (removed with GigaAM) pip resolves nvidia-cuda-nvrtc-cu12 to the NEWEST
 # release (12.9), whose DLLs require driver >= 575. On a 550-era driver the
 # DLL loads but fails to initialize (WinError 5) and ctranslate2 dies with
