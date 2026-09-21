@@ -171,13 +171,13 @@ def test_flat_nvidia_libs_dest_is_directory():
 
 
 def test_installer_iss_valid_setup_directives():
-    """ExtraDiskSpace/ExtraDiskSpaceMB do not exist in Inno Setup 6
-    (regression: ISCC 'Unrecognized [Setup] section directive'); the
-    correct directive is the bytes-based ExtraDiskSpaceRequired."""
+    """No ExtraDiskSpace* directives (regressions: ExtraDiskSpaceMB does not
+    exist; ExtraDiskSpaceRequired=5 GiB inflated the free-space requirement
+    to 9.1 GB on top of the real ~4.1 GB payload). Inno accounts for the
+    actual file sizes and temp decompression itself; the model lives in
+    ~/.mockingbird, not {app}."""
     iss = _read("installer.iss")
-    assert "ExtraDiskSpaceMB" not in iss
-    assert "ExtraDiskSpace=" not in iss.replace("ExtraDiskSpaceRequired=", "")
-    assert "ExtraDiskSpaceRequired=" in iss
+    assert "ExtraDiskSpace" not in iss
 
 
 def test_installer_iss_rootdir_formula():
