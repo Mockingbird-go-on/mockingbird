@@ -79,7 +79,7 @@ def test_linux_spec_exists():
 
 def test_linux_spec_excludes_pyaudiowpatch():
     spec = _read("mockingbird_linux.spec")
-    assert 'excludes=["pyaudiowpatch"]' in spec
+    assert '"pyaudiowpatch"' in spec.split("excludes")[1].split("]")[0]
     assert 'collect_submodules("pyaudiowpatch")' not in spec
 
 
@@ -100,9 +100,11 @@ def test_specs_no_gigaam_leftovers():
     """GigaAM was removed: specs must not bundle pyannote or torch anymore."""
     for name in ("mockingbird.spec", "mockingbird_linux.spec"):
         spec = _read(name)
-        assert "pyannote" not in spec, name
+        collected = spec.split("excludes")[0]
+        assert "pyannote" not in collected, name
         assert '_collect_optional("torch")' not in spec, name
         assert "collect_submodules(\"torch\")" not in spec, name
+        # explicit excludes[] entries are REQUIRED on dirty build envs
         assert "vendor" not in spec, name
 
 
