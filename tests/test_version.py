@@ -7,9 +7,11 @@ SCRIPTS = ROOT / "scripts"
 
 
 def test_version_is_semver():
+    """4-component scheme (2026-09-21): MAJOR.UI.BACKEND.FIXES, e.g. 1.0.0.0
+    (1 — major, 2nd — UI changes, 3rd — backend, 4th — small bugfixes)."""
     from mockingbird import __version__
 
-    assert re.fullmatch(r"\d+\.\d+\.\d+", __version__), __version__
+    assert re.fullmatch(r"\d+\.\d+\.\d+\.\d+", __version__), __version__
 
 
 def test_pyproject_uses_dynamic_version_from_package():
