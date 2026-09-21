@@ -270,7 +270,7 @@ class App:
         self.engine.on_partial = self._on_engine_partial
         self.engine.on_final = self._on_engine_final
         self.engine.on_ready = self._on_engine_ready
-        self.engine.on_error = self.signals.error.emit
+        self.engine.on_error = self._on_engine_error_signal
         self.engine.on_cuda_fallback = self.signals.cuda_fallback.emit
         self.engine.on_progress = self.signals.model_load.emit
         # SQLite writes are marshalled to the GUI thread via this signal.
@@ -285,6 +285,27 @@ class App:
         self.interview.on_llm_answer = self.signals.llm_answer.emit
         self.interview.on_context = self.signals.context.emit
         self.signals.context.connect(self._on_context_shift)
+
+    def _on_engine_error_signal(self, message: str) -> None:
+        """Engine error → UI. Model load/download failures also fire the
+        dedicated ``model_load_failed`` signal so the download overlay can
+        close and offer a retry."""
+        low = message.lower()
+        if "model" in low and ("download" in low or "cancelled" in low):
+            self.signals.model_load_failed.emit(message)
+        self.signals.error.emit(message)
+
+    def retry_model_download(self) -> None:
+        """User pressed Retry in the download-failed dialog: drop the cancel
+        flag and spin the warm start again."""
+        self.engine.clear_cancel_download()
+        try:
+            self.warm_start()
+        except Exception:  # noqa: BLE001
+            log.exception("model download retry failed")
+
+    def cancel_model_download(self) -> None:
+        self.engine.request_cancel_download()
 
     def _on_term(self, detected) -> None:
         self.signals.term.emit(detected)

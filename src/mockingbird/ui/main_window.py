@@ -64,6 +64,9 @@ class MainWindow(QMainWindow):
                 self.resize(app.config.window.width, app.config.window.height)
 
         self._session_seconds = 0
+        # Lazy download overlay — created on the first download progress
+        # event (see _on_model_load_progress).
+        self._model_dl = None
         self._session_timer = QTimer(self)
         self._session_timer.setInterval(1000)
         self._session_timer.timeout.connect(self._tick_session)
@@ -252,6 +255,8 @@ class MainWindow(QMainWindow):
         self._sig.cuda_fallback.connect(self._on_cuda_fallback)
         # log_line is wired lazily — see _on_log_panel_toggled.
         self._sig.model_load.connect(self._activity.set_loading)
+        self._sig.model_load.connect(self._on_model_load_progress)
+        self._sig.model_load_failed.connect(self._on_model_load_failed)
         # Async session stop completion (marshalled from the stop worker).
         self._stop_done.connect(self._on_stop_done)
 
@@ -285,6 +290,66 @@ class MainWindow(QMainWindow):
         self._timer_label.setText("00:00")
         self._set_running(False)
         self._log_label.setText(self._log_path_text())
+
+    # -- model download overlay ------------------------------------------------
+
+    def _on_model_load_progress(self, message: str, percent: float) -> None:
+        """Route model_load progress to the download overlay.
+
+        The dialog is created lazily on the FIRST progress event and only
+        while a download is plausible (percent >= 0 or a "Downloading…"
+        message); plain "Loading model into memory…" events with -1 never
+        spawn it — the model is already on disk then.
+        """
+        downloading = percent >= 0 or "download" in message.lower()
+        if not downloading:
+            if self._model_dl is not None and self._model_dl.isVisible():
+                self._model_dl.done_ok()
+            return
+        if self._model_dl is None:
+            from mockingbird.ui.model_download_dialog import ModelDownloadDialog
+
+            self._model_dl = ModelDownloadDialog(parent=None)
+            self._model_dl.cancelled.connect(self._on_model_dl_cancel)
+            self._model_dl.set_model_name(
+                f"Модель: {self._app.config.whisper.model_size}"
+            )
+            self._model_dl.show_above(self)
+        self._model_dl.set_progress(message, percent)
+
+    def _on_model_load_failed(self, error: str) -> None:
+        """All download attempts failed (or cancelled): close the overlay and
+        offer retry / offline hint."""
+        if self._model_dl is not None:
+            self._model_dl.done_failed(error)
+        from PySide6.QtWidgets import QMessageBox
+
+        low = error.lower()
+        if "certificate" in low:
+            text = (
+                "Не удалось скачать модель: соединение блокируется "
+                "прокси-сервером или антивирусом (подмена SSL-сертификата).\n\n"
+                "Варианты:\n"
+                "• Попросить IT добавить huggingface.co в исключения SSL-инспекции\n"
+                "• Перенести папку модели с другой машины в\n"
+                f"  {self._app.config.whisper.model_dir or '~/.mockingbird/models'}"
+            )
+        elif "cancelled" in low:
+            return  # user cancelled deliberately — no nagging
+        else:
+            text = f"Не удалось скачать модель распознавания:\n{error}\n\nПроверьте интернет-соединение."
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Загрузка модели")
+        box.setText(text)
+        retry = box.addButton("Повторить", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Закрыть", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is retry:
+            self._app.retry_model_download()
+
+    def _on_model_dl_cancel(self) -> None:
+        self._app.cancel_model_download()
 
     def _set_stopping(self, stopping: bool) -> None:
         """Intermediate state while the session is being torn down."""

@@ -439,7 +439,7 @@ def _fuzzy_fix_latin_partial(text: str, matcher) -> str:
     return _LATIN_TOKEN_RE.sub(_fix, text)
 
 
-def resolve_model_path(cfg: WhisperConfig, progress_cb=None) -> str:
+def resolve_model_path(cfg: WhisperConfig, progress_cb=None, cancel_event=None) -> str:
     """Resolve the whisper model to a local path, checking local storage first.
 
     Precedence:
@@ -491,13 +491,18 @@ def resolve_model_path(cfg: WhisperConfig, progress_cb=None) -> str:
         # proxy can hold the connection open forever ("Загрузка модели…"
         # with no error and no way out but a restart).
         "etag_timeout": 10,
+        # Resume partial blob downloads across retries instead of starting
+        # the 1.6 GB model.bin from scratch on every attempt.
+        "resume_download": True,
     }
     if progress_cb is not None:
         progress_cb("Downloading whisper model…", 0.0)
         reporter = _DownloadReporter(progress_cb)
         kwargs["tqdm_class"] = _progress_tqdm_class(reporter)
     last_exc: Exception | None = None
-    for attempt in (1, 2):
+    for attempt in range(1, 4):
+        if cancel_event is not None and cancel_event.is_set():
+            raise RuntimeError("whisper model download cancelled by user")
         try:
             path = snapshot_download(repo_id, **kwargs)
             break
@@ -505,6 +510,7 @@ def resolve_model_path(cfg: WhisperConfig, progress_cb=None) -> str:
             # Older huggingface_hub may not accept tqdm_class/etag_timeout.
             kwargs.pop("tqdm_class", None)
             kwargs.pop("etag_timeout", None)
+            kwargs.pop("resume_download", None)
             path = snapshot_download(repo_id, **kwargs)
             break
         except Exception as exc:  # noqa: BLE001
@@ -524,6 +530,13 @@ def resolve_model_path(cfg: WhisperConfig, progress_cb=None) -> str:
                     "the model on another machine and copy it to the models "
                     "directory."
                 )
+            if attempt < 3 and cancel_event is not None and cancel_event.is_set():
+                raise RuntimeError(
+                    "whisper model download cancelled by user"
+                ) from exc
+            if attempt < 3:
+                # Backoff before the next retry (1s, 5s).
+                time.sleep(1.0 if attempt == 1 else 5.0)
     else:
         raise RuntimeError(
             f"whisper model download failed after retries: {last_exc}"
@@ -583,6 +596,18 @@ class WhisperEngine:
         self.on_cuda_fallback = None
         self.on_progress = None
         self.on_speaker_identify = None  # callable(audio, sample_rate) -> str
+        # Set by the UI to abort an in-flight model download (Cancel in the
+        # download overlay); checked by resolve_model_path between retries.
+        self._cancel_download: threading.Event | None = None
+
+    def request_cancel_download(self) -> None:
+        """Ask an in-flight model download to stop (idempotent, thread-safe)."""
+        if self._cancel_download is None:
+            self._cancel_download = threading.Event()
+        self._cancel_download.set()
+
+    def clear_cancel_download(self) -> None:
+        self._cancel_download = None
 
     def set_text_matcher(self, matcher) -> None:
         """Inject a PhoneticMatcher for post-correction of transcripts."""
@@ -776,7 +801,9 @@ class WhisperEngine:
                 self.on_progress(message, percent)
 
         report(f"Loading {self._cfg.model_size} whisper model…", -1.0)
-        model_path = resolve_model_path(self._cfg, progress_cb=report)
+        model_path = resolve_model_path(
+            self._cfg, progress_cb=report, cancel_event=self._cancel_download
+        )
         problem = _model_dir_problem(model_path)
         if problem is not None:
             raise RuntimeError(
