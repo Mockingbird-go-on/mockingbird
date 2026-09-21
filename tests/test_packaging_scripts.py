@@ -168,3 +168,12 @@ def test_flat_nvidia_libs_dest_is_directory():
     ps1 = _read("build_windows.ps1")
     assert "Copy-Item -Force $inner.FullName" in ps1
     assert "Move-Item -Force $inner.FullName (Join-Path $ct2dir" not in ps1
+
+
+def test_installer_iss_valid_setup_directives():
+    """ExtraDiskSpaceMB does not exist in Inno Setup 6 (regression:
+    ISCC 'Unrecognized [Setup] section directive'); the bytes-based
+    ExtraDiskSpace must be used instead."""
+    iss = _read("installer.iss")
+    assert "ExtraDiskSpaceMB" not in iss
+    assert "ExtraDiskSpace=" in iss

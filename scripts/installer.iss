@@ -31,9 +31,10 @@ WizardStyle=modern
 ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
-; Large CUDA-torch bundle: raise the size checks so installs on full drives
+; Large CUDA bundle: raise the size checks so installs on full drives
 ; fail with a clear message instead of a mid-copy error.
-ExtraDiskSpaceMB=5120
+; ExtraDiskSpace is in BYTES (there is no MB variant): 5 GiB.
+ExtraDiskSpace=5368709120
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
