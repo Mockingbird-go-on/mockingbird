@@ -157,3 +157,16 @@ def test_cuda_fallback_signal_wired():
     assert "cuda_fallback = Signal(str)" in ev
     assert "on_cuda_fallback = self.signals.cuda_fallback.emit" in app
     assert "_on_cuda_fallback" in win and "Работать на CPU" in win
+
+
+def test_build_scripts_incremental_by_default():
+    """--clean must be OPT-IN: incremental builds are ~3x faster. The bash
+    wrapper translates --clean to the PowerShell -Clean switch."""
+    ps1 = _read(SCRIPTS, "build_windows.ps1")
+    sh = _read(SCRIPTS, "sync_and_build.sh")
+    assert '"--clean" --noconfirm' not in ps1
+    assert "if ($Clean) { $pyiArgs += \"--clean\" }" in ps1
+    assert "[switch]$Clean" in ps1
+    assert "--clean) BUILD_ARGS+=(\"-Clean\")" in sh
+    # torch stack uninstall is best-effort, must not abort the build
+    assert "python -m pip uninstall -y torch torchaudio torchvision" in ps1

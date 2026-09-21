@@ -8,6 +8,7 @@
 # Usage (from anywhere in WSL):
 #   bash scripts/sync_and_build.sh            # default build
 #   bash scripts/sync_and_build.sh --no-build # sync only, skip the build
+#   bash scripts/sync_and_build.sh --clean    # full rebuild (drop PyInstaller cache)
 #
 # Requires: rsync, /mnt/e mounted, Windows Python 3.11+ on the target machine.
 
@@ -32,6 +33,8 @@ DO_BUILD=1
 for arg in "$@"; do
     case "$arg" in
         --no-build) DO_BUILD=0 ;;
+        # translate to the PowerShell switch spelling
+        --clean) BUILD_ARGS+=("-Clean") ;;
         *) BUILD_ARGS+=("$arg") ;;
     esac
 done

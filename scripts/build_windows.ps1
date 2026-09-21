@@ -16,7 +16,12 @@ param(
     # Also build the Inno Setup installer (requires ISCC.exe on PATH or in
     # the default Program Files location). The PyInstaller dist\ outputs
     # must already exist - this script builds them first anyway.
-    [switch]$Installer
+    [switch]$Installer,
+    # Full rebuild: pass --clean to PyInstaller (drops the incremental
+    # build cache). Needed after upgrading/downgrading pip packages, or when
+    # a build behaves oddly. Default is an incremental build (~1-2 min
+    # instead of ~6-8).
+    [switch]$Clean
 )
 $ErrorActionPreference = "Stop"
 
@@ -50,19 +55,18 @@ if ($LASTEXITCODE -ne 0) {
 Invoke-Pip -Arguments @("install", "-e", ".[dev]")
 Invoke-Pip -Arguments @("install", "pyinstaller")
 
-# Drop any previously-resolved nvidia-* packages first: pip does not
-# downgrade on plain `install` if a newer version is already present, and a
-# 12.9 nvrtc left over from an earlier build would ship broken DLLs.
-# stderr noise (e.g. "Ignoring invalid distribution ~orch") must NOT abort
-# the script: PowerShell wraps native stderr in NativeCommandError under
-# $ErrorActionPreference=Stop.
-$nvPkgs = @(
-    "nvidia-cudnn-cu12", "nvidia-cublas-cu12", "nvidia-cuda-nvrtc-cu12",
-    "nvidia-cuda-runtime-cu12", "nvidia-cufft-cu12", "nvidia-curand-cu12"
-)
+# Reset leftover packages before the pinned install: pip does not downgrade
+# on plain `install` if a newer version is already present, and the GigaAM-era
+# torch stack is no longer a dependency (its PyInstaller hooks still ran and
+# slowed every build). stderr noise must NOT abort the script: PowerShell
+# wraps native stderr in NativeCommandError under $ErrorActionPreference=Stop.
 $prevEAP = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
-python -m pip uninstall -y @nvPkgs 2>$null | Out-Null
+# The GigaAM-era torch stack is no longer a dependency; leaving it installed
+# slows the PyInstaller graph analysis (its hooks still run) for zero
+# benefit. Best-effort removal - failures (not installed / locked) are fine.
+python -m pip uninstall -y torch torchaudio torchvision 2>$null | Out-Null
+python -m pip uninstall -y nvidia-cudnn-cu12 nvidia-cublas-cu12 nvidia-cuda-nvrtc-cu12 nvidia-cuda-runtime-cu12 nvidia-cufft-cu12 nvidia-curand-cu12 2>$null | Out-Null
 $ErrorActionPreference = $prevEAP
 Write-Host "(nvidia packages reset - reinstalling the pinned 12.4 line)"
 
@@ -96,7 +100,9 @@ if ($LASTEXITCODE -ne 0 -or $ct2Devices -notmatch '^\d+$') {
 }
 
 # Whisper models are downloaded at first run, not bundled.
-python -m PyInstaller --clean --noconfirm scripts\mockingbird.spec
+$pyiArgs = @("--noconfirm")
+if ($Clean) { $pyiArgs += "--clean" }
+python -m PyInstaller @pyiArgs scripts\mockingbird.spec
 if ($LASTEXITCODE -ne 0) {
     throw "PyInstaller failed with exit code $LASTEXITCODE. Fix the error above and re-run."
 }
