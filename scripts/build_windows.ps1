@@ -114,15 +114,20 @@ if (-not (Test-Path "dist\mockingbird\mockingbird.exe")) {
 # pair (src, "ctranslate2\<name>.dll") is materialized as a DIRECTORY
 # named <name>.dll containing the file (WinError 5 / "CUDA unavailable" at
 # runtime). Move the file up and drop the directory.
+# CAREFUL: Move-Item onto a path occupied by a directory moves the file INTO
+# it (no error); we must remove the directory first, then move.
 $ct2dir = "dist\mockingbird\_internal\ctranslate2"
 if (Test-Path $ct2dir) {
     Get-ChildItem -Path $ct2dir -Directory -Filter "*.dll" | ForEach-Object {
         $inner = Get-ChildItem -Path $_.FullName -File | Select-Object -First 1
         if ($inner) {
-            Move-Item -Force $inner.FullName (Join-Path $ct2dir $_.Name)
+            Copy-Item -Force $inner.FullName (Join-Path $env:TEMP $_.Name)
+            Remove-Item -Recurse -Force $_.FullName
+            Move-Item -Force (Join-Path $env:TEMP $_.Name) (Join-Path $ct2dir $_.Name)
             Write-Host "flattened $($_.Name)"
+        } else {
+            Remove-Item -Recurse -Force $_.FullName
         }
-        Remove-Item -Recurse -Force $_.FullName
     }
     # sanity: every remaining .dll entry must be a FILE
     $badDirs = Get-ChildItem -Path $ct2dir -Directory -Filter "*.dll"

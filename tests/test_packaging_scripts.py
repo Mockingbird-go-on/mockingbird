@@ -150,3 +150,21 @@ def test_deb_stage_mkdirs_before_copy():
     cp = sh.index('cp -r dist/mockingbird/. "$DEBDIR/usr/lib/mockingbird/"')
     assert mkdirs < cp
     assert 'mkdir -p "$DEBDIR/usr/lib"$' not in sh  # stale standalone mkdir gone
+
+
+def test_flat_nvidia_libs_dest_is_directory():
+    """REGRESSION 2026-09-21: binaries TOC dest must be a DIRECTORY
+    ("ctranslate2"), never a file path. PyInstaller joins dest +
+    basename(src); a file-path dest produced
+    ctranslate2\\cublas64_12.dll\\cublas64_12.dll (a DIRECTORY named
+    *.dll) at analysis time, and the ps1 flatten step then DELETED the
+    DLL (Move-Item into an occupied directory path silently nests it,
+    then Remove-Item killed it). Result: "Library cublas64_12.dll is not
+    found" and a silent CPU fallback."""
+    spec = _read("mockingbird.spec")
+    assert 'pairs.append((dll, "ctranslate2"))' in spec
+    assert 'os.path.join("ctranslate2", base)' not in spec
+    # flatten step must not Move-Item onto a directory-occupied path
+    ps1 = _read("build_windows.ps1")
+    assert "Copy-Item -Force $inner.FullName" in ps1
+    assert "Move-Item -Force $inner.FullName (Join-Path $ct2dir" not in ps1

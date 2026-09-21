@@ -74,18 +74,16 @@ def _flat_nvidia_libs(collected):
     # paths make COLLECT fail. Entries that land in a nested tree
     # (nvidia/<lib>/bin/...) do NOT count — the Windows loader cannot see
     # them there, so those DLLs still need a flat copy.
+    # NOTE: PyInstaller's dest for binaries is a DIRECTORY: the final location
+    # is always dest + basename(src). Passing a full file path here makes
+    # PyInstaller materialize a DIRECTORY named "<name>.dll" containing the
+    # file — invisible to the Windows loader.
     def _is_flat(src: str, dest: str) -> bool:
-        # collect_dynamic_libs entries carry the DEST DIRECTORY (e.g.
-        # "ctranslate2"), not the file path; the effective location is
-        # basename(src) directly under that directory.
         norm = dest.replace("\\", "/").strip("/")
-        parts = norm.split("/")
-        if norm.lower().endswith(".dll"):
-            return len(parts) == 2 and parts[0].lower() == "ctranslate2"
-        return len(parts) == 1 and parts[0].lower() == "ctranslate2"
+        return norm.lower() == "ctranslate2"
 
     already = {
-        os.path.basename(dest) if dest.lower().endswith(".dll") else os.path.basename(src)
+        os.path.basename(src)
         for src, dest in collected
         if _is_flat(src, dest)
     }
@@ -94,7 +92,7 @@ def _flat_nvidia_libs(collected):
         if base in already:
             continue
         already.add(base)
-        pairs.append((dll, os.path.join("ctranslate2", base)))
+        pairs.append((dll, "ctranslate2"))
     return pairs
 
 
