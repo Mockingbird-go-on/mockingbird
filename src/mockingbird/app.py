@@ -289,9 +289,13 @@ class App:
     def _on_engine_error_signal(self, message: str) -> None:
         """Engine error → UI. Model load/download failures also fire the
         dedicated ``model_load_failed`` signal so the download overlay can
-        close and offer a retry."""
+        close and offer a retry. A user cancellation is NOT an error: it fires
+        ``model_load_cancelled`` and never surfaces as a failure dialog."""
         low = message.lower()
-        if "model" in low and ("download" in low or "cancelled" in low):
+        if "model" in low and "cancelled" in low:
+            self.signals.model_load_cancelled.emit()
+            return
+        if "model" in low and "download" in low:
             self.signals.model_load_failed.emit(message)
         self.signals.error.emit(message)
 
@@ -305,6 +309,7 @@ class App:
             log.exception("model download retry failed")
 
     def cancel_model_download(self) -> None:
+        """Cancel an in-flight model download OR load (single entry point)."""
         self.engine.request_cancel_download()
 
     def _on_term(self, detected) -> None:

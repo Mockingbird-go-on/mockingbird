@@ -28,6 +28,10 @@ class AppSignals(QObject):
     # Emitted when the warm-start model load/download FAILED (payload: the
     # exception text). The UI shows a human-readable dialog with retry.
     model_load_failed = Signal(str)
+    # Emitted when the user cancelled an in-flight model load (download OR
+    # "Loading model into memory…"). The UI hides the cancel affordance and
+    # returns to idle without showing an error.
+    model_load_cancelled = Signal()
     # Live VAD speech state (True when speech starts, False when it ends).
     speech = Signal(bool)
     # Primary audio source kind: "system" (loopback) or "mic".
