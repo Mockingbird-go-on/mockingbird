@@ -82,10 +82,13 @@ def test_download_retry_actually_retries(monkeypatch, tmp_path):
     import sys
     import types
 
-    # pytestenv has no huggingface_hub — install an in-memory fake that the
-    # function's local import will pick up.
-    fake_hf = types.ModuleType("huggingface_hub")
-    sys.modules.setdefault("huggingface_hub", fake_hf)
+    try:
+        import huggingface_hub as fake_hf  # the real module when installed
+    except ImportError:
+        # pytestenv may lack it — install an in-memory fake that the
+        # function's local import will pick up.
+        fake_hf = types.ModuleType("huggingface_hub")
+        sys.modules["huggingface_hub"] = fake_hf
 
     from mockingbird.stt import whisper_engine as we
 

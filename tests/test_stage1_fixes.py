@@ -49,15 +49,9 @@ def test_stop_keeps_thread_reference_when_join_times_out():
     started = threading.Event()
     release = threading.Event()
 
-    real_run = eng._run
-
     def _stuck_run():
         started.set()
         release.wait(10)  # simulate a decode longer than the stop timeout
-        try:
-            real_run()
-        except Exception:
-            pass
 
     eng._thread = threading.Thread(target=_stuck_run, name="whisper-engine", daemon=True)
     eng._thread.start()
