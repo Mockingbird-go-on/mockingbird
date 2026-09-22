@@ -3,6 +3,10 @@
 [![CI](https://github.com/Mockingbird-go-on/mockingbird/actions/workflows/tests.yml/badge.svg)](https://github.com/Mockingbird-go-on/mockingbird/actions/workflows/tests.yml)
 [![Python](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/release/python-3120/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Telegram](https://img.shields.io/badge/chat-Telegram-26A5E4.svg)](https://t.me/MOCKINGBird_release)
+
+💬 **Чат сообщества в Telegram: <https://t.me/MOCKINGBird_release>** —
+вопросы, обсуждение релизов, помощь.
 
 Десктопный ассистент для технических интервью: распознавание речи в реальном
 времени и подсказки ответов из базы знаний и LLM. Аудио проходит через Silero
@@ -26,6 +30,7 @@ VAD → faster-whisper (CUDA, локально) или GigaAM-v3, распозн
 - [Тесты](#тесты)
 - [Структура проекта](#структура-проекта)
 - [Подпись и SmartScreen](#подпись-и-smartscreen)
+- [Сообщество](#сообщество)
 - [Лицензия](#лицензия)
 
 ## Скриншоты
@@ -231,6 +236,15 @@ src/mockingbird/
   storage/   SQLite (сессии, сегменты, кэш терминов, настройки)
   ui/        главное окно, панель интервью, панель резюме, настройки, onboarding
 ```
+
+## Сообщество
+
+- 💬 **Telegram-чат**: [t.me/MOCKINGBird_release](https://t.me/MOCKINGBird_release) —
+  вопросы, помощь, анонсы релизов.
+- 🐛 [Баги и идеи](https://github.com/Mockingbird-go-on/mockingbird/issues) —
+  формы «Сообщить о проблеме» / «Предложить идею».
+- 💬 [Discussions](https://github.com/Mockingbird-go-on/mockingbird/discussions) —
+  обсуждения, вопросы и ответы, show-and-tell.
 
 ## Лицензия
 

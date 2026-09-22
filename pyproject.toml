@@ -27,6 +27,7 @@ Homepage = "https://github.com/Mockingbird-go-on/mockingbird"
 Documentation = "https://github.com/Mockingbird-go-on/mockingbird/blob/main/BUILD.md"
 Issues = "https://github.com/Mockingbird-go-on/mockingbird/issues"
 Changelog = "https://github.com/Mockingbird-go-on/mockingbird/blob/main/CHANGELOG.md"
+"Community chat (Telegram)" = "https://t.me/MOCKINGBird_release"
 
 [project.optional-dependencies]
 dev = [

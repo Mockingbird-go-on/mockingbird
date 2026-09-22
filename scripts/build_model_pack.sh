@@ -213,7 +213,8 @@ copy landed in the wrong place (check %USERPROFILE%\.mockingbird\models).
 
 Support
 -------
-Logs: %USERPROFILE%\.mockingbird\logs\mockingbird.log
+Logs: %USERPROFILE%\\.mockingbird\\logs\\mockingbird.log
+Community chat (Telegram): https://t.me/MOCKINGBird_release
 Issues: https://github.com/Mockingbird-go-on/mockingbird/issues
 EOF
 

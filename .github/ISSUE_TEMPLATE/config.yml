@@ -1,5 +1,8 @@
 blank_issues_enabled: false
 contact_links:
+  - name: Telegram-чат сообщества
+    url: https://t.me/MOCKINGBird_release
+    about: Вопросы, помощь и анонсы релизов — быстрее всего ответят в чате.
   - name: Вопрос или обсуждение
     url: https://github.com/Mockingbird-go-on/mockingbird/discussions
     about: Задайте вопрос, поделитесь опытом или начните обсуждение в Discussions.
