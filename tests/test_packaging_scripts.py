@@ -207,13 +207,16 @@ def test_build_linux_sh_flags():
 def test_build_linux_sh_uses_python3_fallback():
     """REGRESSION 2026-09-22: the script called bare `python`, which does not
     exist on a default WSL/Ubuntu install — the whole Linux build died at
-    line 30 (`python: command not found`). It must fall back to python3 and
+    line 30 (`python: command not found`). It must prefer the project venv
+    (.venv/bin/python, no activation needed), fall back to python/python3 and
     fail with a clear venv hint when PyInstaller is missing."""
     sh = _read("build_linux.sh")
-    assert 'PY=python\ncommand -v "$PY" >/dev/null 2>&1 || PY=python3' in sh
+    assert 'PY=".venv/bin/python"' in sh
+    assert 'PY=python\n    command -v "$PY" >/dev/null 2>&1 || PY=python3' in sh
     assert '"$PY" -m PyInstaller' in sh
     assert 'import PyInstaller' in sh
     assert "python3 -m venv" in sh  # actionable hint on failure
+    assert '.venv/bin/pip install' in sh  # hint works without activation
 
 
 def test_build_linux_appimage_icon_fallback():
