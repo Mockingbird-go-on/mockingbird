@@ -45,21 +45,3 @@ def test_extract_json_string_with_braces():
     text = '{"text": "value with {braces} inside"}'
     result = _extract_json_object(text)
     assert result == {"text": "value with {braces} inside"}
-
-
-def test_answer_summary_strips_bold():
-    """Test that _feed_answer_to_context would strip markdown bold."""
-    import re
-    answer = "**Docker** is a **container** platform"
-    clean = re.sub(r"\*\*(.+?)\*\*", r"\1", answer)
-    assert clean == "Docker is a container platform"
-
-
-def test_answer_summary_truncates():
-    """Test that summary truncation works to ~200 chars."""
-    import re
-    answer = "First sentence here. " * 50
-    clean = re.sub(r"\*\*(.+?)\*\*", r"\1", answer)
-    sentences = re.split(r"(?<=[.!?])\s+", clean)
-    summary = " ".join(sentences[:2])[:200].strip()
-    assert len(summary) <= 200

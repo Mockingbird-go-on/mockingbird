@@ -43,9 +43,7 @@ jobs:
         run: |
           mkdir -p /tmp/mockingbird-test
           pytest tests/ -q \
-            --ignore=tests/test_whisper_engine.py \
-            --ignore=tests/test_whisper_model.py \
-            --deselect=tests/test_model_integrity.py::test_problem_missing_bin
+            --ignore=tests/test_whisper_engine.py
 
   # ── Job 2: Build .exe on self-hosted Windows runner ──
   build-windows:

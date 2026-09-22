@@ -64,7 +64,7 @@ def test_falls_back_to_network_when_not_cached(monkeypatch, tmp_path):
 
 
 def test_download_reports_progress(monkeypatch, tmp_path):
-    messages: list[str] = []
+    events: list[tuple[str, float]] = []
     downloaded = _make_snapshot(tmp_path, "downloaded-snapshot")
 
     def fake_snapshot_download(repo_id, cache_dir=None, local_files_only=False, tqdm_class=None, **kwargs):
@@ -82,25 +82,28 @@ def test_download_reports_progress(monkeypatch, tmp_path):
     monkeypatch.setattr("huggingface_hub.snapshot_download", fake_snapshot_download)
     resolve_model_path(
         WhisperConfig(model_size="tiny", model_dir=str(tmp_path)),
-        progress_cb=lambda message, percent: messages.append(message),
+        progress_cb=lambda message, percent: events.append((message, percent)),
     )
+    messages = [m for m, _ in events]
     assert messages and "Downloading whisper model…" in messages[0]
     assert any("model.bin" in m for m in messages)
     assert any("config.json" in m for m in messages)
-    assert any(m.endswith("60%") for m in messages)
+    # the reporter passes the percentage separately (not embedded in the text)
+    assert any(abs(p - 60.0) < 0.01 for _, p in events)
 
 
 def test_progress_tqdm_tolerates_missing_console():
     """GUI builds run with sys.stderr == None; the bar must not crash."""
     from mockingbird.stt import whisper_engine as we
 
-    messages: list[str] = []
-    reporter = we._DownloadReporter(lambda message, percent: messages.append(message))
+    events: list[tuple[str, float]] = []
+    reporter = we._DownloadReporter(lambda message, percent: events.append((message, percent)))
     cls = we._progress_tqdm_class(reporter)
 
     bar = cls(total=50, desc="model.bin", file=None)
     bar.update(20)
     bar.close()
 
+    messages = [m for m, _ in events]
     assert messages and "model.bin" in messages[0]
-    assert any(m.endswith("40%") for m in messages)
+    assert any(abs(p - 40.0) < 0.01 for _, p in events)
