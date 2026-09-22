@@ -10,9 +10,14 @@
 
 Десктопный ассистент для технических интервью: распознавание речи в реальном
 времени и подсказки ответов из базы знаний и LLM. Аудио проходит через Silero
-VAD → faster-whisper (CUDA, локально) или GigaAM-v3, распознанные вопросы
-обрабатываются OpenAI-совместимым LLM (по умолчанию DeepSeek). Всё, кроме
-вызова LLM API, работает локально — данные не покидают машину.
+VAD → faster-whisper (large-v3-turbo, локально, CUDA с автоматическим
+fallback на CPU), распознанные вопросы обрабатываются OpenAI-совместимым LLM
+(по умолчанию DeepSeek).
+
+**Приватность:** распознавание речи и база знаний полностью локальны — аудио
+никуда не отправляется. Единственное, что уходит наружу, — **текст вопросов**
+в ваш LLM API (настраиваемый `OPENAI_BASE_URL`); без заданного API-ключа
+приложение работает как локальный транскрайбер без подсказок.
 
 **Основная платформа: Windows (одиночный `.exe`).** Linux поддерживается из
 исходников.
@@ -57,7 +62,7 @@ VAD → faster-whisper (CUDA, локально) или GigaAM-v3, распозн
 
 **Распознавание речи**
 
-- faster-whisper (`large-v3-turbo`) на CUDA или GigaAM-v3 — на выбор.
+- faster-whisper (`large-v3-turbo`) на CUDA (авто-fallback на CPU) — локально.
 - Инкрементальный чанк-декод: монолог 30–60 с распознаётся с лагом ~7 с.
 - Спекулятивные partial-транскрипты в реальном времени, авто-финализация
   сегментов после паузы (~700 мс тишины).
@@ -97,7 +102,7 @@ VAD → faster-whisper (CUDA, локально) или GigaAM-v3, распозн
    Silero VAD ──► речевые сегменты
         │
         ▼
-   faster-whisper / GigaAM-v3
+   faster-whisper (large-v3-turbo)
    (чанк-декод 20s/18s, спекулятивные partial'ы,
    фонетическая коррекция на финалах)
         │
@@ -186,7 +191,7 @@ beam, endpoint/ключ LLM, путь к глоссарию). Смена бэк�
 | Переменная | Назначение |
 |---|---|
 | `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `OPENAI_MODEL` | OpenAI-совместимый LLM (ответы и объяснения терминов; глоссарий работает офлайн) |
-| `MOCKINGBIRD_STT_BACKEND` | `whisper` или `gigaam` |
+| `MOCKINGBIRD_STT_BACKEND` | только `whisper` (значение `gigaam` из старых конфигов тихо мигрирует) |
 | `MOCKINGBIRD_WHISPER_MODEL` | например `large-v3-turbo` |
 | `MOCKINGBIRD_WHISPER_COMPUTE_TYPE` | `int8` / `int8_float32` / `float32` / `float16` (GTX 1070 / Pascal: `float32`; `int8_float32` ухудшает RU WER) |
 | `MOCKINGBIRD_WHISPER_WINDOW_SECONDS` / `MOCKINGBIRD_WHISPER_PARTIAL_INTERVAL_MS` | ручки задержки |
@@ -229,7 +234,7 @@ Qt-зависимые тесты (жизненный цикл приложени
 ```
 src/mockingbird/
   audio/     захват аудио (mic/loopback WASAPI), Silero VAD, чанкер
-  stt/       WhisperEngine / GigaAMEngine (чанк-декод, спекулятивные partial'ы)
+  stt/       WhisperEngine (чанк-декод, спекулятивные partial'ы, CUDA-probe)
   kb/        индекс/матчер базы знаний, interview engine (очередь вопросов, LLM)
   terms/     глоссарий, фонетический матчер, кэш, объяснения терминов
   llm/       OpenAI-совместимый клиент (стриминг, single-flight gate)
