@@ -31,7 +31,7 @@ certutil -hashfile <файл> SHA256     # Windows
 
 ## Что нового
 
-<!-- CHANGELOG: опишите изменения этого релиза -->
+__CHANGELOG__
 
 ## Установка (Windows)
 

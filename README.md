@@ -256,7 +256,7 @@ Microsoft доверяет подписанному `.exe` — SmartScreen ух�
 ```bat
 :: Подписать собранный setup.exe (после ISCC)
 signtool sign /fd SHA256 /tr http://timestamp.digicert.com ^
-  "installer\Mockingbird-1.0.0.1-windows-x64-cuda-setup.exe"
+  "installer\Mockingbird-<ver>-windows-x64-cuda-setup.exe"
 
 :: Опц. — подписать сам mockingbird.exe внутри _internal\
 signtool sign /fd SHA256 /tr http://timestamp.digicert.com ^

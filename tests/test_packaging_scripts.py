@@ -459,8 +459,44 @@ def test_sync_and_build_excludes_installer_and_pulls_back():
     installers must be copied back into the WSL project."""
     sh = _read("sync_and_build.sh")
     assert "--exclude='installer'" in sh
-    assert "Mockingbird-*-windows-x64-*-setup.exe" in sh
     assert "cp -f" in sh
+
+
+def test_sync_and_build_pulls_only_current_version():
+    """REGRESSION 2026-09-22: the pull-back glob matched ANY version's
+    setup.exe, so stale installers from older builds leaked into the release
+    assets. It must filter by the current package version."""
+    sh = _read("sync_and_build.sh")
+    assert 'Mockingbird-"$VERSION"-windows-x64-*-setup.exe' in sh
+    assert 'Mockingbird-*-windows-x64-*-setup.exe"' not in sh
+
+
+def test_release_notes_inject_changelog_section():
+    """Release notes must take "What's new" from CHANGELOG.md (the
+    __CHANGELOG__ placeholder in the template), and the render must FAIL when
+    the version has no changelog section (no empty 'What's new' releases)."""
+    from pathlib import Path
+
+    tpl = _read("release_notes.md.in")
+    assert "__CHANGELOG__" in tpl
+    assert "<!-- CHANGELOG" not in tpl
+
+    script = _read("release.sh")
+    assert 'CHANGELOG.md has no' in script
+    assert "CHANGELOG.md not found" in script
+
+    changelog = (Path(ROOT) / "CHANGELOG.md").read_text(encoding="utf-8")
+    import re
+
+    from mockingbird import __version__
+
+    m = re.search(
+        rf"^## {re.escape(__version__)} \([^\n]*\)\n(.*?)(?=^## |\Z)",
+        changelog,
+        re.M | re.S,
+    )
+    assert m, f"CHANGELOG.md lacks a '## {__version__} (date)' section"
+    assert len(m.group(1).strip()) > 50, "changelog section looks empty"
 
 
 def test_release_notes_template_has_download_table():

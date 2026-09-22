@@ -2,6 +2,10 @@
 name = "mockingbird"
 dynamic = ["version"]
 description = "Low-latency live speech-to-text desktop app for IT meetings with a term-explanation panel"
+license = { text = "MIT" }
+authors = [
+    { name = "Mockingbird Dev", email = "dev@mockingbird.app" },
+]
 requires-python = ">=3.11"
 dependencies = [
     "PySide6>=6.6",
@@ -17,6 +21,12 @@ dependencies = [
     "pydantic>=2.7",
     "python-dotenv>=1.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/Mockingbird-go-on/mockingbird"
+Documentation = "https://github.com/Mockingbird-go-on/mockingbird/blob/main/BUILD.md"
+Issues = "https://github.com/Mockingbird-go-on/mockingbird/issues"
+Changelog = "https://github.com/Mockingbird-go-on/mockingbird/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 dev = [

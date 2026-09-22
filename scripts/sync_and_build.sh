@@ -87,13 +87,18 @@ echo ">>> Build complete. Output: ${DST}/dist/mockingbird/"
 # so scripts/release.sh (which runs entirely in WSL) can find them. The
 # Windows build writes them to E:\mockingbird\installer (RootDir-anchored in
 # installer.iss); without this copy they never leave the Windows side.
+# Filtered by the CURRENT package version so stale installers from older
+# builds never leak into the release.
+VERSION="$(python3 -c "import sys; sys.path.insert(0, '$SRC/src'); from mockingbird import __version__; print(__version__)")"
 if [ -d "$DST/installer" ]; then
     shopt -s nullglob
-    pulled=("$DST"/installer/Mockingbird-*-windows-x64-*-setup.exe)
+    pulled=("$DST"/installer/Mockingbird-"$VERSION"-windows-x64-*-setup.exe)
     shopt -u nullglob
     if [ "${#pulled[@]}" -gt 0 ]; then
         mkdir -p "$SRC/installer"
         cp -f "${pulled[@]}" "$SRC/installer/"
-        echo ">>> Pulled ${#pulled[@]} installer(s) into $SRC/installer/"
+        echo ">>> Pulled ${#pulled[@]} installer(s) for v$VERSION into $SRC/installer/"
+    else
+        echo ">>> No installer(s) matching version $VERSION found in $DST/installer (built another version?)"
     fi
 fi
