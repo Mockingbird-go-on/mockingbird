@@ -11,8 +11,6 @@ def test_defaults():
     assert c.stt.end_ahead is True
     assert c.vad.min_silence_ms == 700
     assert c.vad.stop_hint_delay_ms == 180
-    assert c.gigaam.model_id == "ai-sage/GigaAM-v3"
-    assert c.gigaam.revision == "e2e_rnnt"
     assert c.terms.llm_primary is True
     assert c.terms.context_segments == 8
     assert c.whisper.model_size == "large-v3-turbo"
@@ -21,8 +19,6 @@ def test_defaults():
     assert c.whisper.compute_type == "float32"
     assert c.whisper.device == "auto"
     assert c.whisper.partial_interval_ms == 250
-    assert c.gigaam.device == "auto"
-    assert c.gigaam.partial_interval_ms == 250
     assert c.storage.db_path.endswith("mockingbird.db")
     assert c.storage.log_dir.endswith("logs")
     assert c.interview.enabled is True
@@ -89,7 +85,6 @@ def test_env_overrides(monkeypatch):
     monkeypatch.setenv("MOCKINGBIRD_AUDIO_MODE", "loopback")
     monkeypatch.setenv("MOCKINGBIRD_AUDIO_LOOPBACK_DEVICE", "Speakers")
     monkeypatch.setenv("MOCKINGBIRD_VAD_STOP_HINT_DELAY_MS", "250")
-    monkeypatch.setenv("MOCKINGBIRD_GIGAAM_REVISION", "rnnt")
     monkeypatch.setenv("MOCKINGBIRD_TERMS_LLM_PRIMARY", "false")
     monkeypatch.setenv("MOCKINGBIRD_TERMS_CONTEXT_SEGMENTS", "4")
     c = cfg.load_config()
@@ -104,7 +99,6 @@ def test_env_overrides(monkeypatch):
     assert c.audio.mode == "loopback"
     assert c.audio.loopback_device == "Speakers"
     assert c.vad.stop_hint_delay_ms == 250
-    assert c.gigaam.revision == "rnnt"
     assert c.terms.llm_primary is False
     assert c.terms.context_segments == 4
 
@@ -129,13 +123,11 @@ def test_saved_settings_roundtrip(monkeypatch, tmp_path):
     store.set_setting("audio.loopback_device", "Speakers (Realtek)")
     store.set_setting("stt.backend", "whisper")
     store.set_setting("stt.end_ahead", "0")
-    store.set_setting("gigaam.revision", "rnnt")
     store.set_setting("whisper.model_size", "base")
     store.set_setting("whisper.compute_type", "float32")
     store.set_setting("whisper.device", "cuda")
     store.set_setting("whisper.beam_size", "1")
     store.set_setting("whisper.final_beam_size", "7")
-    store.set_setting("gigaam.device", "cuda")
     store.set_setting("whisper.language", "ru")
     store.set_setting("llm.base_url", "http://localhost:11434/v1")
     store.set_setting("llm.api_key", "secret")
@@ -156,13 +148,11 @@ def test_saved_settings_roundtrip(monkeypatch, tmp_path):
     assert c.audio.loopback_device == "Speakers (Realtek)"
     assert c.stt.backend == "whisper"
     assert c.stt.end_ahead is False
-    assert c.gigaam.revision == "rnnt"
     assert c.whisper.model_size == "base"
     assert c.whisper.compute_type == "float32"
     assert c.whisper.device == "cuda"
     assert c.whisper.beam_size == 1
     assert c.whisper.final_beam_size == 7
-    assert c.gigaam.device == "cuda"
     assert c.whisper.language == "ru"
     assert c.llm.base_url == "http://localhost:11434/v1"
     assert c.llm.api_key == "secret"
@@ -221,3 +211,25 @@ def test_no_mic_env_overrides(monkeypatch):
     monkeypatch.setenv("MOCKINGBIRD_STT_MIC_MODEL_SIZE", "large-v3")
     c = cfg.load_config()
     assert not hasattr(c.stt, "mic_backend")
+
+
+def test_no_gigaam_config_fields():
+    """Removed GigaAM backend must not leave config fields behind."""
+    c = cfg.Config()
+    assert not hasattr(c, "gigaam"), "Config still has the removed gigaam section"
+
+
+def test_stale_gigaam_backend_migrates_to_whisper(monkeypatch, tmp_path):
+    """A saved stt.backend='gigaam' must migrate to whisper, not crash."""
+    monkeypatch.setenv("MOCKINGBIRD_HOME", str(tmp_path))
+    c = cfg.load_config()
+    cfg.apply_saved_settings(c, lambda key: "gigaam" if key == "stt.backend" else None)
+    assert c.stt.backend == "whisper"
+
+
+def test_stale_gigaam_env_migrates_to_whisper(monkeypatch, tmp_path):
+    """MOCKINGBIRD_STT_BACKEND=gigaam must fall back to whisper."""
+    monkeypatch.setenv("MOCKINGBIRD_HOME", str(tmp_path))
+    monkeypatch.setenv("MOCKINGBIRD_STT_BACKEND", "gigaam")
+    c = cfg.load_config()
+    assert c.stt.backend == "whisper"

@@ -363,7 +363,7 @@ def _consonant_matcher():
 
 
 def test_consonant_recovers_vowel_dropped_term():
-    """«ргсд» (GigaAM съел гласные из ArgoCD) резолвится в ArgoCD."""
+    """«ргсд» (STT съел гласные из ArgoCD) резолвится в ArgoCD."""
     m = _consonant_matcher()
     assert m.resolve("ргсд")[0] == "ArgoCD"
 

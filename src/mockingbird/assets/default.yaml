@@ -18,13 +18,6 @@ stt:
   mic_model_size: base
   mic_device: cpu
   mic_compute_type: int8
-gigaam:
-  model_id: ai-sage/GigaAM-v3
-  revision: e2e_rnnt
-  device: auto
-  model_dir: null
-  window_seconds: 3.5
-  partial_interval_ms: 250
 whisper:
   model_size: large-v3-turbo
   device: auto

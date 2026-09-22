@@ -35,30 +35,28 @@ def run_system_checks(config: Config) -> list[SystemWarning]:
 
     # 2. No CUDA (GPU) — STT will be slower
     try:
-        import torch
+        from mockingbird.stt.device import ctranslate2_cuda_available
 
-        cuda_available = torch.cuda.is_available()
-        gigaam_cfg_device = (config.gigaam.device or "auto").lower()
+        cuda_available = ctranslate2_cuda_available()
+        whisper_cfg_device = (config.whisper.device or "auto").lower()
         # Only warn when the user did not explicitly pick CPU (otherwise the
         # message is noise — they know they chose CPU on purpose).
         cuda_effectively_off = (
             not cuda_available
-            and config.stt.backend == "gigaam"
-            and gigaam_cfg_device != "cpu"
+            and config.stt.backend == "whisper"
+            and whisper_cfg_device == "cuda"
         )
         if cuda_effectively_off:
             warnings.append(SystemWarning(
                 level="warning",
                 title="GPU (CUDA) недоступен",
-                message="GigaAM на CPU работает значительно медленнее. "
-                "Рассмотрите whisper с compute_type=int8 для скорости или включите CUDA.",
+                message="CUDA выбрана в настройках, но недоступна — whisper работает на CPU "
+                "(медленнее). Установите «Устройство: авто» или проверьте драйвер GPU.",
             ))
     except Exception:
-        # torch not installed yet, or CUDA driver mismatch / load error — the
-        # ``ImportError`` subclass is too narrow (torch.cuda.is_available can
-        # raise RuntimeError/OSError on a driver mismatch); fall back to a
-        # generic warning so the app still boots on CPU.
-        logging.getLogger(__name__).debug("torch/CUDA probe failed", exc_info=True)
+        # ctranslate2 not installed yet, or CUDA driver mismatch / load error —
+        # fall back silently so the app still boots on CPU.
+        logging.getLogger(__name__).debug("ctranslate2/CUDA probe failed", exc_info=True)
 
     # 3. No KB topics
     try:

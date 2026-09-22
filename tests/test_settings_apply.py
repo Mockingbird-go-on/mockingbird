@@ -7,11 +7,9 @@ from mockingbird.config import Config
 def test_restart_required_detects_backend_change():
     """Changing stt.backend should flag as restart-required."""
     cfg = Config()
-    cfg.stt.backend = "gigaam"
-    # Simulate: user picks whisper in dialog
     old = cfg.stt.backend
     cfg.stt.backend = "whisper"
-    assert old != cfg.stt.backend  # change detected
+    assert old == "whisper"  # whisper is the only backend now
 
 
 def test_restart_required_no_change_when_same():

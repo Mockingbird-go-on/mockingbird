@@ -1,0 +1,87 @@
+name: Сообщить о проблеме
+description: Что-то сломалось, вылетает или работает неправильно
+title: "[Баг] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Спасибо, что сообщаете о проблеме. Чем точнее описание, тем быстрее починим.
+        Перед отправкой проверьте, что такой issue ещё нет.
+
+        Конфиденциальные данные (API-ключи, записи разговоров) прикладывать не нужно.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: Что произошло
+      description: Кратко опишите проблему.
+      placeholder: Например, после нажатия «Старт» приложение зависает и не отвечает.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Шаги воспроизведения
+      description: Как повторить проблему.
+      placeholder: |
+        1. Запустить приложение
+        2. Нажать «Старт»
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Ожидаемое поведение
+      placeholder: Что должно было произойти вместо этого.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Версия приложения
+      description: Вывод команды `mockingbird.exe --version` или номер из инсталлятора.
+      placeholder: 1.0.0.1
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Операционная система
+      options:
+        - Windows 11
+        - Windows 10
+        - Linux
+        - Другое (укажите в описании)
+    validations:
+      required: true
+  - type: dropdown
+    id: variant
+    attributes:
+      label: Сборка
+      options:
+        - CUDA (с GPU)
+        - CPU (без GPU)
+        - Не знаю
+    validations:
+      required: false
+  - type: dropdown
+    id: stt-backend
+    attributes:
+      label: Движок распознавания
+      options:
+        - whisper (large-v3-turbo)
+        - Другой / не знаю
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Логи и архив диагностики
+      description: |
+        В приложении есть кнопка «Собрать архив логов» — приложите полученный zip.
+        Он содержит версию, ОС, модель, настройки с замазанным API-ключом и логи.
+      render: text
+    validations:
+      required: false

@@ -166,24 +166,43 @@ class OnboardingWizard(QDialog):
         self._test_result.setText("Проверка...")
         self._test_result.setStyleSheet("color: #8a99a8;")
         self._test_btn.setEnabled(False)
-        try:
-            from mockingbird.llm.client import LlmClient
-            from mockingbird.config import LlmConfig
 
-            cfg = LlmConfig(base_url=url, api_key=key, model=model)
-            client = LlmClient(cfg)
-            result = client.explain_term("docker")
-            if result:
-                self._test_result.setText("✅ Подключение работает!")
-                self._test_result.setStyleSheet("color: #3DDC84;")
-            else:
-                self._test_result.setText("⚠ Нет ответа (проверьте URL/ключ)")
-                self._test_result.setStyleSheet("color: #FFB020;")
-        except Exception as exc:
-            self._test_result.setText(f"❌ Ошибка: {exc!s:.60}")
-            self._test_result.setStyleSheet("color: #FF5148;")
-        finally:
+        # Never run the network call on the GUI thread — with a slow/dead
+        # endpoint the wizard would freeze for the whole LLM timeout (~20 s).
+        # Same QThread pattern as the settings dialog's connection check.
+        from PySide6.QtCore import Signal
+
+        class _TestWorker(QThread):
+            done = Signal(str, bool)
+
+            def run(self_):
+                try:
+                    from mockingbird.llm.client import LlmClient
+                    from mockingbird.config import LlmConfig
+
+                    client = LlmClient(LlmConfig(base_url=url, api_key=key, model=model))
+                    result = client.explain_term("docker")
+                    if result:
+                        self_.done.emit("✅ Подключение работает!", True)
+                    else:
+                        self_.done.emit("⚠ Нет ответа (проверьте URL/ключ)", False)
+                except Exception as exc:
+                    self_.done.emit(f"❌ Ошибка: {exc!s:.60}", False)
+
+        # Keep a reference (GC would kill a running QThread) and retire any
+        # previous worker before starting a new one.
+        old = getattr(self, "_test_worker", None)
+        if old is not None:
+            old.wait(0)
+        self._test_worker = _TestWorker()
+
+        def _on_done(msg: str, ok: bool):
+            self._test_result.setText(msg)
+            self._test_result.setStyleSheet("color: #3DDC84;" if ok else "color: #FF5148;")
             self._test_btn.setEnabled(True)
+
+        self._test_worker.done.connect(_on_done)
+        self._test_worker.start()
 
     # -- Step 2: Audio -----------------------------------------------------
 
@@ -252,22 +271,18 @@ class OnboardingWizard(QDialog):
     def _page_stt(self) -> QWidget:
         page, layout = self._page(
             "Движок распознавания речи",
-            "Какую модель использовать для STT.",
+            "Распознавание выполняется моделью Whisper (large-v3-turbo). "
+            "Тонкую настройку можно изменить позже в «Настройки».",
         )
-        self._stt_gigaam = QRadioButton("GigaAM-v3 — лучшее качество для русского (по умолчанию)")
-        self._stt_whisper = QRadioButton("Whisper — быстрее, лучше английские термины")
-        backend = (self.config.stt.backend or "gigaam").lower()
-        if backend == "whisper":
-            self._stt_whisper.setChecked(True)
-        else:
-            self._stt_gigaam.setChecked(True)
+        self._stt_whisper = QRadioButton("Whisper — работает на любом ПК (рекомендуется)")
+        self._stt_whisper.setChecked(True)
 
         # Whisper options
         self._whisper_group = QGroupBox("Настройки Whisper")
         wf = QFormLayout(self._whisper_group)
         self._whisper_model = QComboBox()
         self._whisper_model.addItems(self._WHISPER_MODELS)
-        self._whisper_model.setCurrentText(self.config.whisper.model_size or "small")
+        self._whisper_model.setCurrentText(self.config.whisper.model_size or "large-v3-turbo")
         self._whisper_compute = QComboBox()
         for val, label in self._COMPUTE_TYPES:
             self._whisper_compute.addItem(label, val)
@@ -286,16 +301,14 @@ class OnboardingWizard(QDialog):
         wf.addRow("Точность:", self._whisper_compute)
         wf.addRow("Устройство:", self._whisper_device)
 
-        layout.addWidget(self._stt_gigaam)
         layout.addWidget(self._stt_whisper)
         layout.addWidget(self._whisper_group)
-        self._stt_whisper.toggled.connect(self._update_stt_visibility)
         self._update_stt_visibility()
         layout.addStretch(1)
         return page
 
     def _update_stt_visibility(self) -> None:
-        self._whisper_group.setVisible(self._stt_whisper.isChecked())
+        self._whisper_group.setVisible(True)
 
     # -- Step 4: KB + Theme + Finish ---------------------------------------
 
@@ -396,13 +409,10 @@ class OnboardingWizard(QDialog):
             cfg.audio.loopback_device = self._audio_loopback_device.currentData() or None
 
         # STT
-        if self._stt_whisper.isChecked():
-            cfg.stt.backend = "whisper"
-            cfg.whisper.model_size = self._whisper_model.currentText()
-            cfg.whisper.compute_type = self._whisper_compute.currentData()
-            cfg.whisper.device = self._whisper_device.currentData()
-        else:
-            cfg.stt.backend = "gigaam"
+        cfg.stt.backend = "whisper"
+        cfg.whisper.model_size = self._whisper_model.currentText()
+        cfg.whisper.compute_type = self._whisper_compute.currentData()
+        cfg.whisper.device = self._whisper_device.currentData()
 
         # KB
         glossary = self._glossary_path.text().strip()

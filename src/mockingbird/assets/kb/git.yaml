@@ -80,7 +80,7 @@ sections:
     blocks:
       - q: "Как устроены объекты Git?"
         keywords: [объекты, blob, tree, commit, sha, contents]
-        a: "Git — **content-addressed** хранилище: **blob** (содержимое файла), **tree** (каталог: имена→blob/tree), **commit** (tree + parent + автор + сообщение), **tag**. Каждый объект имеет **SHA-1/256** от содержимого. Ветка — просто указатель на коммит."
+        a: "Git — **content-addressed** хранилище: **blob** (содержимое файла), **tree** (каталог: имена→blob/tree), **commit** (tree + parent + автор + сообщение), **tag**. Каждый объект имеет **SHA-1** хеш от содержимого (по умолчанию; SHA-256 — экспериментальная опция через `extensions.objectFormat`). Ветка — просто указатель на коммит."
         related: ["Что такое HEAD?"]
       - q: "Что такое HEAD в Git?"
         keywords: [head, указатель, ветка, рабочий коммит]

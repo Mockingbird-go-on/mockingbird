@@ -5,6 +5,11 @@ import re
 from collections import defaultdict
 
 from mockingbird.kb.index import KbIndex, _PHRASE_BONUS, _STOPWORDS, fold, is_filler, normalize_terms
+
+# Exact topic-name hit boost: when a significant query term IS the topic's own
+# name/keyword ("kubernetes"), the topic's blocks outrank foreign-topic blocks
+# that merely mention the term in a question.
+_TOPIC_NAME_BOOST = 8.0
 from mockingbird.kb.model import KbBlock, KbSection, KbTopic
 
 MatchResult = tuple[float, KbTopic, KbSection, KbBlock, list[str]]
@@ -100,6 +105,18 @@ class KbMatcher:
             highlight = [term_to_lookup[term] for term in significant if term_to_lookup[term] in block_terms]
             score = term_scores.get(block_idx, 0.0) + phrase_hits.get(block_idx, 0.0)
             score += prior.get(topic.id, 0.0) if prior else 0.0
+            # Exact topic-name hit boost (see _TOPIC_NAME_BOOST above).
+            topic_terms = self._index._topic_terms_cache.get(t_idx)
+            if topic_terms is None:
+                topic_terms = frozenset(
+                    term for term, idxs in self._index._topic_term.items() if t_idx in idxs
+                )
+                self._index._topic_terms_cache[t_idx] = topic_terms
+            for term in significant:
+                folded = term_to_lookup[term]
+                if folded in topic_terms:
+                    score += _TOPIC_NAME_BOOST
+                    break
             if score < min_score:
                 continue
             results.append(

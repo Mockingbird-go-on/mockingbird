@@ -42,7 +42,8 @@ class VadConfig(BaseModel):
 
 
 class WhisperConfig(BaseModel):
-    model_size: str = "small"
+    # Default tuned for the large-v3-turbo model the app ships with.
+    model_size: str = "large-v3-turbo"
     device: str = "auto"  # "auto" | "cpu" | "cuda"
     compute_type: str = "int8"
     beam_size: int = 1
@@ -62,17 +63,8 @@ class WhisperConfig(BaseModel):
 
 
 class SttConfig(BaseModel):
-    backend: str = "gigaam"  # "gigaam" | "whisper"
+    backend: str = "whisper"  # only remaining backend
     end_ahead: bool = True  # speculative final decode starts during the VAD silence tail
-
-
-class GigaAMConfig(BaseModel):
-    model_id: str = "ai-sage/GigaAM-v3"
-    revision: str = "e2e_rnnt"
-    device: str = "auto"  # "auto" | "cpu" | "cuda"
-    model_dir: str | None = None
-    window_seconds: float = 3.5
-    partial_interval_ms: int = 250
 
 
 class LlmConfig(BaseModel):
@@ -159,7 +151,6 @@ class Config(BaseModel):
     vad: VadConfig = Field(default_factory=VadConfig)
     stt: SttConfig = Field(default_factory=SttConfig)
     whisper: WhisperConfig = Field(default_factory=WhisperConfig)
-    gigaam: GigaAMConfig = Field(default_factory=GigaAMConfig)
     llm: LlmConfig = Field(default_factory=LlmConfig)
     terms: TermsConfig = Field(default_factory=TermsConfig)
     interview: InterviewConfig = Field(default_factory=InterviewConfig)
@@ -192,10 +183,6 @@ ENV_OVERRIDES: dict[str, tuple[str, str]] = {
     "MOCKINGBIRD_WHISPER_MODEL_DIR": ("whisper", "model_dir"),
     "MOCKINGBIRD_STT_BACKEND": ("stt", "backend"),
     "MOCKINGBIRD_STT_END_AHEAD": ("stt", "end_ahead"),
-    "MOCKINGBIRD_GIGAAM_MODEL_ID": ("gigaam", "model_id"),
-    "MOCKINGBIRD_GIGAAM_REVISION": ("gigaam", "revision"),
-    "MOCKINGBIRD_GIGAAM_DEVICE": ("gigaam", "device"),
-    "MOCKINGBIRD_GIGAAM_MODEL_DIR": ("gigaam", "model_dir"),
     "MOCKINGBIRD_TERMS_LLM_FALLBACK": ("terms", "llm_fallback"),
     "MOCKINGBIRD_TERMS_LLM_PRIMARY": ("terms", "llm_primary"),
     "MOCKINGBIRD_TERMS_CONTEXT_SEGMENTS": ("terms", "context_segments"),
@@ -260,8 +247,6 @@ _PERSISTED_SETTINGS: dict[str, tuple[str, str, bool]] = {
     "whisper.beam_size": ("whisper", "beam_size", False),
     "whisper.final_beam_size": ("whisper", "final_beam_size", False),
     "whisper.language": ("whisper", "language", True),
-    "gigaam.revision": ("gigaam", "revision", False),
-    "gigaam.device": ("gigaam", "device", False),
     "llm.base_url": ("llm", "base_url", True),
     "llm.api_key": ("llm", "api_key", True),
     "llm.model": ("llm", "model", False),
@@ -318,6 +303,9 @@ def apply_saved_settings(config: Config, get, env: dict | None = None) -> None:
         # stored legacy value keep working (questions from system audio).
         if key == "audio.mode" and isinstance(value, str) and value.lower() == "hybrid":
             value = "loopback"
+        # Migrate the removed GigaAM backend to whisper.
+        if key == "stt.backend" and isinstance(value, str) and value.lower() == "gigaam":
+            value = "whisper"
         target = getattr(getattr(config, section), attr)
         if isinstance(target, bool):
             value = str(value).strip().lower() in {"1", "true", "yes", "on"}
@@ -367,6 +355,13 @@ def load_config() -> Config:
     profile_env = os.environ.get("MOCKINGBIRD_PROFILE_ID")
     if profile_env:
         data["profile_id"] = profile_env
+    # Migration: the GigaAM backend was removed. Old configs may carry a
+    # "gigaam" section (dropped — Config no longer has the field) and/or
+    # stt.backend == "gigaam" (rewritten to whisper so the app still starts).
+    data.pop("gigaam", None)
+    stt_data = data.setdefault("stt", {})
+    if (stt_data.get("backend") or "").lower() == "gigaam":
+        stt_data["backend"] = "whisper"
     cfg = Config(**data)
     base = app_dir()
     if not cfg.storage.db_path:

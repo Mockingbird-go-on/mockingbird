@@ -146,6 +146,7 @@ class App:
         self._last_audio_ts: float = 0.0
         self._watchdog_started: bool = False
         self._audio_watchdog: QTimer | None = None
+        self._stop_worker: threading.Thread | None = None
         self._wire()
 
     def _related_topic_ids(self, active_topic: str | None, max_topics: int = 2) -> set[str]:
@@ -155,7 +156,7 @@ class App:
         return related_topic_ids(self.kb_topics, active_topic, max_topics)
 
     def _rebuild_hotwords(self, active_topic: str | None = None) -> None:
-        """Feed glossary/KB terms to whisper's initial_prompt (gigaam ignores it).
+        """Feed glossary/KB terms to whisper's initial_prompt.
 
         The engine reads ``config.whisper.initial_prompt`` at decode time from
         the shared config object, so assigning here (after glossary/KB load,
@@ -233,8 +234,8 @@ class App:
 
         The matcher (post-STT correction of «кубернетес» → Kubernetes) is
         built from the glossary only; KB keywords reach whisper through
-        hot-words but GigaAM has no prompt hook at all — extending the matcher
-        is the only way those terms get corrected there.
+        hot-words, but the decoder-level bias does not cover every surface
+        form — extending the matcher is the safety net for those terms.
         """
         from mockingbird.terms.phonetics import word_tokens
 
@@ -269,7 +270,8 @@ class App:
         self.engine.on_partial = self._on_engine_partial
         self.engine.on_final = self._on_engine_final
         self.engine.on_ready = self._on_engine_ready
-        self.engine.on_error = self.signals.error.emit
+        self.engine.on_error = self._on_engine_error_signal
+        self.engine.on_cuda_fallback = self.signals.cuda_fallback.emit
         self.engine.on_progress = self.signals.model_load.emit
         # SQLite writes are marshalled to the GUI thread via this signal.
         self.signals.save_segment_request.connect(self._on_save_segment)
@@ -283,6 +285,27 @@ class App:
         self.interview.on_llm_answer = self.signals.llm_answer.emit
         self.interview.on_context = self.signals.context.emit
         self.signals.context.connect(self._on_context_shift)
+
+    def _on_engine_error_signal(self, message: str) -> None:
+        """Engine error → UI. Model load/download failures also fire the
+        dedicated ``model_load_failed`` signal so the download overlay can
+        close and offer a retry."""
+        low = message.lower()
+        if "model" in low and ("download" in low or "cancelled" in low):
+            self.signals.model_load_failed.emit(message)
+        self.signals.error.emit(message)
+
+    def retry_model_download(self) -> None:
+        """User pressed Retry in the download-failed dialog: drop the cancel
+        flag and spin the warm start again."""
+        self.engine.clear_cancel_download()
+        try:
+            self.warm_start()
+        except Exception:  # noqa: BLE001
+            log.exception("model download retry failed")
+
+    def cancel_model_download(self) -> None:
+        self.engine.request_cancel_download()
 
     def _on_term(self, detected) -> None:
         self.signals.term.emit(detected)
@@ -437,25 +460,40 @@ class App:
         """
         if self.engine.is_ready:
             self._cuda_warmup()
-            return
-        try:
-            self.engine.start()
-            log.info("warm start: STT model loading in background")
-        except Exception:  # noqa: BLE001
-            log.exception("warm start failed (will retry on first session)")
-            return
-        self._warmup_done = False
-        # Chain the CUDA warm-up onto the model-ready callback (first run only).
-        original_on_ready = self.engine.on_ready
-
-        def _on_ready_then_warmup(name: str) -> None:
+        else:
             try:
-                if original_on_ready is not None:
-                    original_on_ready(name)
-            finally:
-                self._cuda_warmup()
+                self.engine.start()
+                log.info("warm start: STT model loading in background")
+            except Exception:  # noqa: BLE001
+                log.exception("warm start failed (will retry on first session)")
+                return
+            self._warmup_done = False
+            # Chain the CUDA warm-up onto the model-ready callback (first run only).
+            original_on_ready = self.engine.on_ready
 
-        self.engine.on_ready = _on_ready_then_warmup
+            def _on_ready_then_warmup(name: str) -> None:
+                try:
+                    if original_on_ready is not None:
+                        original_on_ready(name)
+                finally:
+                    self._cuda_warmup()
+
+            self.engine.on_ready = _on_ready_then_warmup
+        # Pre-fetch the Silero VAD model off the GUI thread: without this the
+        # first "Старт" click would synchronously download it (up to 60 s GUI
+        # freeze on a slow link) inside _ensure_vad.
+        self._ensure_vad_async()
+
+    def _ensure_vad_async(self) -> None:
+        """Download/load the VAD in a daemon thread (warm start only)."""
+
+        def _worker() -> None:
+            try:
+                ensure_vad_model(self.config.vad.model_path)
+            except Exception:  # noqa: BLE001
+                log.warning("warm start: VAD pre-fetch failed (will retry on session start)", exc_info=True)
+
+        threading.Thread(target=_worker, name="vad-prefetch", daemon=True).start()
 
     _warmup_done: bool = False
 
@@ -502,7 +540,13 @@ class App:
         if warmup is not None:
             warmup()
         self.signals.status.emit("loading", "starting")
-        self._ensure_vad()
+        try:
+            self._ensure_vad()
+        except Exception:
+            # Roll the half-open session back so the UI returns to idle
+            # instead of a session that can never receive audio.
+            self.stop_session()
+            raise
         if self.engine.is_ready:
             self._on_engine_ready(self.engine.model_name)
         # Audio watchdog: started lazily on the first audio callback (see
@@ -510,6 +554,10 @@ class App:
         # fires, so checking _last_audio_ts now would trigger false restarts.
         # NOTE: do NOT reset self._audio_watchdog here — stop_session already
         # stops and clears it; resetting here would orphan a live QTimer.
+        # But DO reset the started flag: without it the watchdog would only
+        # ever start for the FIRST session (stop_session clears the QTimer,
+        # yet _watchdog_started stayed True forever).
+        self._watchdog_started = False
         self._last_audio_ts = 0.0
         log.info("session started: %s", self.session_id)
 
@@ -541,10 +589,18 @@ class App:
             except Exception:  # noqa: BLE001
                 log.exception("async stop_session failed")
             finally:
+                self._stop_worker = None
                 if on_done is not None:
-                    on_done()
+                    try:
+                        on_done()
+                    except Exception:  # noqa: BLE001
+                        # The Qt window may already be destroyed (user closed
+                        # the app right after clicking Stop) — never crash
+                        # the daemon thread over a dead bound signal.
+                        log.debug("stop_session_async: on_done failed (window gone?)")
 
-        threading.Thread(target=_worker, name="session-stop", daemon=True).start()
+        self._stop_worker = threading.Thread(target=_worker, name="session-stop", daemon=True)
+        self._stop_worker.start()
 
     def stop_session(self) -> None:
         if self.session_id is None:
@@ -594,7 +650,22 @@ class App:
     def _ensure_vad(self) -> None:
         if self._vad is not None:
             return
-        model_path = ensure_vad_model(self.config.vad.model_path)
+        try:
+            model_path = ensure_vad_model(self.config.vad.model_path)
+        except FileNotFoundError as exc:
+            # Explicit path misconfigured — surface a clear error instead of
+            # silently falling back to the bundled download.
+            self.signals.error.emit(f"VAD: {exc}")
+            raise
+        except (OSError, TimeoutError) as exc:
+            # First run, no cache and no/slow network: never block the GUI
+            # thread on a long download — the warm start pre-fetch usually
+            # has the model by now; if not, ask the user to retry.
+            self.signals.error.emit(
+                "Не удалось скачать модель детекции речи (VAD). "
+                "Проверьте интернет и нажмите «Старт» ещё раз."
+            )
+            raise RuntimeError(f"VAD model download failed: {exc}") from exc
         self._vad = SileroVAD(
             model_path,
             threshold=self.config.vad.threshold,
@@ -870,8 +941,6 @@ class App:
             "whisper.beam_size",
             "whisper.final_beam_size",
             "whisper.language",
-            "gigaam.revision",
-            "gigaam.device",
             "llm.base_url",
             "llm.api_key",
             "llm.model",
@@ -913,6 +982,13 @@ class App:
         if self._log_handler is not None:
             logging.getLogger().removeHandler(self._log_handler)
             self._log_handler = None
+        # If an async stop is still in flight (user hit Stop and immediately
+        # closed the window), wait for it BEFORE our own teardown: two
+        # concurrent stop_session()s would double-flush the engine (duplicate
+        # final segment) and close the store under the worker's feet.
+        worker = getattr(self, "_stop_worker", None)
+        if worker is not None and worker.is_alive():
+            worker.join(timeout=10.0)
         # Close a live session first so it gets a proper end_session record
         # in the DB (window closed mid-session case).
         try:

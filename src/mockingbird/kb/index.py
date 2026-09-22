@@ -288,6 +288,8 @@ class KbIndex:
         self._term_blocks: dict[str, list[int]] = defaultdict(list)
         self._phrase_blocks: dict[str, list[int]] = defaultdict(list)
         self._topic_term: dict[str, list[int]] = defaultdict(list)  # term -> topic indices
+        # Reverse cache (topic idx -> its terms), lazily built by KbMatcher.
+        self._topic_terms_cache: dict[int, frozenset[str]] = {}
         self._term_score: list[dict[str, float]] = []  # block idx -> term -> source weight
         self._term_idf: dict[str, float] = {}          # term -> idf over blocks
         self._matcher: PhoneticMatcher | None = None

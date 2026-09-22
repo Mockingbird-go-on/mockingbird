@@ -80,7 +80,7 @@ sections:
         related: ["Что такое SLSA?"]
       - q: "Что такое SLSA?"
         keywords: [slsa, supply chain, уровни, фреймворк, integrity]
-        a: "**SLSA (Supply-chain Levels for Software Artifacts)** — фреймворк уровней зрелости цепочки поставок: **SLSA 1-4** от «документация» до «полная изоляция и интеграция с инкумбери». Требования: воспроизводимость сборки, подписанные артефакты, контроль CI. Стандарт доверия к артефактам."
+        a: "**SLSA (Supply-chain Levels for Software Artifacts)** — фреймворк уровней зрелости цепочки поставок. До v1.0: SLSA 1-4. **SLSA v1.0** (2023): **Build L1-L3**. L1 — документированная сборка, L2 — защищённая сборка (подписанные артефакты, изоляция), L3 — изолированная сборка (hermetic, доверенный CI). Требования: воспроизводимость, provenance (аттрибуты происхождения), контроль CI. Стандарт доверия к артефактам."
         related: ["Что такое supply chain security?"]
       - q: "Что такое подпись артефактов (cosign)?"
         keywords: [cosign, подпись, артефакт, sigstore, верификация]
@@ -132,3 +132,30 @@ sections:
         keywords: [zero trust, нулевое доверие, моделирование, verify, network]
         a: "**Zero trust** — «не доверять никому по умолчанию»: каждый доступ **проверяется** (identity, device, context), сегментация сети, микросегментация, mTLS между сервисами, least privilege. Вместо «внутри сети доверяем» — верификация каждого запроса."
         related: ["Что такое mTLS?"]
+  - id: vault
+    name: HashiCorp Vault — управление секретами
+    blocks:
+      - q: "Что такое HashiCorp Vault и зачем он нужен?"
+        keywords: [vault, hashicorp, секреты, secret manager, dynamic, encryption]
+        a: "**Vault** — централизованное хранилище секретов с контролем доступа, аудитом и шифрованием. Решает проблемы: секреты в коде/git, статические пароли, отсутствие ротации, сложный audit trail. Возможности: **key-value** статичные секреты, **dynamic secrets** (генерирует временный DB-аккаунт/AWS-IAM на лету с TTL), **transit engine** (encryption-as-service: шифрует данные, не отдавая ключи приложению), **PKI** (выпуск сертификатов). Доступ через API + auth methods (kubernetes, approle, ldap)."
+        related: ["Что такое dynamic secrets?"]
+      - q: "Что такое dynamic secrets в Vault?"
+        keywords: [dynamic secrets, динамические, ttl, lease, rotate, postgres, aws iam]
+        a: "**Dynamic secrets** — Vault создаёт секрет «по запросу» с коротким TTL: приложение просит доступ к PostgreSQL → Vault создаёт временного DB-юзера с правами ровно под задачу, TTL 1 час → авто-ротация. Преимущества: нет долгоживущих паролей, per-request credentials, auto-rotating, минимальный blast radius при утечке. Поддержка: AWS IAM, PostgreSQL, MySQL, RabbitMQ, SSH и др. через **secrets engines**."
+        related: ["Что такое Vault?", "Что такое TTL lease?"]
+      - q: "Чем Vault отличается от Kubernetes Secrets?"
+        keywords: [vault vs k8s secrets, sealed secrets, external secrets, sops, сравнение]
+        a: "**K8s Secret** — base64 в etcd (не шифрование), доступ через RBAC. **Sealed Secrets** (Bitnami) — зашифрованный секрет в git, расшифровывается в кластере. **SOPS** (Mozilla) — шифрование YAML/JSON с KMS/PGP, коммитится в git. **External Secrets Operator** — синхронизирует секреты из **Vault/AWS SM/GCP SM** в K8s Secret (источник правды — внешний). **Vault** — динамические секреты, short TTL, централизованный audit. **Рекомендация**: git-based (Sealed/SOPS) для статичных, **Vault + ESO** для динамических/critical."
+        related: ["Что такое External Secrets Operator?", "Что такое Vault?"]
+      - q: "Что такое Vault transit engine?"
+        keywords: [transit engine, encryption as a service, tokenize, crypto, key rotation]
+        a: "**Transit engine** — Vault как **шифровальный сервис**: приложение отправляет plaintext → Vault возвращает ciphertext (и обратно), **ключи никогда не покидают Vault**. Плюсы: приложения не управляют ключами, легко ротировать (новая версия ключа → re-encrypt), centralized audit, токенизация (защита PII). Use case: шифрование полей БД, файлов, payment data без раскрытия ключей коду."
+        related: ["Что такое Vault?", "Что такое KMS?"]
+      - q: "Что такое Vault policies и namespaces?"
+        keywords: [vault policy, hcl, namespace, tenancy, rbac, least privilege]
+        a: "**Policy** (HCL) — декларирует, что путь/операции разрешены identity (`path \"secret/data/app/*\" {{ capabilities = [\"read\"] }}`). Назначается на auth method (kubernetes SA → policy → доступ к секретам команды). **Namespaces** (Vault Enterprise) — изоляция tenant'ов: каждый namespace имеет свои secret engines, policies, auth methods. Бесплатная версия — единый namespace, изоляция через path-prefix conventions."
+        related: ["Что такое Vault?"]
+      - q: "Что такое Falco и runtime security?"
+        keywords: [falco, runtime security, syscall, eBPF, intrusion detection, container]
+        a: "**Falco** (CNCF) — runtime security: отслеживает **syscalls** (через kernel module или **eBPF**) и алертит на подозрительную активность: shell внутри контейнера, чтение `/etc/shadow`, исходящее соединение на нестандартный порт, `kubectl exec` в privileged pod. Правила — YAML ( Falco rules). Интеграция: fluentd/Prometheus Alertmanager/SIEM. Дополняет NetworkPolicy/PSA — ловит то, что статические политики не предусматривают."
+        related: ["Что такое eBPF?", "Что такое container escape?"]

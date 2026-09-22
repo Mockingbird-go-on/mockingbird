@@ -3,7 +3,6 @@ from mockingbird.stt.device import (
     device_label,
     is_valid_device,
     resolve_device,
-    torch_cuda_available,
 )
 
 
@@ -45,6 +44,5 @@ def test_is_valid_device():
     assert not is_valid_device(None) is False or is_valid_device(None) in (False, True)
 
 
-def test_cuda_probes_never_raise():
-    assert isinstance(torch_cuda_available(), bool)
+def test_cuda_probe_never_raises():
     assert isinstance(ctranslate2_cuda_available(), bool)

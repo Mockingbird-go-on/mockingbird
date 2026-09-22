@@ -121,7 +121,7 @@ sections:
         related: ["Что такое lifecycle в Terraform?"]
       - q: "Что такое terragrunt?"
         keywords: [terragrunt, обертка, обёртка, dry, dry-run, конфигурации, повторение]
-        a: "**Terragrunt** — обёртка над Terraform для устранения дублирования конфигураций: DRY-шаблоны (hcl), автоматический remote state (backend per env), переиспользование модулей, дикая вложенность каталогов для сред. Популярен в мульти-окружениях: одно объявление модуля, много экземпляров."
+        a: "**Terragrunt** — обёртка над Terraform для устранения дублирования конфигураций: DRY-шаблоны (hcl), автоматический remote state (backend per env), переиспользование модулей, глубокая вложенность каталогов для сред. Популярен в мульти-окружениях: одно объявление модуля, много экземпляров."
         related: ["Что такое workspaces в Terraform?"]
       - q: "Что такое terraform.lock.hcl?"
         keywords: [lock, terraform.lock.hcl, dependency lock, версии провайдеров, hash]

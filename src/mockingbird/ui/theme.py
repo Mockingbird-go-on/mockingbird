@@ -243,6 +243,21 @@ QSplitter::handle:vertical {{ height: 2px; }}
     padding: 6px 8px;
 }}
 
+/* Model download overlay card */
+#mddCard {{
+    background-color: {t.header_bg};
+    border: 1px solid {t.border};
+    border-radius: 14px;
+}}
+#mddTitle {{
+    font-size: 14px;
+    font-weight: 600;
+}}
+#mddDetail {{
+    color: {t.status_muted};
+    font-size: 12px;
+}}
+
 QPushButton {{
     background-color: {t.card};
     color: {t.text};

@@ -29,29 +29,12 @@ def _find_project_root(start: str) -> str:
 _ROOT = _find_project_root(SPECPATH)
 _ENTRY = os.path.join(_ROOT, "src", "mockingbird", "main.py")
 _SRC = os.path.join(_ROOT, "src")
-_VENDOR = os.path.join(_ROOT, "vendor")
 _ICON = os.path.join(SPECPATH, "logo_mockingbird.ico")
 
-# If pyannote.audio is installed, collect it; otherwise fall back to the
-# vendor stub so GigaAM's check_imports still passes.
-_pyannote_modules = []
-try:
-    _pyannote_modules = (
-        collect_submodules("pyannote")
-        + collect_submodules("pyannote.audio")
-        + collect_submodules("speechbrain")
-    )
-except Exception:
-    pass
-
-_vendor_datas = []
-_vendor_hidden = []
-_vendor_pathex = []
-if not _pyannote_modules:
-    # No real pyannote.audio — use the vendor stub.
-    _vendor_datas = [(os.path.join(_VENDOR, "pyannote"), "pyannote")]
-    _vendor_hidden = ["pyannote"]
-    _vendor_pathex = [_VENDOR]
+# CPU-only build switch. Set by scripts/build_windows.ps1 -Cpu (env var, since
+# PyInstaller does not forward custom CLI args to the spec). Drops the whole
+# nvidia CUDA stack (~1.9 GB) from the bundle; ctranslate2 then runs on CPU.
+_CPU_ONLY = os.environ.get("MOCKINGBIRD_CPU") == "1"
 
 datas = (
     collect_data_files("mockingbird")
@@ -59,21 +42,12 @@ datas = (
     + [(os.path.join(_ROOT, "src", "mockingbird", "sound.mp3"), "mockingbird")]
     + [(os.path.join(_ROOT, "src", "mockingbird", "assets", "icons", "*.svg"),
         os.path.join("mockingbird", "assets", "icons"))]
+    + [(os.path.join(_ROOT, "src", "mockingbird", "assets", "models", "*.onnx"),
+        os.path.join("mockingbird", "assets", "models"))]
     + collect_data_files("faster_whisper")
     + collect_data_files("ctranslate2")
-    + collect_data_files("transformers")
     + collect_data_files("tokenizers")
-    + _vendor_datas
 )
-
-def _collect_optional(name: str):
-    """Collect dynamic libs for an optional backend package (CUDA-only deps
-    are absent on CPU builds; never fail the whole freeze because of that)."""
-    try:
-        return list(collect_dynamic_libs(name))
-    except Exception:
-        return []
-
 
 def _flat_nvidia_libs(collected):
     """Find the installed nvidia-* wheels and return (src, dest) pairs that
@@ -94,22 +68,29 @@ def _flat_nvidia_libs(collected):
     if not pkg_root:
         return []
     pairs = []
-    # Skip DLLs already shipped by collect_dynamic_libs: duplicate dest paths
-    # make COLLECT fail. Note: collect_dynamic_libs entries carry the DEST
-    # DIRECTORY (e.g. "ctranslate2"), not the full file path — the effective
-    # file name is basename(src) in that case.
-    def _dest_name(src: str, dest: str) -> str:
-        if dest.lower().endswith(".dll"):
-            return os.path.basename(dest)
-        return os.path.basename(src)
+    # Skip DLLs already shipped FLAT next to ctranslate2.dll: duplicate dest
+    # paths make COLLECT fail. Entries that land in a nested tree
+    # (nvidia/<lib>/bin/...) do NOT count — the Windows loader cannot see
+    # them there, so those DLLs still need a flat copy.
+    # NOTE: PyInstaller's dest for binaries is a DIRECTORY: the final location
+    # is always dest + basename(src). Passing a full file path here makes
+    # PyInstaller materialize a DIRECTORY named "<name>.dll" containing the
+    # file — invisible to the Windows loader.
+    def _is_flat(src: str, dest: str) -> bool:
+        norm = dest.replace("\\", "/").strip("/")
+        return norm.lower() == "ctranslate2"
 
-    already = {_dest_name(src, dest) for src, dest in collected}
+    already = {
+        os.path.basename(src)
+        for src, dest in collected
+        if _is_flat(src, dest)
+    }
     for dll in glob.glob(os.path.join(pkg_root, "*", "bin", "*.dll")):
         base = os.path.basename(dll)
         if base in already:
             continue
         already.add(base)
-        pairs.append((dll, os.path.join("ctranslate2", base)))
+        pairs.append((dll, "ctranslate2"))
     return pairs
 
 
@@ -117,28 +98,19 @@ _base_binaries = (
     collect_dynamic_libs("ctranslate2")
     + collect_dynamic_libs("onnxruntime")
     + collect_dynamic_libs("sentencepiece")
-    # CUDA torch: torch/lib holds c10/torch_cuda/asmjit/fbgemm/OpenMP DLLs.
-    # cuDNN/cuBLAS/etc. live in the nvidia-* wheels and are picked up by
-    # PyInstaller's nvidia hooks; the guarded collections below are a fallback
-    # for any lib the hooks miss on GPU builds (and are no-ops on CPU builds).
-    + _collect_optional("torch")
-    + _collect_optional("nvidia.cudnn")
-    + _collect_optional("nvidia.cublas")
-    + _collect_optional("nvidia.cufft")
-    + _collect_optional("nvidia.curand")
-    + _collect_optional("nvidia.cusolver")
-    + _collect_optional("nvidia.cusparse")
-    + _collect_optional("nvidia.cuda_runtime")
 )
-binaries = (
-    _base_binaries
-    # cuDNN/cuBLAS sub-DLLs (cudnn_engines_*, cudnn_graph*, cublas*, ...) must
-    # sit NEXT to ctranslate2.dll in a directory the Windows loader searches
-    # (_internal/ctranslate2/); the nvidia/<lib>/bin/ wheel layout is invisible
-    # to the loader, cuDNN then fails to load and whisper silently falls back
-    # to float32. Locate the nvidia wheels on disk and add a FLAT copy.
-    + _flat_nvidia_libs(_base_binaries)
-)
+
+# CUDA: cuDNN/cuBLAS/cuFFT/cuRAND sub-DLLs (cudnn_engines_*, cudnn_graph*,
+# cublas*, ...) must sit NEXT to ctranslate2.dll in a directory the Windows
+# loader searches (_internal/ctranslate2/). The nvidia/<lib>/bin/ wheel layout
+# is invisible to the loader, so cuDNN fails to load and whisper silently falls
+# back to float32. We therefore ship ONE flat copy and do NOT collect the
+# nested nvidia tree (that used to duplicate every DLL, ~1.9 GB). Skipped
+# entirely on CPU builds.
+if _CPU_ONLY:
+    binaries = _base_binaries
+else:
+    binaries = _base_binaries + _flat_nvidia_libs(_base_binaries)
 
 hiddenimports = (
     collect_submodules("mockingbird")
@@ -148,30 +120,102 @@ hiddenimports = (
     + collect_submodules("sounddevice")
     + collect_submodules("pyaudiowpatch")
     + collect_submodules("openai")
-    + collect_submodules("transformers")
     + collect_submodules("tokenizers")
     + collect_submodules("sentencepiece")
-    + collect_submodules("hydra")
-    + collect_submodules("omegaconf")
-    + _pyannote_modules
-    + _vendor_hidden
-    + ["PySide6.QtSvg"]
+    + ["PySide6.QtSvg", "PySide6.QtMultimedia"]
 )
+
+_excludes = [
+    # GigaAM leftovers in the build env (installed as user packages):
+    # nothing in mockingbird imports them anymore, but PyInstaller still
+    # follows them through transitive deps and ships ~2 GB of torch.
+    "torch",
+    "torchaudio",
+    "torchvision",
+    "transformers",
+    "speechbrain",
+    "pyannote",
+    "hydra",
+    "omegaconf",
+    "matplotlib",
+    "tkinter",
+    "IPython",
+]
+if _CPU_ONLY:
+    # No CUDA runtime in a CPU build. The nvidia-* wheels may still be
+    # installed in the build env; keep PyInstaller from following them.
+    _excludes += ["nvidia"]
 
 a = Analysis(
     [_ENTRY],
-    pathex=[_SRC] + _vendor_pathex,
+    pathex=[_SRC],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     runtime_hooks=[],
-    excludes=[],
+    excludes=_excludes,
     noarchive=False,
 )
 
 
 pyz = PYZ(a.pure)
+
+
+def _version_file():
+    """Write a temporary VSVersionInfo file for the current app version.
+
+    The version string lives in ``mockingbird.__version__`` (single source of
+    truth); the Windows exe must carry it so Inno Setup's
+    ``GetVersionNumbersString`` produces ``Mockingbird-Setup-<ver>.exe``
+    instead of a 0.0.0 default.
+    """
+    import sys
+
+    sys.path.insert(0, _SRC)
+    from mockingbird import __version__  # noqa: E402
+
+    quad = ".".join((__version__.split(".") + ["0", "0", "0"])[:4])
+    path = os.path.join(SPECPATH, "build", f"version_info_{__version__}.txt")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(
+            f"""# UTF-8
+#
+# Generated from mockingbird.__version__ by mockingbird.spec — do not edit.
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=({", ".join(quad.split("."))}),
+    prodvers=({", ".join(quad.split("."))}),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo(
+      [
+        StringTable(
+          '040904B0',
+          [StringStruct('CompanyName', 'Mockingbird'),
+          StringStruct('FileDescription', 'Mockingbird — live interview assistant'),
+          StringStruct('FileVersion', '{__version__}'),
+          StringStruct('InternalName', 'mockingbird'),
+          StringStruct('OriginalFilename', 'mockingbird.exe'),
+          StringStruct('ProductName', 'Mockingbird'),
+          StringStruct('ProductVersion', '{__version__}')])
+      ]),
+    VarFileInfo([VarStruct('Translation', [1033, 1200])])
+  ]
+)
+"""
+        )
+    return path
+
+
+_VERSION_FILE = _version_file()
 
 exe = EXE(
     pyz,
@@ -184,25 +228,10 @@ exe = EXE(
     upx=False,
     console=False,
     icon=_ICON,
-)
-# Console (CLI) variant for headless testing: same code, but with a console
-# window so the interactive REPL (``mockingbird-cli`` / ``--cli``) works when
-# launched from Explorer or as a scheduled task.
-exe_cli = EXE(
-    pyz,
-    a.scripts,
-    [],
-    exclude_binaries=True,
-    name="mockingbird-cli",
-    debug=False,
-    strip=False,
-    upx=False,
-    console=True,
-    icon=_ICON,
+    version=_VERSION_FILE,
 )
 coll = COLLECT(
     exe,
-    exe_cli,
     a.binaries,
     a.datas,
     strip=False,

@@ -7,25 +7,23 @@ regenerated.
 """
 from __future__ import annotations
 
-import zipfile
 from pathlib import Path
 
 import pytest
 import yaml
 
-_KB_ZIP = (
+_KB_DIR = (
     Path(__file__).resolve().parent.parent
     / "src"
     / "mockingbird"
     / "assets"
-    / "devops-kb-v1.zip"
+    / "kb"
 )
 
 
 def _load(filename: str) -> dict:
-    with zipfile.ZipFile(_KB_ZIP) as zf:
-        with zf.open(filename) as fh:
-            return yaml.safe_load(fh)
+    with open(_KB_DIR / filename, encoding="utf-8") as fh:
+        return yaml.safe_load(fh)
 
 
 def _all_questions(filename: str) -> list[str]:

@@ -6,17 +6,14 @@ from mockingbird.config import Config
 
 def create_stt_engine(config: Config, sample_rate: int = 16000):
     """Instantiate the configured streaming STT backend."""
-    backend = config.stt.backend.lower()
+    backend = (config.stt.backend or "whisper").lower()
     if backend == "gigaam":
-        from mockingbird.stt.gigaam_engine import GigaAMEngine
+        # Migration: GigaAM was removed; treat it as whisper.
+        backend = "whisper"
+    if backend != "whisper":
+        raise ValueError(f"unknown stt backend: {config.stt.backend!r}")
+    from mockingbird.stt.whisper_engine import WhisperEngine
 
-        return GigaAMEngine(
-            config.gigaam, sample_rate=sample_rate, end_ahead=config.stt.end_ahead
-        )
-    if backend == "whisper":
-        from mockingbird.stt.whisper_engine import WhisperEngine
-
-        return WhisperEngine(
-            config.whisper, sample_rate=sample_rate, end_ahead=config.stt.end_ahead
-        )
-    raise ValueError(f"unknown stt backend: {config.stt.backend!r}")
+    return WhisperEngine(
+        config.whisper, sample_rate=sample_rate, end_ahead=config.stt.end_ahead
+    )

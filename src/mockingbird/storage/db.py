@@ -70,7 +70,13 @@ class SQLiteStore:
 
     def close(self) -> None:
         with self._lock:
-            self._conn.close()
+            if self._conn is not None:
+                self._conn.close()
+                self._conn = None
+
+    def _ensure_open(self) -> None:
+        if self._conn is None:
+            raise RuntimeError("SQLiteStore is closed")
 
     # -- sessions --
     def create_session(self, session_id: str, started_at: float, title: str | None = None) -> None:

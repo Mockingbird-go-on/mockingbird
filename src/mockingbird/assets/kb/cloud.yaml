@@ -92,7 +92,7 @@ sections:
         related: ["Чем stateful отличается от stateless?"]
       - q: "Что такое managed load balancer?"
         keywords: [load balancer, alb, nlb, elb, балансировщик, target group]
-        a: "**Облачный LB**: **ALB** (L7 HTTP: хосты, пути, SSL), **NLB** (L4 TCP/UDP, статические IP), **CLB/GLB** (старые). Связан с **target groups** (серверы) и **health checks**. Облако управляет инфраструктурой LB, но надо правильно настроить таргеты и масштабирование."
+        a: "**Облачный LB**: **ALB** (L7 HTTP: хосты, пути, SSL), **NLB** (L4 TCP/UDP, статические IP), **CLB** (deprecated — старый classic LB, используйте ALB/NLB). Связан с **target groups** (серверы) и **health checks**. Облако управляет инфраструктурой LB, но надо правильно настроить таргеты и масштабирование."
         related: ["Что такое health check?"]
       - q: "Что такое CDN?"
         keywords: [cdn, контент, edge, кэш, cloudfront, облачный фронт]

@@ -1,0 +1,38 @@
+name: DevOps Senior KB
+id: devops-senior
+version: 1.2.0
+author: Mockingbird Team
+description: >-
+  Подробная база знаний уровня Senior DevOps-инженера. Покрывает Kubernetes
+  (архитектура, CRD/Operator, networking, RBAC, PSA, KEDA, Karpenter), Docker,
+  CI/CD, GitOps (ArgoCD/Flux), IaC (Terraform/OpenTofu/Ansible/Pulumi),
+  observability (Prometheus/Loki/Grafana/OTel, Thanos/Mimir), базы данных
+  (PostgreSQL/Patroni/MVCC, ClickHouse, Redis, MongoDB), очереди (Kafka/KRaft,
+  RabbitMQ, SQS/SNS), service mesh (Istio/Linkerd/Ambient), сети, Linux,
+  SRE (SLI/SLO/error budget, chaos engineering, FinOps), HA/DR, безопасность
+  (Vault, Falco, SLSA, supply chain), облака (AWS/GCP/Yandex Cloud, 152-ФЗ),
+  микросервисы и почту. 19 тематических файлов, ~556 вопросов с готовыми
+  ответами и связями (theory vector). Русский язык, техническая терминология
+  на английском.
+specialization: DevOps
+min_app_version: 0.1.0
+topics:
+- ci_cd.yaml
+- cloud.yaml
+- databases.yaml
+- devsecops.yaml
+- docker.yaml
+- git.yaml
+- gitops.yaml
+- ha_dr.yaml
+- iac.yaml
+- kubernetes.yaml
+- linux.yaml
+- mail.yaml
+- message_queues.yaml
+- microservices.yaml
+- monitoring.yaml
+- networking.yaml
+- service_mesh.yaml
+- sre.yaml
+- virtualization_storage.yaml

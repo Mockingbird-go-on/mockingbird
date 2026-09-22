@@ -663,7 +663,7 @@ def test_stop_hint_no_new_audio_skipped():
     e._model = object()
     calls = []
 
-    def fake(audio, kind="decode", beam_size=1):
+    def fake(audio, kind="decode", beam_size=1, **kw):
         calls.append(kind)
         return "текст", 0.9, len(audio) / 16000.0
 
@@ -701,7 +701,7 @@ def test_long_buffer_speculative_decodes_only_tail():
     e._model = object()
     calls = []
 
-    def fake(audio, kind="decode", beam_size=1):
+    def fake(audio, kind="decode", beam_size=1, **kw):
         calls.append(len(audio))
         return "хвост", 0.9, len(audio) / 16000.0
 

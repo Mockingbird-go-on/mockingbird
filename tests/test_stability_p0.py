@@ -1,7 +1,7 @@
 """Regression tests for STABILITY_PLAN P0/P1 fixes.
 
 Covers:
-- system_check no longer crashes when ``torch.cuda.is_available`` raises a
+- system_check no longer crashes when the CUDA probe raises
   non-ImportError (CUDA driver mismatch).
 - LlmClient JSON extraction is non-greedy (avoids swallowing multi-object
   LLM output).
@@ -23,21 +23,23 @@ import pytest
 # 1.4 — system_check tolerates CUDA driver mismatch (RuntimeError, not ImportError)
 # --------------------------------------------------------------------------- #
 def test_system_check_survives_cuda_runtime_error(monkeypatch):
-    fake_torch = types.ModuleType("torch")
+    fake_ct2 = types.ModuleType("ctranslate2")
 
-    class _Boom:
-        def is_available(self):
-            raise RuntimeError("cuda driver mismatch")
+    def _boom():
+        raise RuntimeError("cuda driver mismatch")
 
-    fake_torch.cuda = _Boom()
-    monkeypatch.setitem(sys.modules, "torch", fake_torch)
-    monkeypatch.setitem(sys.modules, "torch.cuda", fake_torch.cuda)
+    fake_ct2.get_cuda_device_count = _boom
+    monkeypatch.setitem(sys.modules, "ctranslate2", fake_ct2)
+
+    import mockingbird.stt.device as dev
+
+    monkeypatch.setattr(dev, "ctranslate2_cuda_available", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
 
     from mockingbird.config import Config
     from mockingbird.ui.system_check import run_system_checks
 
     cfg = Config()
-    cfg.stt.backend = "gigaam"
+    cfg.stt.backend = "whisper"
     # Should return (possibly with a warning), never raise.
     warnings = run_system_checks(cfg)
     assert isinstance(warnings, list)
@@ -104,14 +106,14 @@ def test_on_engine_final_emits_signal_without_db_write(monkeypatch, tmp_path):
 
     # Stub heavy deps so App.__init__ is cheap.
     saved = {
-        "mockingbird.stt.gigaam_engine": sys.modules.get("mockingbird.stt.gigaam_engine"),
+        "mockingbird.stt.whisper_engine": sys.modules.get("mockingbird.stt.whisper_engine"),
         "mockingbird.audio.capture": sys.modules.get("mockingbird.audio.capture"),
         "mockingbird.audio.loopback": sys.modules.get("mockingbird.audio.loopback"),
     }
-    fake_engine_mod = types.ModuleType("mockingbird.stt.gigaam_engine")
+    fake_engine_mod = types.ModuleType("mockingbird.stt.whisper_engine")
 
     class _FakeEngine:
-        backend = "gigaam"
+        backend = "faster-whisper"
         model_name = "fake"
         device = ""
         is_ready = False
@@ -129,8 +131,8 @@ def test_on_engine_final_emits_signal_without_db_write(monkeypatch, tmp_path):
         def flush(self):
             pass
 
-    fake_engine_mod.GigaAMEngine = _FakeEngine
-    sys.modules["mockingbird.stt.gigaam_engine"] = fake_engine_mod
+    fake_engine_mod.WhisperEngine = _FakeEngine
+    sys.modules["mockingbird.stt.whisper_engine"] = fake_engine_mod
 
     fake_capture_mod = types.ModuleType("mockingbird.audio.capture")
 
@@ -180,7 +182,7 @@ def test_on_engine_final_emits_signal_without_db_write(monkeypatch, tmp_path):
         from mockingbird.protocol import FinalTranscript
 
         cfg = load_config()
-        cfg.stt.backend = "gigaam"
+        cfg.stt.backend = "whisper"
         app = App(cfg)
         app.session_id = "test-session"
         try:

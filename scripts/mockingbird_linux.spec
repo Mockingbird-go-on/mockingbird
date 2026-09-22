@@ -1,8 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
-# Linux build spec: produces dist/mockingbird/ (onedir, GUI) and
-# dist/mockingbird-cli/ — packaged into an AppImage and a .deb by
-# scripts/build_linux.sh. Mirrors scripts/mockingbird.spec minus the
-# Windows-specific parts:
+# Linux build spec: produces dist/mockingbird/ — packaged into an AppImage
+# and a .deb by scripts/build_linux.sh. Mirrors scripts/mockingbird.spec
+# minus the Windows-specific parts:
 #   - no icon (icons are irrelevant for ELF, the .desktop file carries SVG)
 #   - no pyaudiowpatch (loopback uses PulseAudio monitors via sounddevice)
 #   - no flat nvidia-DLL layout (the Linux loader uses RPATH/LD_LIBRARY_PATH)
@@ -34,25 +33,12 @@ def _find_project_root(start: str) -> str:
 _ROOT = _find_project_root(SPECPATH)
 _ENTRY = os.path.join(_ROOT, "src", "mockingbird", "main.py")
 _SRC = os.path.join(_ROOT, "src")
-_VENDOR = os.path.join(_ROOT, "vendor")
 
-_pyannote_modules = []
-try:
-    _pyannote_modules = (
-        collect_submodules("pyannote")
-        + collect_submodules("pyannote.audio")
-        + collect_submodules("speechbrain")
-    )
-except Exception:
-    pass
-
-_vendor_datas = []
-_vendor_hidden = []
-_vendor_pathex = []
-if not _pyannote_modules:
-    _vendor_datas = [(os.path.join(_VENDOR, "pyannote"), "pyannote")]
-    _vendor_hidden = ["pyannote"]
-    _vendor_pathex = [_VENDOR]
+# CPU-only build switch. Set by scripts/build_linux.sh --cpu. On Linux the
+# CUDA stack is linked from the system (RPATH/LD_LIBRARY_PATH), so there is no
+# nested nvidia tree to drop; the flag mainly keeps PyInstaller from following
+# any nvidia-* packages present in the build env.
+_CPU_ONLY = os.environ.get("MOCKINGBIRD_CPU") == "1"
 
 datas = (
     collect_data_files("mockingbird")
@@ -61,24 +47,14 @@ datas = (
         os.path.join("mockingbird", "assets", "icons"))]
     + collect_data_files("faster_whisper")
     + collect_data_files("ctranslate2")
-    + collect_data_files("transformers")
     + collect_data_files("tokenizers")
-    + _vendor_datas
 )
-
-
-def _collect_optional(name: str):
-    try:
-        return list(collect_dynamic_libs(name))
-    except Exception:
-        return []
 
 
 binaries = (
     collect_dynamic_libs("ctranslate2")
     + collect_dynamic_libs("onnxruntime")
     + collect_dynamic_libs("sentencepiece")
-    + _collect_optional("torch")
 )
 
 hiddenimports = (
@@ -88,30 +64,41 @@ hiddenimports = (
     + collect_submodules("onnxruntime")
     + collect_submodules("sounddevice")
     + collect_submodules("openai")
-    + collect_submodules("transformers")
     + collect_submodules("tokenizers")
     + collect_submodules("sentencepiece")
-    + collect_submodules("hydra")
-    + collect_submodules("omegaconf")
-    + _pyannote_modules
-    + _vendor_hidden
     + [
         "PySide6.QtSvg",
-        # Linux windowing: Qt 6.7+ splits xcb/wayland into plugins that
-        # PyInstaller's PySide6 hooks may miss when building headless.
-        "PySide6.QtXcbQpa",
+        "PySide6.QtMultimedia",
     ]
 )
 
+_excludes = [
+    "pyaudiowpatch",
+    # GigaAM leftovers — nothing imports them; keep the bundle lean.
+    "torch",
+    "torchaudio",
+    "torchvision",
+    "transformers",
+    "speechbrain",
+    "pyannote",
+    "hydra",
+    "omegaconf",
+    "matplotlib",
+    "tkinter",
+    "IPython",
+]
+if _CPU_ONLY:
+    _excludes += ["nvidia"]
+
 a = Analysis(
     [_ENTRY],
-    pathex=[_SRC] + _vendor_pathex,
+    pathex=[_SRC],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     runtime_hooks=[],
-    excludes=["pyaudiowpatch"],
+    excludes=_excludes,
     noarchive=False,
 )
 
@@ -129,20 +116,8 @@ exe = EXE(
     upx=False,
     console=False,
 )
-exe_cli = EXE(
-    pyz,
-    a.scripts,
-    [],
-    exclude_binaries=True,
-    name="mockingbird-cli",
-    debug=False,
-    strip=False,
-    upx=False,
-    console=True,
-)
 coll = COLLECT(
     exe,
-    exe_cli,
     a.binaries,
     a.datas,
     strip=False,

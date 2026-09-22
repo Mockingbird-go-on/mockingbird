@@ -1,4 +1,4 @@
-# Build a Windows .exe with PyInstaller. Run on a Windows 10/11 machine.
+﻿# Build a Windows .exe with PyInstaller. Run on a Windows 10/11 machine.
 #
 # IMPORTANT:
 #   1) Copy the project to a Windows-native path FIRST (do NOT build from
@@ -13,11 +13,19 @@
 # GPU (CUDA) is the DEFAULT build and needs an NVIDIA driver >= 550 and a
 # CUDA-capable GPU. Pass -Cpu to produce a smaller CPU-only exe instead.
 param(
+    # CPU-only build: skip the nvidia CUDA stack entirely (no pip install of
+    # the pinned nvidia-* wheels, no CUDA DLLs bundled). The output drops from
+    # ~4.1 GB to a few hundred MB but whisper runs on CPU (slower).
     [switch]$Cpu,
     # Also build the Inno Setup installer (requires ISCC.exe on PATH or in
     # the default Program Files location). The PyInstaller dist\ outputs
-    # must already exist — this script builds them first anyway.
-    [switch]$Installer
+    # must already exist - this script builds them first anyway.
+    [switch]$Installer,
+    # Full rebuild: pass --clean to PyInstaller (drops the incremental
+    # build cache). Needed after upgrading/downgrading pip packages, or when
+    # a build behaves oddly. Default is an incremental build (~1-2 min
+    # instead of ~6-8).
+    [switch]$Clean
 )
 $ErrorActionPreference = "Stop"
 
@@ -47,53 +55,100 @@ if ($LASTEXITCODE -ne 0) {
     throw "pip upgrade failed with exit code $LASTEXITCODE."
 }
 
-# Baseline install (deps as declared; on GPU builds we override torch below so
-# the final state is the CUDA one regardless of resolver order).
-Invoke-Pip -Arguments @("install", "-e", ".[gigaam,dev]")
+# Baseline install.
+Invoke-Pip -Arguments @("install", "-e", ".[dev]")
 Invoke-Pip -Arguments @("install", "pyinstaller")
 
+# Reset leftover packages before the pinned install: pip does not downgrade
+# on plain `install` if a newer version is already present, and the GigaAM-era
+# torch stack is no longer a dependency (its PyInstaller hooks still ran and
+# slowed every build). stderr noise must NOT abort the script: PowerShell
+# wraps native stderr in NativeCommandError under $ErrorActionPreference=Stop.
+$prevEAP = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+# The GigaAM-era torch stack is no longer a dependency; leaving it installed
+# slows the PyInstaller graph analysis (its hooks still run) for zero
+# benefit. Best-effort removal - failures (not installed / locked) are fine.
+python -m pip uninstall -y torch torchaudio torchvision 2>$null | Out-Null
+if (-not $Cpu) {
+    # Only touch the nvidia stack on GPU builds: on -Cpu we neither install
+    # nor remove it (the spec excludes it via MOCKINGBIRD_CPU).
+    python -m pip uninstall -y nvidia-cudnn-cu12 nvidia-cublas-cu12 nvidia-cuda-nvrtc-cu12 nvidia-cuda-runtime-cu12 nvidia-cufft-cu12 nvidia-curand-cu12 2>$null | Out-Null
+}
+$ErrorActionPreference = $prevEAP
+
 if ($Cpu) {
-    Write-Host ">>> Building CPU-only variant"
-    # Prefer the CPU-only wheels on Windows to keep the install smaller.
-    Invoke-Pip -Arguments @("install", "torch", "torchaudio", "--index-url", "https://download.pytorch.org/whl/cpu")
+    Write-Host "(CPU-only build: skipping the nvidia CUDA stack)"
 } else {
-    Write-Host '>>> Building GPU (CUDA 12.4) variant, needs NVIDIA driver 550 or newer'
-    # CUDA build of torch/torchaudio (GTX 1070 = Pascal sm_61 is supported).
-    Invoke-Pip -Arguments @("install", "--force-reinstall", "torch", "torchaudio", "--index-url", "https://download.pytorch.org/whl/cu124")
-    # cuDNN 9: CTranslate2 needs it for float16/int8_float16 on CUDA; without
-    # it get_supported_compute_types('cuda') only offers float32 and whisper
-    # runs 2x slower. The pip wheel is found by ctranslate2 at runtime.
-    Invoke-Pip -Arguments @("install", "nvidia-cudnn-cu12")
+    Write-Host "(nvidia packages reset - reinstalling the pinned 12.4 line)"
+
+    # cuDNN 9 + the CUDA runtime DLLs ctranslate2 needs for float16/int8 on GPU.
+    # IMPORTANT: pin the nvidia-* stack to CUDA 12.4 - without torch in the env
+    # (removed with GigaAM) pip resolves nvidia-cuda-nvrtc-cu12 to the NEWEST
+    # release (12.9), whose DLLs require driver >= 575. On a 550-era driver the
+    # DLL loads but fails to initialize (WinError 5) and ctranslate2 dies with
+    # "CUDA unavailable". Same 12.4 line the old torch cu124 install enforced.
+    Invoke-Pip -Arguments @(
+        "install",
+        "nvidia-cudnn-cu12==9.1.0.70",
+        "nvidia-cublas-cu12==12.4.5.8",
+        "nvidia-cuda-nvrtc-cu12==12.4.127",
+        "nvidia-cuda-runtime-cu12==12.4.127",
+        "nvidia-cufft-cu12==11.2.1.3",
+        "nvidia-curand-cu12==10.3.5.147"
+    )
     # faster-whisper's ctranslate2 wheel from PyPI already ships CUDA 12 GPU
     # support on Windows; there is no separate -cu12 package to install.
     # Verify the installed binary can see the GPU so GPU inference really works.
     $ct2Devices = python -c "import ctranslate2; print(ctranslate2.get_cuda_device_count())" 2>$null
     if ($LASTEXITCODE -ne 0 -or $ct2Devices -notmatch '^\d+$') {
         Write-Host "WARNING: could not probe ctranslate2 CUDA support (is faster-whisper installed?)."
-        Write-Host "        faster-whisper will fall back to CPU; GigaAM still uses torch CUDA."
+        Write-Host "        faster-whisper will fall back to CPU."
     } elseif ([int]$ct2Devices -eq 0) {
         Write-Host "NOTE: ctranslate2 reports 0 CUDA devices on this machine."
-        Write-Host "      faster-whisper will run on CPU here; GigaAM still uses torch CUDA."
+        Write-Host "      faster-whisper will run on CPU here."
     } else {
         Write-Host "ctranslate2 sees $ct2Devices CUDA device(s); faster-whisper GPU inference enabled."
     }
 }
 
-# Fix a known torch + PyInstaller issue on Python 3.12 (NameError in
-# torch/_numpy/_ufuncs.py) by patching the installed torch source in place, so
-# PyInstaller freezes the corrected bytecode. Idempotent; see the script.
-python scripts\patch_torch_sources.py
-if ($LASTEXITCODE -ne 0) {
-    throw "Failed to patch torch sources. See error above."
-}
+# The spec reads MOCKINGBIRD_CPU: PyInstaller does not forward custom CLI
+# args to the spec. 1 = CPU-only bundle, 0/unset = CUDA bundle.
+$env:MOCKINGBIRD_CPU = if ($Cpu) { "1" } else { "0" }
 
 # Whisper models are downloaded at first run, not bundled.
-python -m PyInstaller --clean --noconfirm scripts\mockingbird.spec
+$pyiArgs = @("--noconfirm")
+if ($Clean) { $pyiArgs += "--clean" }
+python -m PyInstaller @pyiArgs scripts\mockingbird.spec
 if ($LASTEXITCODE -ne 0) {
     throw "PyInstaller failed with exit code $LASTEXITCODE. Fix the error above and re-run."
 }
 if (-not (Test-Path "dist\mockingbird\mockingbird.exe")) {
     throw "Build produced no executable: dist\mockingbird\mockingbird.exe is missing."
+}
+
+# Flatten DLL-directory artifacts: on some PyInstaller versions a binaries
+# pair (src, "ctranslate2\<name>.dll") is materialized as a DIRECTORY
+# named <name>.dll containing the file (WinError 5 / "CUDA unavailable" at
+# runtime). Move the file up and drop the directory.
+# CAREFUL: Move-Item onto a path occupied by a directory moves the file INTO
+# it (no error); we must remove the directory first, then move.
+$ct2dir = "dist\mockingbird\_internal\ctranslate2"
+if (Test-Path $ct2dir) {
+    Get-ChildItem -Path $ct2dir -Directory -Filter "*.dll" | ForEach-Object {
+        $inner = Get-ChildItem -Path $_.FullName -File | Select-Object -First 1
+        if ($inner) {
+            Copy-Item -Force $inner.FullName (Join-Path $env:TEMP $_.Name)
+            Remove-Item -Recurse -Force $_.FullName
+            Move-Item -Force (Join-Path $env:TEMP $_.Name) (Join-Path $ct2dir $_.Name)
+            Write-Host "flattened $($_.Name)"
+        } else {
+            Remove-Item -Recurse -Force $_.FullName
+        }
+    }
+    # sanity: every remaining .dll entry must be a FILE
+    $badDirs = Get-ChildItem -Path $ct2dir -Directory -Filter "*.dll"
+    if ($badDirs) { throw "ctranslate2 still contains .dll directories after flattening" }
 }
 
 Write-Host ""
@@ -115,14 +170,15 @@ if ($Installer) {
     } else { $iscc = $iscc.Source }
 
     New-Item -ItemType Directory -Force -Path "installer" | Out-Null
-    & $iscc "scripts\installer.iss"
+    # Bake the variant into the output filename so the CUDA and CPU installers
+    # coexist (installer.iss turns /DBuildVariant=cpu|cuda into the
+    # "windows-x64-<variant>-setup" suffix). Without this both builds wrote
+    # Mockingbird-Setup-<ver>.exe and the second overwrote the first.
+    $variant = if ($Cpu) { "cpu" } else { "cuda" }
+    & $iscc "/DBuildVariant=$variant" "scripts\installer.iss"
     if ($LASTEXITCODE -ne 0) {
         throw "Inno Setup failed with exit code $LASTEXITCODE."
     }
     Write-Host ""
-    Write-Host "Installer complete: installer\"
-}
-if (-not $Cpu) {
-    Write-Host 'GPU build: the target machine needs an NVIDIA driver 550 or newer (and a CUDA-capable GPU).'
-    Write-Host 'If CUDA is missing the app falls back to CPU automatically.'
+    Write-Host "Installer complete: installer\ ($variant variant)"
 }

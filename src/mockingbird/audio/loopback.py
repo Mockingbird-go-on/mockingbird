@@ -407,27 +407,81 @@ def resolve_loopback_device(pa_instance, device: str | None) -> dict | None:
 
 
 def _linux_monitor_devices() -> list[dict]:
-    """PulseAudio/PipeWire monitor sources via pactl (name + description)."""
+    """PulseAudio/PipeWire monitor sources via pactl (name + description).
+
+    ``--format=json`` exists only in PulseAudio >= 12/13; on older systems
+    (or a non-UTF-8 locale corrupting the JSON) we fall back to parsing the
+    plain-text ``pactl list sources`` output for monitor names.
+    """
+    out = None
     try:
         out = subprocess.run(
             ["pactl", "--format=json", "list", "sources"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
         )
-    except Exception:  # noqa: BLE001 - pactl missing / DBus session absent
+    except FileNotFoundError:
+        return []  # pactl not installed
+    except Exception:  # noqa: BLE001 - DBus session absent etc.
+        return []
+    if out.returncode == 0 and out.stdout.strip():
+        import json
+
+        try:
+            sources = json.loads(out.stdout)
+        except Exception:  # noqa: BLE001 - non-UTF-8 locale mangled the JSON
+            log.debug("pactl json parse failed, falling back to text output")
+        else:
+            monitors = [
+                s
+                for s in sources
+                if s.get("monitor_of_sink") is not None
+                or ".monitor" in str(s.get("name", ""))
+            ]
+            return [
+                {
+                    "name": m.get("name", ""),
+                    "description": m.get("description", m.get("name", "")),
+                }
+                for m in monitors
+            ]
+    # Legacy / broken-JSON fallback: parse the plain-text listing.
+    return _linux_monitor_devices_text()
+
+
+def _linux_monitor_devices_text() -> list[dict]:
+    """Monitor sources from the plain-text ``pactl list sources`` output."""
+    try:
+        out = subprocess.run(
+            ["pactl", "list", "sources"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+        )
+    except Exception:  # noqa: BLE001
         return []
     if out.returncode != 0 or not out.stdout.strip():
         return []
-    import json
-
-    try:
-        sources = json.loads(out.stdout)
-    except Exception:  # noqa: BLE001
-        return []
-    monitors = [s for s in sources if s.get("monitor_of_sink") is not None or ".monitor" in str(s.get("name", ""))]
-    return [
-        {"name": m.get("name", ""), "description": m.get("description", m.get("name", ""))}
-        for m in monitors
-    ]
+    monitors: list[dict] = []
+    name: str | None = None
+    description: str | None = None
+    for line in out.stdout.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("Name:"):
+            if name and ".monitor" in name:
+                monitors.append({"name": name, "description": description or name})
+            name = stripped.split(":", 1)[1].strip()
+            description = None
+        elif stripped.startswith("Description:") and name is not None:
+            description = stripped.split(":", 1)[1].strip()
+    if name and ".monitor" in name:
+        monitors.append({"name": name, "description": description or name})
+    return monitors
 
 
 def _linux_list_loopback_devices() -> list[str]:
@@ -567,12 +621,21 @@ class _LinuxLoopbackCapture:
             return
         if status:
             log.debug("linux loopback status: %s", status)
-        audio = np.ascontiguousarray(indata[:, 0])
-        resampled = self._resampler.process(audio) if self._resampler is not None else audio
-        if self._agc is not None:
-            resampled = self._agc.process(resampled)
-        if self._callback is not None:
-            self._callback(resampled, float(getattr(time_info, "currentTime", 0.0) or 0.0))
+        try:
+            audio = np.ascontiguousarray(indata[:, 0])
+            resampled = self._resampler.process(audio) if self._resampler is not None else audio
+            if self._agc is not None:
+                resampled = self._agc.process(resampled)
+            if self._callback is not None:
+                self._callback(resampled, float(getattr(time_info, "currentTime", 0.0) or 0.0))
+        except Exception:  # noqa: BLE001
+            # PortAudio aborts the whole stream on an unhandled callback
+            # exception (silent capture death); log loudly instead.
+            log.exception("linux loopback callback failed — stopping capture")
+            try:
+                self.stop()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 # --- Platform dispatch ---

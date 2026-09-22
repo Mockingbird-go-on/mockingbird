@@ -2,8 +2,7 @@
 
 Kept free of heavy imports so it can be unit-tested on the build machine
 (no torch) and so a frozen .exe can decide the device before importing the
-backend stack. Each engine supplies its own CUDA probe (torch for GigaAM,
-ctranslate2 for faster-whisper).
+backend stack. The whisper engine supplies its own CUDA probe (ctranslate2).
 """
 from __future__ import annotations
 
@@ -81,16 +80,6 @@ def resolve_device(preferred: str | None, cuda_available: bool = False) -> str:
     if choice == "cuda":
         return "cuda" if cuda_available else "cpu"
     return "cuda" if cuda_available else "cpu"
-
-
-def torch_cuda_available() -> bool:
-    """CUDA probe for the GigaAM backend (torch is already required)."""
-    try:
-        import torch
-
-        return bool(torch.cuda.is_available())
-    except Exception:  # noqa: BLE001
-        return False
 
 
 def ctranslate2_cuda_available() -> bool:
