@@ -104,6 +104,8 @@ def environment_banner(config) -> str:
             db = Path(base) / "mockingbird.db"
             db_kb = f"{db.stat().st_size // 1024} KiB" if db.exists() else "absent"
             lines.append(f"data dir: {base} (db: {db_kb})")
+    lines.append("support: telegram chat https://t.me/MOCKINGBird_release")
+    lines.append("issues: https://github.com/Mockingbird-go-on/mockingbird/issues")
     lines.append("=== end environment ===")
     return "\n".join(lines)
 

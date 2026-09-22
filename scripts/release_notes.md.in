@@ -20,6 +20,12 @@
 > не используем code-signing. Нажмите **«Подробнее → Выполнить в любом случае»**
 > (один раз). Подробнее — в README.
 
+## Сообщество
+
+Вопросы, помощь и анонсы релизов — в Telegram-чате:
+**[t.me/MOCKINGBird_release](https://t.me/MOCKINGBird_release)**.
+Баги и идеи — на [GitHub Issues](https://github.com/Mockingbird-go-on/mockingbird/issues).
+
 ## Контрольные суммы
 
 Скачайте `SHA256SUMS.txt` и проверьте:
