@@ -224,7 +224,7 @@ def reconcile_final_with_partial(
 ) -> tuple[str, float, bool]:
     """Safety-net against content loss in the final transcript.
 
-    GigaAM/Whisper occasionally drop foreign words («эджайл», «девопс») on one
+    Whisper occasionally drop foreign words («эджайл», «девопс») on one
     decode pass while an earlier partial contained them. If the final text is
     substantially shorter than the last emitted partial yet describes the same
     utterance (high token similarity), the partial is the better transcription

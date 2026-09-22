@@ -125,37 +125,6 @@ def _set_app_user_model_id() -> None:
         pass
 
 
-def _ensure_vendor_on_path() -> None:
-    """Add vendor/ to sys.path so the stub ``pyannote`` is importable.
-
-    GigaAM's remote modeling file imports ``pyannote`` top-level; transformers'
-    ``check_imports`` requires the package to exist even though the app never
-    calls ``transcribe_longform``. If the real ``pyannote.audio`` is installed
-    (diarization feature), it takes precedence and the stub is skipped.
-    """
-    if getattr(sys, "frozen", False):
-        return  # spec handles bundling
-    import importlib.util
-    # Only skip the stub if the *real* pyannote.audio package is installed.
-    try:
-        _has_real_pyannote = importlib.util.find_spec("pyannote.audio") is not None
-    except (ImportError, ModuleNotFoundError, ValueError):
-        _has_real_pyannote = False
-    if _has_real_pyannote:
-        return
-    here = os.path.dirname(os.path.abspath(__file__))
-    vendor = os.path.normpath(os.path.join(here, "..", "..", "vendor"))
-    if os.path.isdir(vendor) and vendor not in sys.path:
-        sys.path.insert(0, vendor)
-    # Also purge any stale partial pyannote from sys.modules so the stub
-    # is used instead of a half-loaded namespace.
-    for key in list(sys.modules):
-        if key == "pyannote" or key.startswith("pyannote."):
-            mod = sys.modules.pop(key, None)
-            if mod is not None:
-                del mod
-
-
 def _resolve_icon_path() -> str | None:
     """Locate ``logo_mockingbird.ico`` in dev and frozen (PyInstaller) modes."""
     candidates: list[str] = []
@@ -179,17 +148,20 @@ def _resolve_icon_path() -> str | None:
 
 
 def main() -> int:
-    _ensure_vendor_on_path()
+    if "--version" in sys.argv or "-V" in sys.argv:
+        from mockingbird import __version__
+
+        print(f"mockingbird {__version__}")
+        return 0
     _harden_hf_symlinks()
     _set_app_user_model_id()
-    if "--cli" in sys.argv:
-        from mockingbird.cli import run_cli
+    from mockingbird import diagnostics
 
-        config = load_config()
-        setup_logging(config.storage.log_dir, _log_level())
-        return run_cli(config)
     config = load_config()
     setup_logging(config.storage.log_dir, _log_level())
+    diagnostics.install_crash_capture(config.storage.log_dir)
+    diagnostics.log_environment_banner(config)
+    prev_crash = diagnostics.check_crash_marker(config.storage.log_dir)
     app = QApplication(sys.argv)
     app.setApplicationName("Mockingbird")
     app.setStyle("Fusion")
@@ -224,12 +196,7 @@ def main() -> int:
             # torch/transformers here warms the module cache for the STT engine
             # and run_system_checks that run later on the GUI thread.
             try:
-                backend = (config.stt.backend or "gigaam").lower()
-                if backend == "gigaam":
-                    import transformers  # noqa: F401
-                    import torch  # noqa: F401
-                else:
-                    import faster_whisper  # noqa: F401
+                import faster_whisper  # noqa: F401
             except Exception:
                 pass
             topics = load_topics(config.interview.kb_path)
@@ -314,13 +281,10 @@ def main() -> int:
     context, window, sys_warnings = _build_app()
     app.processEvents()
 
-    # Kick the STT model load off as early as possible: the worker thread
-    # loads the weights while the window is still being shown / onboarding /
-    # system checks run. By the time the user reaches the UI, the model is
-    # already loading (or ready) instead of waiting for warm_start later.
-    context.warm_start()
-
-    # First-launch onboarding: show wizard if LLM is not configured.
+    # First-launch onboarding: show wizard if LLM is not configured. This
+    # MUST run before warm_start() — on a clean profile warm start would
+    # immediately download the DEFAULT whisper model before the user picked
+    # one in the wizard (and before the theme/LLM choices were saved).
     if not config.llm.base_url or not config.llm.api_key:
         from mockingbird.ui.onboarding import OnboardingWizard
         from PySide6.QtWidgets import QDialog
@@ -337,6 +301,12 @@ def main() -> int:
         settings.setValue("ui/theme", theme_name)
         apply_theme(app, theme_name)
 
+    # Kick the STT model load off as early as possible: the worker thread
+    # loads the weights while the window is still being shown / system
+    # checks run. By the time the user reaches the UI, the model is already
+    # loading (or ready) instead of waiting for warm_start later.
+    context.warm_start()
+
     window.show()
     window.raise_()
     window.activateWindow()
@@ -347,6 +317,34 @@ def main() -> int:
 
     if sys_warnings:
         _show_system_warnings(window, sys_warnings)
+
+    # Previous run crashed (excepthook marker): offer a diagnostics bundle
+    # while the process is alive and the logs are still on disk.
+    if prev_crash:
+        diagnostics.clear_crash_marker(config.storage.log_dir)
+        from PySide6.QtWidgets import QMessageBox
+
+        answer = QMessageBox.question(
+            window,
+            "Аварийное завершение",
+            "Предыдущий запуск Mockingbird завершился аварийно.\n"
+            "Собрать архив с логами для диагностики?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            try:
+                zip_path = diagnostics.collect_diagnostics(config)
+                QMessageBox.information(
+                    window, "Готово",
+                    f"Архив создан:\n{zip_path}",
+                )
+            except Exception:
+                log.exception("diagnostics collection failed")
+                QMessageBox.critical(
+                    window, "Ошибка",
+                    "Не удалось собрать архив диагностики "
+                    "(подробности в файле лога).",
+                )
 
     # Global hotkey Ctrl+Alt+H (Windows only; no-op elsewhere).
     from mockingbird.ui.global_hotkey import GlobalHotkey

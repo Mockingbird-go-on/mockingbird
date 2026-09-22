@@ -20,8 +20,14 @@ class AppSignals(QObject):
     status = Signal(str, str)
     device = Signal(str)
     error = Signal(str)
+    # Emitted from the STT worker when CUDA was configured but unusable and
+    # the engine silently fell back to CPU. Payload: the probe detail string.
+    cuda_fallback = Signal(str)
     log_line = Signal(str)
     model_load = Signal(str, float)
+    # Emitted when the warm-start model load/download FAILED (payload: the
+    # exception text). The UI shows a human-readable dialog with retry.
+    model_load_failed = Signal(str)
     # Live VAD speech state (True when speech starts, False when it ends).
     speech = Signal(bool)
     # Primary audio source kind: "system" (loopback) or "mic".

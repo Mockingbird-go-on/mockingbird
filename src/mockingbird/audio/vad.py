@@ -7,14 +7,19 @@ Feed arbitrary-length float32 mono blocks; receives a list of events:
     {"kind": "speech_resume"}   (speech resumed after a speech_stop hint)
     {"kind": "end",   "audio": ndarray}   (full speech segment, trailing silence removed)
 
-The ONNX model is downloaded on first use into ~/.mockingbird/models.
+The VAD ONNX model ships inside the package (``assets/models/silero_vad.onnx``)
+and is copied into ~/.mockingbird/models on first use. Only when that bundled
+copy is missing does it fall back to downloading from GitHub — so offline
+installs work without network access.
 """
 from __future__ import annotations
 
 import logging
 import os
+import shutil
 import time
 import urllib.request
+from importlib import resources
 from pathlib import Path
 
 import numpy as np
@@ -26,6 +31,10 @@ log = logging.getLogger(__name__)
 SILERO_VAD_URL = (
     "https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx"
 )
+# Bundled copy (ships inside the package / frozen bundle). This is what makes
+# offline installs work: the per-user cache below is empty on a fresh machine
+# and the GitHub URL is unreachable behind a corporate SSL-inspecting proxy.
+_BUNDLED_VAD_REL = ("models", "silero_vad.onnx")
 _FRAME = 512
 _CONTEXT_SAMPLES = 64  # for 16k; the model needs a 64-sample context prefix per frame
 # Pre-roll kept before the VAD triggers: enough audio to include the first
@@ -65,7 +74,32 @@ def _state_shape(session) -> tuple[int, ...]:
     return (2, 1, 128)
 
 
-def ensure_vad_model(model_path: str | None) -> str:
+def _install_bundled_vad(target: Path) -> bool:
+    """Copy the VAD model shipped inside the package into the user cache.
+
+    Returns True when a bundled copy was found and installed. This is the
+    offline path: on a fresh machine (empty user cache) behind a corporate
+    SSL-inspecting proxy the GitHub download below fails, so the model must
+    come from the bundle. Using ``importlib.resources`` keeps this working
+    both from an editable install and from the PyInstaller bundle.
+    """
+    try:
+        res = resources.files("mockingbird.assets").joinpath(*_BUNDLED_VAD_REL)
+        if not res.is_file():
+            return False
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_suffix(".onnx.part")
+        with resources.as_file(res) as src:
+            shutil.copyfile(src, tmp)
+        os.replace(tmp, target)
+        log.info("VAD model installed from bundled assets: %s", target)
+        return True
+    except (FileNotFoundError, ModuleNotFoundError, OSError):
+        log.debug("no usable bundled VAD model; will download", exc_info=True)
+        return False
+
+
+def ensure_vad_model(model_path: str | None, timeout_s: float = 15.0) -> str:
     if model_path:
         p = Path(model_path)
         if not p.exists():
@@ -74,11 +108,13 @@ def ensure_vad_model(model_path: str | None) -> str:
     target = app_dir() / "models" / "silero_vad.onnx"
     if target.exists():
         return str(target)
+    if _install_bundled_vad(target):
+        return str(target)
     target.parent.mkdir(parents=True, exist_ok=True)
     log.info("downloading Silero VAD model to %s", target)
     tmp = target.with_suffix(".onnx.part")
     request = urllib.request.Request(SILERO_VAD_URL, headers={"User-Agent": "mockingbird"})
-    with urllib.request.urlopen(request, timeout=60) as resp, open(tmp, "wb") as fh:
+    with urllib.request.urlopen(request, timeout=timeout_s) as resp, open(tmp, "wb") as fh:
         fh.write(resp.read())
     os.replace(tmp, target)
     return str(target)

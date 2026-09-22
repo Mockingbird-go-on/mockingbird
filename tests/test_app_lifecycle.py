@@ -10,11 +10,11 @@ import pytest
 
 def _install_stubs():
     """Install stub modules for heavy audio/STT deps."""
-    fake_engine = types.ModuleType("mockingbird.stt.gigaam_engine")
+    fake_engine = types.ModuleType("mockingbird.stt.whisper_engine")
 
     class _FakeEngine:
-        backend = "gigaam"
-        model_name = "ai-sage/GigaAM-v3"
+        backend = "faster-whisper"
+        model_name = "fake"
         device = ""
         is_ready = False
         _end_ahead = True
@@ -26,8 +26,8 @@ def _install_stubs():
         def stop(self): pass
         def flush(self): pass
 
-    fake_engine.GigaAMEngine = _FakeEngine
-    sys.modules["mockingbird.stt.gigaam_engine"] = fake_engine
+    fake_engine.WhisperEngine = _FakeEngine
+    sys.modules["mockingbird.stt.whisper_engine"] = fake_engine
 
     fake_cap = types.ModuleType("mockingbird.audio.capture")
 
@@ -54,6 +54,7 @@ def _install_stubs():
     fake_lb.LoopbackCapture = _FakeLoopback
     fake_lb.list_loopback_devices = lambda: []
     sys.modules["mockingbird.audio.loopback"] = fake_lb
+    return fake_engine
 
 
 @pytest.fixture
@@ -62,11 +63,12 @@ def app_instance(monkeypatch, tmp_path):
     for name in ("OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_MODEL"):
         monkeypatch.delenv(name, raising=False)
     _install_stubs()
+    stub_engine_mod = sys.modules.get("mockingbird.stt.whisper_engine")
     from mockingbird.config import load_config
     from mockingbird.app import App
 
     cfg = load_config()
-    cfg.stt.backend = "gigaam"
+    cfg.stt.backend = "whisper"
     app = App(cfg)
     yield app
     try:
@@ -74,8 +76,11 @@ def app_instance(monkeypatch, tmp_path):
     except Exception:
         pass
     # cleanup stubs
-    for k in ("mockingbird.stt.gigaam_engine", "mockingbird.audio.capture", "mockingbird.audio.loopback"):
+    for k in ("mockingbird.stt.whisper_engine", "mockingbird.audio.capture", "mockingbird.audio.loopback"):
         sys.modules.pop(k, None)
+    import mockingbird.stt as _stt_pkg
+    if getattr(_stt_pkg, "whisper_engine", None) is stub_engine_mod:
+        delattr(_stt_pkg, "whisper_engine")
 
 
 def test_start_stop_session(app_instance):

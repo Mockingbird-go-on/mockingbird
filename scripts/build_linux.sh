@@ -27,13 +27,16 @@ for arg in "$@"; do
     esac
 done
 
-VERSION="$(python -c 'import tomllib;print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')"
+VERSION="$(PYTHONPATH=src python -c 'from mockingbird import __version__; print(__version__)')"
 echo "== Mockingbird Linux build v$VERSION =="
 
 # --- 1. PyInstaller ----------------------------------------------------------
+# CPU_ONLY is forwarded to the spec via MOCKINGBIRD_CPU (PyInstaller does not
+# pass custom CLI args to the spec). On Linux the CUDA libs come from the
+# system, so the flag mainly excludes any nvidia-* packages in the build env.
+export MOCKINGBIRD_CPU=$CPU_ONLY
 python -m PyInstaller --clean --noconfirm scripts/mockingbird_linux.spec
 test -x dist/mockingbird/mockingbird || { echo "PyInstaller produced no executable"; exit 1; }
-test -x dist/mockingbird/mockingbird-cli || { echo "CLI executable missing"; exit 1; }
 
 # --- 2. AppImage -------------------------------------------------------------
 if [[ $MAKE_APPIMAGE -eq 1 ]]; then

@@ -59,7 +59,7 @@ class ProfilesDialog(QDialog):
         self._glossary_btn.clicked.connect(self._pick_glossary)
 
         self._btn_new = QPushButton("Новый…")
-        self._btn_clone = QPushButton("Создать копию")
+        self._btn_clone = QPushButton("Копировать")
         self._btn_delete = QPushButton("Удалить")
         self._btn_save = QPushButton("Сохранить")
         self._btn_close = QPushButton("Закрыть")

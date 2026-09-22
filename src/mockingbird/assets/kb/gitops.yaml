@@ -14,7 +14,7 @@ sections:
         a: "**Push (CI-based)**: Jenkins/GitLab CI → `kubectl apply` → кластер. CI нужен kubeconfig с правами на кластер (секреты, firewall, RBAC). **Pull (GitOps)**: агент **внутри** кластера (ArgoCD/Flux) → читает Git → применяет. Не нужен cluster access из CI. **Преимущества pull**: (1) кластер изолирован — CI не имеет прямого доступа, (2) self-healing — если кто-то вручную меняет кластер, агент откатывает, (3) audit — все изменения через git, (4) disaster recovery — восстановление из Git. **Недостаток**: агенты требуют ресурсов в кластере."
         related: ["Что такое reconciliation?", "Как ArgoCD получает доступ к Git?"]
       - q: "Что такое reconciliation loop и self-healing?"
-        keywords: [reconciliation, rekонсилиация, self healing, drift detection, auto sync, prune]
+        keywords: [reconciliation, реконсилиация, self healing, drift detection, auto sync, prune]
         a: "**Reconciliation loop** — агент (ArgoCD/Flux) периодически сравнивает желаемое состояние (Git) с актуальным (cluster). При расхождении (**drift**): (1) **auto-sync** — агент автоматически применяет манифесты из Git, возвращая кластер к желаемому, (2) **prune** — удаляет ресурсы, которых нет в Git, (3) **self-heal** — если кто-то сделал `kubectl edit`, изменения откатываются. **Без self-healing**: ручное подтверждение (кнопка Sync в ArgoCD UI). **Подводный камень**: self-healing ломает ручные hotfix (kubectl scale для инцидента) — нужен `IgnoreDifferences` или pause sync."
         related: ["Что такое drift detection?", "Как настроить auto-sync в ArgoCD?"]
   - id: argocd

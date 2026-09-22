@@ -39,7 +39,6 @@ from mockingbird.ui import theme
 from mockingbird.ui.toggle import ToggleSwitch
 
 _WHISPER_MODELS = ["tiny", "base", "small", "medium", "large-v3", "large-v3-turbo"]
-_BACKENDS = [("gigaam", "GigaAM"), ("whisper", "Whisper")]
 _BEAM_SIZES = [("1", "1 (рекомендуется)"), ("3", "3"), ("5", "5")]
 _COMPUTE_TYPES = [
     ("int8", "int8 (быстрее, CPU)"),
@@ -48,7 +47,6 @@ _COMPUTE_TYPES = [
     ("float32", "float32 (рекомендуется)"),
 ]
 _DEVICES = [("auto", "авто"), ("cpu", "CPU"), ("cuda", "CUDA")]
-_GIGAAM_REVISIONS = ["e2e_rnnt", "rnnt", "ctc"]
 _MODES = [
     ("mic", "Микрофон"),
     ("loopback", "Динамик (системное аудио) — вопросы из звука спикера"),
@@ -106,11 +104,7 @@ _HELP = {
     "Динамик — вопросы распознаются из звука спикера (loopback-устройство).",
     "audio.loopback": "Устройство захвата звука динамика (WASAPI loopback). "
     "Используется в режиме «Динамик» для распознавания вопросов интервьюера.",
-    "stt.backend": "Основной движок распознавания: GigaAM — высокая точность для русского, "
-    "Whisper — быстрее и легче.",
-    "gigaam.device": "Вычислительное устройство для STT: авто — автоматически, CPU или CUDA.",
-    "gigaam.revision": "Вариант модели GigaAM-v3: e2e_rnnt — сквозная, "
-    "rnnt — RNNT-декодер, ctc — CTC-декодер.",
+    "stt.backend": "Основной движок распознавания — Whisper.",
     "whisper.model_size": "Размер основной whisper-модели: tiny…large-v3-turbo. "
     "large-v3-turbo — самая быстрая large-модель, хороший компромисс скорости и качества для русского + английских терминов. "
     "Больше — точнее, но медленнее и требовательнее к памяти.",
@@ -236,16 +230,6 @@ class SettingsDialog(QDialog):
             self._loopback.addItem(name, name)
         self._select_device(self._loopback, config.audio.loopback_device)
 
-        self._backend = _NoWheelComboBox()
-        self._init_combo(self._backend, _BACKENDS, config.stt.backend)
-
-        self._compute_device = _NoWheelComboBox()
-        self._init_combo(self._compute_device, _DEVICES, config.gigaam.device)
-
-        self._gigaam_revision = _NoWheelComboBox()
-        self._gigaam_revision.addItems(_GIGAAM_REVISIONS)
-        self._gigaam_revision.setCurrentText(config.gigaam.revision)
-
         self._model = _NoWheelComboBox()
         self._model.addItems(_WHISPER_MODELS)
         self._model.setCurrentText(config.whisper.model_size)
@@ -289,18 +273,6 @@ class SettingsDialog(QDialog):
         )
 
         form.addRow(self._section("Основной STT"))
-        form.addRow(
-            self._flabel("STT-движок", _HELP["stt.backend"]),
-            self._row(self._backend, _HELP["stt.backend"]),
-        )
-        form.addRow(
-            self._flabel("Вычислительное устройство", _HELP["gigaam.device"]),
-            self._row(self._compute_device, _HELP["gigaam.device"]),
-        )
-        form.addRow(
-            self._flabel("Ревизия GigaAM", _HELP["gigaam.revision"]),
-            self._row(self._gigaam_revision, _HELP["gigaam.revision"]),
-        )
         form.addRow(
             self._flabel("Модель Whisper", _HELP["whisper.model_size"]),
             self._row(self._model, _HELP["whisper.model_size"]),
@@ -356,9 +328,6 @@ class SettingsDialog(QDialog):
         # --- Tab 1: STT ---
         stt_form = QFormLayout()
         stt_form.addRow(self._section("Основной STT"))
-        stt_form.addRow(self._flabel("STT-движок", _HELP["stt.backend"]), self._row(self._backend, _HELP["stt.backend"]))
-        stt_form.addRow(self._flabel("Вычислительное устройство", _HELP["gigaam.device"]), self._row(self._compute_device, _HELP["gigaam.device"]))
-        stt_form.addRow(self._flabel("Ревизия GigaAM", _HELP["gigaam.revision"]), self._row(self._gigaam_revision, _HELP["gigaam.revision"]))
         stt_form.addRow(self._flabel("Модель Whisper", _HELP["whisper.model_size"]), self._row(self._model, _HELP["whisper.model_size"]))
         stt_form.addRow(self._flabel("Точность вычислений", _HELP["whisper.compute_type"]), self._row(self._compute, _HELP["whisper.compute_type"]))
         stt_form.addRow(self._flabel("Beam (качество финала)", _HELP["whisper.final_beam_size"]), self._row(self._beam, _HELP["whisper.final_beam_size"]))
@@ -690,6 +659,12 @@ class SettingsDialog(QDialog):
                 except Exception as exc:
                     self_.done.emit(f"❌ {exc!s:.80}", False)
 
+        # Retire any previous worker before replacing the reference: an
+        # orphaned running QThread gets destroyed by GC ("QThread: Destroyed
+        # while thread is still running" crash).
+        old = getattr(self, "_check_worker", None)
+        if old is not None:
+            old.wait(0)
         self._check_worker = _CheckWorker()
 
         def _on_done(msg: str, ok: bool):
@@ -784,14 +759,11 @@ class SettingsDialog(QDialog):
             effective_loopback = loopback.split(": ", 1)[-1] if ": " in loopback else loopback
         else:
             effective_loopback = None
-        compute_device = self._compute_device.currentData() or self._compute_device.currentText()
         checks: list[tuple[str, object, object]] = [
             ("audio.device", effective_device, self.config.audio.device),
             ("audio.mode", mode, self.config.audio.mode),
             ("audio.loopback_device", effective_loopback, self.config.audio.loopback_device),
-            ("stt.backend", self._backend.currentData() or self._backend.currentText(), self.config.stt.backend),
-            ("gigaam.revision", self._gigaam_revision.currentText(), self.config.gigaam.revision),
-            ("gigaam.device", compute_device, self.config.gigaam.device),
+            ("stt.backend", "whisper", self.config.stt.backend),
             ("whisper.model_size", self._model.currentText(), self.config.whisper.model_size),
             (
                 "whisper.compute_type",
@@ -846,11 +818,9 @@ class SettingsDialog(QDialog):
             )
         else:
             self.config.audio.loopback_device = None
-        self.config.stt.backend = self._backend.currentData() or self._backend.currentText()
-        self.config.gigaam.revision = self._gigaam_revision.currentText()
-        device_value = self._compute_device.currentData() or self._compute_device.currentText()
-        self.config.gigaam.device = device_value
-        self.config.whisper.device = device_value
+        self.config.stt.backend = "whisper"
+        # whisper.device: the STT tab has no device combo anymore — keep the
+        # configured value (auto/cpu/cuda) untouched.
         self.config.whisper.model_size = self._model.currentText()
         self.config.whisper.compute_type = self._compute.currentData() or self._compute.currentText()
         beam_raw = self._beam.currentData() or self._beam.currentText()

@@ -131,6 +131,127 @@ def select_compute_type(
     return next((t for t in preference if t in supported_set), choice or "float32")
 
 
+class _DownloadCancelled(Exception):
+    """Raised inside an in-flight model download to abort it.
+
+    huggingface_hub has no cancellation API: ``snapshot_download`` blocks
+    until the whole repo is fetched. We abort it from the one hook that fires
+    during the byte transfer — the per-file tqdm progress bar's ``update`` —
+    via :func:`_install_cancel_hook`, then translate it to a user-facing
+    RuntimeError in :func:`resolve_model_path`.
+    """
+
+
+def _install_cancel_hook(cancel_event):
+    """Make huggingface_hub's per-file progress bars abort on cancel.
+
+    Monitors ``cancel_event`` from inside the tqdm ``update()`` that the hub
+    calls on every downloaded chunk (~10 MB). Without this, clicking Cancel
+    during the single 1.6 GB ``model.bin`` transfer does nothing until the
+    whole download finishes — the GUI overlay sits on «Отмена…» for minutes.
+
+    Returns a zero-arg callable that restores the original function. No-op
+    (returns a no-op) on hub versions without the private seam, so the caller
+    degrades to the between-retry cancel check.
+    """
+    if cancel_event is None:
+        return lambda: None
+    try:
+        from huggingface_hub import file_download as _fd
+    except Exception:  # noqa: BLE001 - hub optional
+        return lambda: None
+    orig = getattr(_fd, "_get_progress_bar_context", None)
+    if orig is None:
+        return lambda: None
+
+    class _CancelBar:
+        """tqdm proxy whose ``update`` raises once cancel_event is set."""
+
+        def __init__(self, bar):
+            self._bar = bar
+
+        def __getattr__(self, name):
+            return getattr(self._bar, name)
+
+        def update(self, n=1):
+            if cancel_event.is_set():
+                raise _DownloadCancelled()
+            return self._bar.update(n)
+
+        def update_progress(self, n=1):
+            # huggingface_hub >= 1.x xet path uses update_progress().
+            if cancel_event.is_set():
+                raise _DownloadCancelled()
+            fn = getattr(self._bar, "update_progress", None)
+            if fn is not None:
+                return fn(n)
+            return self._bar.update(n)
+
+    class _CancelContext:
+        def __init__(self, cm):
+            self._cm = cm
+
+        def __enter__(self):
+            return _CancelBar(self._cm.__enter__())
+
+        def __exit__(self, *exc):
+            return self._cm.__exit__(*exc)
+
+    def _patched(*args, **kwargs):
+        cm = orig(*args, **kwargs)
+        # Only wrap self-created bars (no shared _tqdm_bar). The aggregate
+        # "Fetching N files" bar is our own _ProgressTqdm and checks cancel
+        # itself.
+        if kwargs.get("_tqdm_bar") is None:
+            return _CancelContext(cm)
+        return cm
+
+    try:
+        _fd._get_progress_bar_context = _patched
+    except Exception:  # noqa: BLE001
+        return lambda: None
+
+    def _restore():
+        try:
+            _fd._get_progress_bar_context = orig
+        except Exception as exc:  # noqa: BLE001
+            log.debug("could not restore hf progress-bar hook: %s", exc)
+
+    return _restore
+
+
+def _force_http_transport():
+    """Temporarily disable the hf_xet (Rust) transfer path.
+
+    The default whisper repo stores ``model.bin`` on Xet storage, and the
+    ``hf_xet`` extension **swallows** any exception raised from its progress
+    callback (``let _ = ... .log_error(...)`` in Rust). That makes a Xet
+    transfer impossible to abort from Python — Cancel would hang until the
+    whole 1.6 GB finished. The plain-HTTP path calls our progress ``update()``
+    directly in its Python chunk loop, so raising there aborts immediately.
+    Disabling Xet trades a little throughput for a working Cancel.
+
+    Returns a zero-arg callable that restores the previous setting.
+    """
+    try:
+        from huggingface_hub import constants
+    except Exception:  # noqa: BLE001 - hub optional
+        return lambda: None
+    prev = getattr(constants, "HF_HUB_DISABLE_XET", False)
+    try:
+        constants.HF_HUB_DISABLE_XET = True
+    except Exception:  # noqa: BLE001
+        return lambda: None
+
+    def _restore():
+        try:
+            constants.HF_HUB_DISABLE_XET = prev
+        except Exception as exc:  # noqa: BLE001
+            log.debug("could not restore HF_HUB_DISABLE_XET: %s", exc)
+
+    return _restore
+
+
 class _DownloadReporter:
     """Aggregates per-file download progress into one overall percentage.
 
@@ -439,7 +560,7 @@ def _fuzzy_fix_latin_partial(text: str, matcher) -> str:
     return _LATIN_TOKEN_RE.sub(_fix, text)
 
 
-def resolve_model_path(cfg: WhisperConfig, progress_cb=None) -> str:
+def resolve_model_path(cfg: WhisperConfig, progress_cb=None, cancel_event=None) -> str:
     """Resolve the whisper model to a local path, checking local storage first.
 
     Precedence:
@@ -485,17 +606,83 @@ def resolve_model_path(cfg: WhisperConfig, progress_cb=None) -> str:
         pass
 
     log.info("whisper model not cached, downloading %s to %s", repo_id, download_root)
-    kwargs: dict = {"cache_dir": download_root}
+    kwargs: dict = {
+        "cache_dir": download_root,
+        # etag_timeout bounds the initial HTTP HEAD: without it a flaky
+        # proxy can hold the connection open forever ("Загрузка модели…"
+        # with no error and no way out but a restart).
+        "etag_timeout": 10,
+        # Resume partial blob downloads across retries instead of starting
+        # the 1.6 GB model.bin from scratch on every attempt.
+        "resume_download": True,
+    }
     if progress_cb is not None:
         progress_cb("Downloading whisper model…", 0.0)
         reporter = _DownloadReporter(progress_cb)
         kwargs["tqdm_class"] = _progress_tqdm_class(reporter)
+    last_exc: Exception | None = None
+    # Abort the byte transfer itself (not just between retries) when the user
+    # clicks Cancel. No-op on hub versions lacking the private seam.
+    restore_cancel = _install_cancel_hook(cancel_event)
+    # The Xet (Rust) transport swallows progress-callback exceptions, so a
+    # Xet download cannot be aborted from Python. Fall back to the plain-HTTP
+    # path (whose chunk loop honours the callback) only when we actually need
+    # cancellability — otherwise keep the faster Xet transfer.
+    restore_xet = _force_http_transport() if cancel_event is not None else (lambda: None)
     try:
-        path = snapshot_download(repo_id, **kwargs)
-    except TypeError:
-        # Older huggingface_hub may not accept tqdm_class.
-        kwargs.pop("tqdm_class", None)
-        path = snapshot_download(repo_id, **kwargs)
+        for attempt in range(1, 4):
+            if cancel_event is not None and cancel_event.is_set():
+                raise RuntimeError("whisper model download cancelled by user")
+            try:
+                path = snapshot_download(repo_id, **kwargs)
+                break
+            except _DownloadCancelled as exc:
+                log.info("whisper model download cancelled mid-transfer by user")
+                raise RuntimeError(
+                    "whisper model download cancelled by user"
+                ) from exc
+            except TypeError:
+                # Older huggingface_hub may not accept tqdm_class/etag_timeout.
+                kwargs.pop("tqdm_class", None)
+                kwargs.pop("etag_timeout", None)
+                kwargs.pop("resume_download", None)
+                path = snapshot_download(repo_id, **kwargs)
+                break
+            except Exception as exc:
+                # hf_xet is a Rust extension: our _DownloadCancelled raised
+                # from the progress callback may come back wrapped. Treat any
+                # failure while the cancel flag is set as a user cancel.
+                if cancel_event is not None and cancel_event.is_set():
+                    log.info("whisper model download cancelled mid-transfer by user")
+                    raise RuntimeError(
+                        "whisper model download cancelled by user"
+                    ) from exc
+                last_exc = exc
+                log.warning(
+                    "whisper model download attempt %d failed: %s", attempt, exc
+                )
+                if "CERTIFICATE_VERIFY_FAILED" in str(exc) or (
+                    isinstance(exc, Exception)
+                    and "certificate verify failed" in str(exc).lower()
+                ):
+                    log.error(
+                        "whisper model download blocked by TLS interception "
+                        "(self-signed certificate in certificate chain). This is "
+                        "usually a corporate proxy / antivirus MITM. Workarounds: "
+                        "disable SSL inspection for huggingface.co, or download "
+                        "the model on another machine and copy it to the models "
+                        "directory."
+                    )
+                if attempt < 3:
+                    # Backoff before the next retry (1s, 5s).
+                    time.sleep(1.0 if attempt == 1 else 5.0)
+        else:
+            raise RuntimeError(
+                f"whisper model download failed after retries: {last_exc}"
+            ) from last_exc
+    finally:
+        restore_cancel()
+        restore_xet()
     problem = _model_dir_problem(path)
     if problem is not None:
         raise RuntimeError(f"downloaded whisper model at {path} is corrupted: {problem}")
@@ -546,8 +733,26 @@ class WhisperEngine:
         self.on_final = None
         self.on_ready = None
         self.on_error = None
+        # Called (worker thread) when a configured CUDA device turned out
+        # unusable and the engine reloaded on CPU; payload: probe detail.
+        self.on_cuda_fallback = None
         self.on_progress = None
         self.on_speaker_identify = None  # callable(audio, sample_rate) -> str
+        # Aborts an in-flight model download (Cancel in the download overlay).
+        # Created EAGERLY: the download thread captures this exact object when
+        # it starts. request_cancel_download() must set THIS event — creating a
+        # fresh one there (the old behaviour) left the running transfer blind
+        # to Cancel, so the overlay hung on «Отмена…» for the whole 1.6 GB.
+        self._cancel_download = threading.Event()
+
+    def request_cancel_download(self) -> None:
+        """Ask an in-flight model download to stop (idempotent, thread-safe)."""
+        self._cancel_download.set()
+
+    def clear_cancel_download(self) -> None:
+        # Reset the SAME event object (never replace it): a download thread may
+        # hold a reference to it; replacing would make a later Cancel invisible.
+        self._cancel_download.clear()
 
     def set_text_matcher(self, matcher) -> None:
         """Inject a PhoneticMatcher for post-correction of transcripts."""
@@ -588,15 +793,47 @@ class WhisperEngine:
     # -- lifecycle --
     def start(self) -> None:
         if self._thread is not None:
-            return
+            # A previous stop() timed out mid-decode: wait for the old worker
+            # to drain its queue instead of racing it with a second consumer.
+            if not self._wait_for_stopped_worker():
+                raise RuntimeError(
+                    "Распознавание ещё завершает предыдущую сессию "
+                    "(долгий финальный декод). Подождите пару секунд "
+                    "и нажмите «Старт» снова."
+                )
         self._thread = threading.Thread(target=self._run, name="whisper-engine", daemon=True)
         self._thread.start()
 
     def stop(self, timeout: float = 8.0) -> None:
         self._queue.put((_CMD_STOP, None))
-        if self._thread is not None:
-            self._thread.join(timeout=timeout)
-            self._thread = None
+        thread = self._thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=timeout)
+        if thread is not None and thread.is_alive():
+            # The worker is stuck in a long decode; dropping the reference
+            # would let start() spawn a SECOND consumer of the same queue
+            # (duplicated/lost finals, corrupted chunk cache). Keep the
+            # reference: start() waits for it to exit or raises.
+            log.warning(
+                "whisper: worker did not stop within %.1fs (stuck in decode?)",
+                timeout,
+            )
+            return
+        self._thread = None
+
+    def _wait_for_stopped_worker(self, timeout: float = 30.0) -> bool:
+        """Wait for a leftover (timed-out) worker thread to exit.
+
+        Returns True when the thread is gone (safe to start a new one).
+        """
+        thread = self._thread
+        if thread is None:
+            return True
+        thread.join(timeout=timeout)
+        if thread.is_alive():
+            return False
+        self._thread = None
+        return True
 
     # -- audio-worker API (called from the capture thread) --
     def start_segment(self) -> str:
@@ -708,8 +945,14 @@ class WhisperEngine:
             if self.on_progress:
                 self.on_progress(message, percent)
 
+        # Clear any cancel flag left over from a previous cancelled attempt:
+        # the Event is persistent (never replaced), so a stale set() would
+        # abort this fresh download instantly.
+        self._cancel_download.clear()
         report(f"Loading {self._cfg.model_size} whisper model…", -1.0)
-        model_path = resolve_model_path(self._cfg, progress_cb=report)
+        model_path = resolve_model_path(
+            self._cfg, progress_cb=report, cancel_event=self._cancel_download
+        )
         problem = _model_dir_problem(model_path)
         if problem is not None:
             raise RuntimeError(
@@ -766,7 +1009,9 @@ class WhisperEngine:
                 log.warning("whisper: model.bin missing/corrupt, re-downloading...")
                 report("Модель повреждена, повторная загрузка…", -1.0)
                 _remove_snapshot(model_path)
-                model_path = resolve_model_path(self._cfg, report)
+                model_path = resolve_model_path(
+                    self._cfg, report, cancel_event=self._cancel_download
+                )
                 self._model = WhisperModel(
                     model_path,
                     device=device,
@@ -798,6 +1043,11 @@ class WhisperEngine:
                     compute_type=compute_type,
                 )
                 log.info("whisper: reloaded on CPU (%s)", compute_type)
+                if self.on_cuda_fallback:
+                    try:
+                        self.on_cuda_fallback(detail or "unknown CUDA error")
+                    except Exception:  # noqa: BLE001
+                        log.exception("on_cuda_fallback callback failed")
 
     def _maybe_decode(self) -> None:
         if self._model is None or self._decoding or self._spec_partial_emitted:
@@ -936,12 +1186,12 @@ class WhisperEngine:
 
     def _cleanup_segment(self) -> None:
         """Reset per-segment decode state (all finalize paths share this)."""
-        self._speculative = None
-        self._spec_partial_emitted = False
-        self._chunk_texts = []
-        self._last_partial_text = ""
-        self._prev_full_text = ""
         with self._lock:
+            self._speculative = None
+            self._spec_partial_emitted = False
+            self._chunk_texts = []
+            self._last_partial_text = ""
+            self._prev_full_text = ""
             self._rolling = np.zeros(0, dtype=np.float32)
 
     # Sentence-terminal punctuation (whisper emits it reliably on completed
@@ -983,8 +1233,13 @@ class WhisperEngine:
         # decode already covered the whole buffer (only the VAD silence tail
         # was added since), re-decoding the identical audio is pure GPU waste:
         # reuse the speculative result. The last partial stays the safety-net.
-        last_partial = self._last_partial_text if segment_id == self._segment_id else ""
-        spec = self._speculative
+        # Snapshot the segment state under the lock: start_segment() runs on
+        # the audio-callback thread and may swap the segment mid-finalize
+        # (the next question arriving while this one is still finalizing).
+        with self._lock:
+            last_partial = self._last_partial_text if segment_id == self._segment_id else ""
+            spec = self._speculative
+            self._speculative = None
         reusable = (
             spec is not None
             and spec.get("segment_id") == segment_id
@@ -992,7 +1247,6 @@ class WhisperEngine:
             and len(audio) - spec.get("duration", 0.0) * self._sr
             <= _SPECULATIVE_REUSE_MAX_DELTA_S * self._sr
         )
-        self._speculative = None
         self._decoding = True
         if reusable:
             try:
@@ -1159,17 +1413,20 @@ class WhisperEngine:
         """``_transcribe`` with a per-call initial_prompt override.
 
         Used by the chunk decoder to prepend the previous chunk's tail
-        (cross-chunk context) on top of the hot-word prompt.
+        (cross-chunk context) on top of the hot-word prompt. Passed through
+        as a parameter — mutating ``self._cfg.initial_prompt`` here used to
+        race ``App._rebuild_hotwords`` (which rewrites the prompt from other
+        threads), restoring a stale prompt over the fresh one.
         """
-        saved = self._cfg.initial_prompt
-        try:
-            if prompt is not None:
-                self._cfg.initial_prompt = prompt
-            return self._transcribe(audio, kind=kind, beam_size=beam_size)
-        finally:
-            self._cfg.initial_prompt = saved
+        return self._transcribe(audio, kind=kind, beam_size=beam_size, prompt_override=prompt)
 
-    def _transcribe(self, audio: np.ndarray, kind: str = "decode", beam_size: int = 1):
+    def _transcribe(
+        self,
+        audio: np.ndarray,
+        kind: str = "decode",
+        beam_size: int = 1,
+        prompt_override: str | None = None,
+    ):
         # Reuse the language detected on the first decode instead of re-detecting
         # on every partial/final pass (~a second+ each on CPU).
         language = self._cfg.language or self._detected_language
@@ -1177,8 +1434,13 @@ class WhisperEngine:
         # stop-hint and final passes). On the frequent rolling partial decodes
         # it inflated prefill 4-10x (0.5 s audio decoded in 3.8-5 s) for no
         # benefit — partials exist to trigger early answering, and the final
-        # pass re-decodes the segment with the prompt anyway.
-        prompt = self._cfg.initial_prompt if kind != "partial" else None
+        # pass re-decodes the segment with the prompt anyway. A chunk-context
+        # ``prompt_override`` (cross-chunk term consistency) wins over the
+        # hot-word prompt.
+        if prompt_override is not None:
+            prompt = prompt_override if kind != "partial" else None
+        else:
+            prompt = self._cfg.initial_prompt if kind != "partial" else None
         # Decoder-level term bias (faster-whisper ``hotwords=``): the compact
         # priority/session/topic list gets extra probability mass during beam
         # search, complementing initial_prompt. Final/speculative passes only

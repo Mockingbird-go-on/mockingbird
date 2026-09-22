@@ -5,8 +5,7 @@ import numpy as np
 import pytest
 
 from mockingbird import protocol
-from mockingbird.config import GigaAMConfig, WhisperConfig
-from mockingbird.stt.gigaam_engine import GigaAMEngine
+from mockingbird.config import WhisperConfig
 from mockingbird.stt.whisper_engine import WhisperEngine
 
 
@@ -16,18 +15,7 @@ def _whisper_engine():
     return engine
 
 
-def _gigaam_engine():
-    engine = GigaAMEngine(GigaAMConfig(), sample_rate=16000)
-    engine._model = object()
-    return engine
-
-
-@pytest.fixture(
-    params=[
-        pytest.param(_whisper_engine, id="whisper"),
-        pytest.param(_gigaam_engine, id="gigaam"),
-    ]
-)
+@pytest.fixture(params=[pytest.param(_whisper_engine, id="whisper")])
 def engine(request):
     return request.param()
 
@@ -35,7 +23,7 @@ def engine(request):
 def _stub_transcribe(engine, text="Вопрос?", confidence=0.9):
     calls = []
 
-    def fake(audio, kind="decode", beam_size=1):
+    def fake(audio, kind="decode", beam_size=1, **kw):
         calls.append((kind, len(audio)))
         return text, confidence, len(audio) / 16000.0
 
@@ -55,11 +43,10 @@ def _collect_finals(engine):
     return finals
 
 
-def test_finalize_reuses_speculative_when_buffer_unchanged(engine, request):
-    """Speculative-reuse (whisper only): the finalize buffer matches the
-    speculative decode (only the VAD silence tail was added) → the
-    speculative text is reused without a re-decode (GPU waste guard).
-    GigaAM always re-decodes on finalize (no reuse path there)."""
+def test_finalize_reuses_speculative_when_buffer_unchanged(engine):
+    """Speculative-reuse: the finalize buffer matches the speculative decode
+    (only the VAD silence tail was added) → the speculative text is reused
+    without a re-decode (GPU waste guard)."""
     calls = _stub_transcribe(engine)
     sid = _prime_rolling(engine)
     finals = _collect_finals(engine)
@@ -68,12 +55,8 @@ def test_finalize_reuses_speculative_when_buffer_unchanged(engine, request):
     assert len(calls) == 1  # speculative decode of 2s (emitted as partial)
 
     engine._finalize(np.zeros((16000 * 2), dtype=np.float32), sid)
-    if request.node.callspec.id == "whisper":
-        # delta = 0s ≤ 3s → no second decode, speculative text reused
-        assert len(calls) == 1
-    else:
-        # gigaam: no speculative-reuse, always re-decodes
-        assert len(calls) == 2
+    # delta = 0s ≤ 3s → no second decode, speculative text reused
+    assert len(calls) == 1
     assert len(finals) == 1
     assert finals[0].text == "Вопрос?"
     assert finals[0].segment_id == sid
@@ -100,13 +83,13 @@ def test_finalize_after_audio_growth_redecodes(engine):
 
 def test_final_shorter_than_partial_uses_partial(engine):
     """Safety-net: the full decode dropped a word the last partial had
-    (GigaAM losing «Agile» on a different audio cut) → partial wins.
+    (a different audio cut) → partial wins.
 
     Forces a re-decode (audio grew >3s) so reconcile_final_with_partial runs
     on the fresh final text."""
     texts = iter(["в чем связь между Agile и", "в чем связь между и"])
 
-    def fake(audio, kind="decode", beam_size=1):
+    def fake(audio, kind="decode", beam_size=1, **kw):
         return next(texts), 0.9, len(audio) / 16000.0
 
     engine._transcribe = fake
@@ -124,7 +107,7 @@ def test_final_ok_keeps_final_not_partial(engine):
     Forces a re-decode (audio grew >3s)."""
     texts = iter(["в чем связь", "в чем связь между Agile и DevOps"])
 
-    def fake(audio, kind="decode", beam_size=1):
+    def fake(audio, kind="decode", beam_size=1, **kw):
         return next(texts), 0.9, len(audio) / 16000.0
 
     engine._transcribe = fake
@@ -141,7 +124,7 @@ def test_finalize_different_text_partial_not_applied(engine):
     Forces a re-decode (audio grew >3s)."""
     texts = iter(["совсем другой вопрос про сети", "в чем связь между и"])
 
-    def fake(audio, kind="decode", beam_size=1):
+    def fake(audio, kind="decode", beam_size=1, **kw):
         return next(texts), 0.9, len(audio) / 16000.0
 
     engine._transcribe = fake
@@ -221,7 +204,7 @@ def test_whisper_speculative_uses_final_beam():
     engine._model = object()
     seen = {}
 
-    def fake(audio, kind="decode", beam_size=1):
+    def fake(audio, kind="decode", beam_size=1, **kw):
         seen[kind] = beam_size
         return "ok", 0.9, 2.0
 

@@ -126,7 +126,7 @@ sections:
     blocks:
       - q: "Что такое FinOps?"
         keywords: [finops, финопс, cost optimization, cost allocation, cloud spend, бюджет, chargeback]
-        a: "**FinOps** — практика управления облачными расходами (Cloud Financial Operations). Принципы: (1) **Visibility** — кто и сколько тратит (tagging → cost allocation → dashboard), (2) **Optimization** — rightsizing, reserved/spot instances, auto-shutdown, (3) **Accountability** — chargeback/showback (каждая команда видит свой spend). Цикл: **Inform** (метрики) → **Optimize** (действия) → **Operate** (процессы). **Роли**: Engineering (архитектура с учётом cost), Finance (бюджет), Product (ROI). **Инструменты**: нативные (AWS Cost Explorer, Yandex Cloud Billing),第三方 (CloudHealth, Kubecost — для K8s)."
+        a: "**FinOps** — практика управления облачными расходами (Cloud Financial Operations). Принципы: (1) **Visibility** — кто и сколько тратит (tagging → cost allocation → dashboard), (2) **Optimization** — rightsizing, reserved/spot instances, auto-shutdown, (3) **Accountability** — chargeback/showback (каждая команда видит свой spend). Цикл: **Inform** (метрики) → **Optimize** (действия) → **Operate** (процессы). **Роли**: Engineering (архитектура с учётом cost), Finance (бюджет), Product (ROI). **Инструменты**: нативные (AWS Cost Explorer, Yandex Cloud Billing), сторонние (CloudHealth, Kubecost — для K8s)."
         related: ["Как уменьшить cloud spend?", "Что такое rightsizing?"]
       - q: "Как уменьшить облачные расходы?"
         keywords: [cost reduction, экономия облако, rightsizing, spot, reserved, auto shutdown, scheduled scaling]
@@ -136,17 +136,13 @@ sections:
         keywords: [spot, preemptible, спотовый, приоритетный, дешевый, отзыв, eviction, batch, stateless]
         a: "**Spot/Preemptible** — избыточные мощности облака со скидкой до 70-90%. Могут быть **отозваны** (preempted) с коротким уведомлением (30 сек в AWS, 60 сек в GCP/Yandex). **Когда использовать**: batch processing, CI/CD workers, stateless web, data analytics — всё что **tolerant к прерыванию**. **Когда НЕ**: БД, in-memory state, latency-sensitive APIs, single-instance. **Архитектура**: Cluster Autoscaler + Spot node group → при eviction под переносится на другой узел. **Spot Fleet / Spot Block** — пул разнотипных инстансов (если один тип отзывают — другие остаются). **Cost**: spot для stateless + reserved для stateful = оптимальный микс."
         related: ["Как уменьшить cloud spend?", "Что такое Cluster Autoscaler?"]
-  - id: incidents
+  - id: incident_mgmt
     name: Incident Management
     blocks:
       - q: "Как управлять инцидентами (incident management)?"
         keywords: [incident management, инцидент, severity, sev1 sev2 sev3, on-call, escalation, war room]
         a: "**Severity levels**: **SEV1** (critical) — продакшен недоступен, потеря данных → immediate response + war room + escalation. **SEV2** (high) — деградация, workaround есть → быстрый ответ. **SEV3** (medium) — локальная проблема, нет влияния на пользователей → fix в рабочее время. **SEV4** (low) — косметика/tech debt. **Process**: alert → acknowledge (MTTA) → investigate → mitigate (stop bleeding) → resolve (root cause) → postmortem. **Communication**: status page (внешний), internal Slack channel (команда), stakeholders update каждые 30 мин для SEV1. **Roles**: Incident Commander (координатор), Comms Lead (коммуникация), Ops Lead (техническая работа)."
         related: ["Что такое postmortem?", "Что такое MTTA/MTTR?"]
-      - q: "Что такое blameless postmortem?"
-        keywords: [postmortem, постмортем, blameless, без обвинений, root cause, 5 whys, action items]
-        a: "**Blameless postmortem** — разбор инцидента **без обвинений**: фокус на **системе**, а не на «кто нажал не ту кнопку». Структура: (1) **Summary** — что произошло, влияние (users impacted, revenue loss), (2) **Timeline** — минуты: события + действия, (3) **Root cause** — 5 Whys (почему? почему? ...), (4) **What went well / badly / lucky**, (5) **Action items** — конкретные задачи с владельцами и сроками (alert, runbook, fix, test). Культура: каждый инцидент — возможность улучшить систему, а не наказать. **Google REACH** / **SRE book** — эталон. **Anti-pattern**: «оператор ошибся» → настоящая причина — процесс/интерфейс позволил ошибку."
-        related: ["Как управлять инцидентами?", "Что такое 5 Whys?"]
       - q: "Что такое MTTR и MTTA и как их улучшить?"
         keywords: [mttr, mtta, mean time to recover, mean time to acknowledge, метрики, улучшение, on-call]
         a: "**MTTA (Mean Time To Acknowledge)** — время от алерта до принятия (on-call нажал «ack»). Цель: < 5 мин. **MTTR (Mean Time To Recover/Resolve)** — время от алерта до восстановления. Цель: < 30-60 мин. **Улучшение MTTA**: (1) правильные алерты (только meaningful), (2) escalation policy (не отвечаешь 5 мин → следующий), (3) PagerDuty/Opsgenie + push notifications. **Улучшение MTTR**: (1) **runbooks** в алерте (ссылка на действия), (2) **observability** (видеть что происходит), (3) **automation** (auto-rollback, auto-scale), (4) **game days** (тренировка), (5) **postmortem action items** (закрывать найденные проблемы). **Измерение**: per-service MTTA/MTTR → dashboard."

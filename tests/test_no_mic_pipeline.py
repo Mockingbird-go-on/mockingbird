@@ -46,7 +46,7 @@ def test_factory_has_only_create_stt_engine():
 
 @pytest.fixture
 def fake_audio_app(monkeypatch, tmp_path):
-    """Isolated fixture: stub gigaam engine + capture so App.__init__ is cheap.
+    """Isolated fixture: stub whisper engine + capture so App.__init__ is cheap.
 
     Restores sys.modules on teardown so test_stt_factory is unaffected.
     """
@@ -54,15 +54,14 @@ def fake_audio_app(monkeypatch, tmp_path):
     for name in ("OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_MODEL"):
         monkeypatch.delenv(name, raising=False)
 
-    saved_gigaam = sys.modules.get("mockingbird.stt.gigaam_engine")
     saved_capture = sys.modules.get("mockingbird.audio.capture")
     saved_loopback = sys.modules.get("mockingbird.audio.loopback")
 
-    fake_engine_mod = types.ModuleType("mockingbird.stt.gigaam_engine")
+    fake_engine_mod = types.ModuleType("mockingbird.stt.whisper_engine")
 
     class _FakeEngine:
-        backend = "gigaam"
-        model_name = "ai-sage/GigaAM-v3"
+        backend = "faster-whisper"
+        model_name = "Systran/faster-whisper-small"
         device = ""
         is_ready = False
         _end_ahead = True
@@ -79,8 +78,8 @@ def fake_audio_app(monkeypatch, tmp_path):
         def flush(self):
             pass
 
-    fake_engine_mod.GigaAMEngine = _FakeEngine
-    sys.modules["mockingbird.stt.gigaam_engine"] = fake_engine_mod
+    fake_engine_mod.WhisperEngine = _FakeEngine
+    sys.modules["mockingbird.stt.whisper_engine"] = fake_engine_mod
 
     fake_capture_mod = types.ModuleType("mockingbird.audio.capture")
 
@@ -124,11 +123,25 @@ def fake_audio_app(monkeypatch, tmp_path):
     fake_loopback_mod.list_loopback_devices = lambda: []
     sys.modules["mockingbird.audio.loopback"] = fake_loopback_mod
 
+    # The stub replaces a submodule of an already-imported package; save the
+    # real attribute so teardown can fully restore it (a leftover stub breaks
+    # `from mockingbird.stt.whisper_engine import ...` in later tests).
+    import mockingbird.stt as _stt_pkg
+    saved_whisper_attr = getattr(_stt_pkg, "whisper_engine", None)
+
     yield
+
+    sys.modules.pop("mockingbird.stt.whisper_engine", None)
+    if saved_whisper_attr is not None:
+        setattr(_stt_pkg, "whisper_engine", saved_whisper_attr)
+    else:
+        # The real module was never imported — drop the stub attribute so the
+        # next `from mockingbird.stt.whisper_engine import ...` re-imports.
+        if getattr(_stt_pkg, "whisper_engine", None) is fake_engine_mod:
+            delattr(_stt_pkg, "whisper_engine")
 
     # Restore real modules on teardown.
     for name, mod in (
-        ("mockingbird.stt.gigaam_engine", saved_gigaam),
         ("mockingbird.audio.capture", saved_capture),
         ("mockingbird.audio.loopback", saved_loopback),
     ):
@@ -144,7 +157,7 @@ def test_app_has_no_mic_secondary_attributes(fake_audio_app):
     from mockingbird.app import App
 
     cfg = load_config()
-    cfg.stt.backend = "gigaam"
+    cfg.stt.backend = "whisper"
     app = App(cfg)
     try:
         for attr in ("mic_capture", "mic_engine", "_mic_vad", "_mic_chunker", "hybrid"):
