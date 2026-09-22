@@ -148,6 +148,20 @@ class MainWindow(QMainWindow):
         self._device_badge = DeviceBadge()
         self._source_badge = SourceBadge()
         self._activity = ActivityBar()
+        # Small Cancel affordance shown next to the loader while the model is
+        # loading into memory (the download overlay covers the download phase,
+        # but the in-memory phase used to have no way out).
+        self._cancel_load_btn = QPushButton()
+        self._cancel_load_btn.setIcon(
+            lucide_icon("circle-x", color=theme.current.text_secondary)
+        )
+        self._cancel_load_btn.setIconSize(QSize(14, 14))
+        self._cancel_load_btn.setFixedSize(20, 20)
+        self._cancel_load_btn.setFlat(True)
+        self._cancel_load_btn.setToolTip("Отменить загрузку модели")
+        self._cancel_load_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._cancel_load_btn.clicked.connect(self._on_cancel_model_load)
+        self._cancel_load_btn.hide()
         self._timer_label = QLabel("00:00")
         self._timer_label.setObjectName("sessionTimer")
         self._timer_label.setStyleSheet(
@@ -159,6 +173,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._mute_btn)
         layout.addSpacing(12)
         layout.addWidget(self._activity)
+        layout.addWidget(self._cancel_load_btn)
         layout.addWidget(self._timer_label)
         layout.addStretch(1)
         layout.addWidget(self._device_badge)
@@ -257,6 +272,7 @@ class MainWindow(QMainWindow):
         self._sig.model_load.connect(self._activity.set_loading)
         self._sig.model_load.connect(self._on_model_load_progress)
         self._sig.model_load_failed.connect(self._on_model_load_failed)
+        self._sig.model_load_cancelled.connect(self._on_model_load_cancelled)
         # Async session stop completion (marshalled from the stop worker).
         self._stop_done.connect(self._on_stop_done)
 
@@ -296,16 +312,26 @@ class MainWindow(QMainWindow):
     def _on_model_load_progress(self, message: str, percent: float) -> None:
         """Route model_load progress to the download overlay.
 
-        The dialog is created lazily on the FIRST progress event and only
-        while a download is plausible (percent >= 0 or a "Downloading…"
-        message); plain "Loading model into memory…" events with -1 never
-        spawn it — the model is already on disk then.
+        The dialog is created lazily on the FIRST download progress event
+        (percent >= 0 or a "Downloading…" message). The in-memory phase
+        ("Loading model into memory…", percent -1) does NOT spawn the overlay
+        — the model is already on disk — but it DOES show the small Cancel
+        cross next to the toolbar loader so the user can still abort.
         """
-        downloading = percent >= 0 or "download" in message.lower()
-        if not downloading:
+        if not message and percent >= 100.0:
+            # Model ready: nothing is cancellable any more.
+            self._set_cancel_load_visible(False)
             if self._model_dl is not None and self._model_dl.isVisible():
                 self._model_dl.done_ok()
             return
+        downloading = percent >= 0 or "download" in message.lower()
+        if not downloading:
+            # In-memory load: keep the cancel cross available.
+            self._set_cancel_load_visible(True)
+            if self._model_dl is not None and self._model_dl.isVisible():
+                self._model_dl.done_ok()
+            return
+        self._set_cancel_load_visible(True)
         if self._model_dl is None:
             from mockingbird.ui.model_download_dialog import ModelDownloadDialog
 
@@ -317,11 +343,32 @@ class MainWindow(QMainWindow):
             self._model_dl.show_above(self)
         self._model_dl.set_progress(message, percent)
 
+    def _set_cancel_load_visible(self, visible: bool) -> None:
+        self._cancel_load_btn.setVisible(visible)
+        if not visible:
+            # Reset any "Отмена…" latched state so the next load starts clean.
+            self._cancel_load_btn.setEnabled(True)
+            self._cancel_load_btn.setToolTip("Отменить загрузку модели")
+
+    def _on_cancel_model_load(self) -> None:
+        """Small cross in the toolbar: cancel the in-flight model load."""
+        self._cancel_load_btn.setEnabled(False)
+        self._cancel_load_btn.setToolTip("Отмена…")
+        self._app.cancel_model_download()
+
+    def _on_model_load_cancelled(self) -> None:
+        """User cancelled the load: reset the affordances without an error."""
+        self._set_cancel_load_visible(False)
+        if self._model_dl is not None and self._model_dl.isVisible():
+            self._model_dl.hide()
+        self._activity.set_idle()
+
     def _on_model_load_failed(self, error: str) -> None:
         """All download attempts failed (or cancelled): close the overlay and
         offer retry / offline hint."""
         if self._model_dl is not None:
             self._model_dl.done_failed(error)
+        self._on_model_load_cancelled()
         from PySide6.QtWidgets import QMessageBox
 
         low = error.lower()
@@ -363,17 +410,22 @@ class MainWindow(QMainWindow):
         self._status.set_state(state, detail)
         if state == "loading":
             self._activity.set_loading(detail or "Загрузка модели…", -1)
-        elif state == "running":
-            self._activity.set_live()
-            # Start the session timer only when the model is actually ready.
-            if not self._session_timer.isActive():
-                self._session_timer.start()
-        elif state == "muted":
-            self._activity.set_muted()
-        elif state == "idle":
-            self._activity.set_idle()
-        elif state == "error":
-            self._activity.set_error(detail or "Ошибка")
+            # "stopping" is a teardown, not a model load — never offer Cancel.
+            self._set_cancel_load_visible(detail != "stopping")
+        else:
+            # Any non-loading state means nothing is being loaded any more.
+            self._set_cancel_load_visible(False)
+            if state == "running":
+                self._activity.set_live()
+                # Start the session timer only when the model is actually ready.
+                if not self._session_timer.isActive():
+                    self._session_timer.start()
+            elif state == "muted":
+                self._activity.set_muted()
+            elif state == "idle":
+                self._activity.set_idle()
+            elif state == "error":
+                self._activity.set_error(detail or "Ошибка")
 
     def _tick_session(self) -> None:
         self._session_seconds += 1
@@ -486,6 +538,7 @@ class MainWindow(QMainWindow):
 
     def _on_error(self, message: str) -> None:
         self.statusBar().showMessage(message, 8000)
+        self._set_cancel_load_visible(False)
         self._activity.set_error(message)
         self._sig.status.emit("error", "")
         # If the session never actually started (engine load failed, capture

@@ -376,7 +376,7 @@ def _cuda_probe_timeout() -> float:
     return _CUDA_PROBE_TIMEOUT_S
 
 
-def _probe_cuda(model, audio: np.ndarray, language: str | None, timeout: float, initial_prompt: str | None = None):
+def _probe_cuda(model, audio: np.ndarray, language: str | None, timeout: float, initial_prompt: str | None = None, cancel_event=None):
     """Verify a CUDA-loaded whisper model can actually decode.
 
     A frozen .exe whose cuBLAS/cuDNN DLLs do not match the ctranslate2 runtime
@@ -385,6 +385,11 @@ def _probe_cuda(model, audio: np.ndarray, language: str | None, timeout: float, 
     ``audio`` in a daemon thread and wait up to ``timeout`` seconds; if it
     neither returns nor raises, the GPU stack is treated as unusable and the
     caller reloads on CPU.
+
+    ``cancel_event`` (optional) aborts the wait as soon as it is set, so the
+    user can cancel during "Loading model into memory…". The daemon probe
+    thread itself is not joined on cancel (ctranslate2 gives no way to abort an
+    in-flight decode); it is abandoned.
 
     Returns ``(ok, detail)`` where ``detail`` explains a failure.
     """
@@ -408,7 +413,16 @@ def _probe_cuda(model, audio: np.ndarray, language: str | None, timeout: float, 
 
     thread = threading.Thread(target=_worker, name="whisper-cuda-probe", daemon=True)
     thread.start()
-    thread.join(timeout=timeout)
+    # Poll so a Cancel during the probe returns promptly instead of blocking
+    # up to the full timeout (20 s default).
+    deadline = time.monotonic() + timeout
+    while thread.is_alive():
+        if cancel_event is not None and cancel_event.is_set():
+            return False, "cancelled by user"
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        thread.join(timeout=min(0.2, remaining))
     if "error" in result:
         return False, f"probe decode failed: {result['error']}"
     if thread.is_alive():
@@ -754,6 +768,15 @@ class WhisperEngine:
         # hold a reference to it; replacing would make a later Cancel invisible.
         self._cancel_download.clear()
 
+    def _raise_if_cancelled(self) -> None:
+        """Raise a user-facing cancellation if the cancel flag is set.
+
+        Used on the model-load path (download AND "Loading model into
+        memory…") so Cancel works at every phase, not only mid-transfer.
+        """
+        if self._cancel_download.is_set():
+            raise RuntimeError("whisper model load cancelled by user")
+
     def set_text_matcher(self, matcher) -> None:
         """Inject a PhoneticMatcher for post-correction of transcripts."""
         self._text_matcher = matcher
@@ -961,6 +984,7 @@ class WhisperEngine:
                 "to download it again."
             )
         report("Loading model into memory…", -1.0)
+        self._raise_if_cancelled()
         from faster_whisper import WhisperModel
 
         device = resolve_device(self._cfg.device, cuda_available=ctranslate2_cuda_available())
@@ -1019,6 +1043,9 @@ class WhisperEngine:
                 )
             else:
                 raise
+        # Weights are loaded; honour a Cancel that arrived while the (blocking,
+        # uninterruptible) WhisperModel constructor ran.
+        self._raise_if_cancelled()
         if device == "cuda":
             probe_audio = np.zeros(int(self._sr * 0.5), dtype=np.float32)
             ok, detail = _probe_cuda(
@@ -1027,7 +1054,15 @@ class WhisperEngine:
                 self._cfg.language,
                 _cuda_probe_timeout(),
                 self._cfg.initial_prompt,
+                self._cancel_download,
             )
+            if detail == "cancelled by user":
+                # User cancelled during the "Loading model into memory…" phase:
+                # drop the half-loaded model and surface a cancellation (not an
+                # error). The daemon probe thread is abandoned (ctranslate2
+                # gives no way to abort an in-flight decode).
+                self._model = None
+                self._raise_if_cancelled()
             if not ok:
                 log.error("whisper: CUDA not usable (%s); falling back to CPU", detail)
                 report("GPU не отвечает — переключение на CPU…", -1.0)

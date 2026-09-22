@@ -82,3 +82,23 @@ def test_probe_timeout_env(monkeypatch):
     assert _cuda_probe_timeout() == 20.0
     monkeypatch.setenv("MOCKINGBIRD_CUDA_PROBE_TIMEOUT", "-3")
     assert _cuda_probe_timeout() == 20.0
+
+
+def test_probe_aborts_on_cancel_event():
+    """A Cancel during the CUDA probe (the 'Loading model into memory…' phase)
+    must return promptly instead of blocking for the full timeout."""
+    import threading
+
+    cancel = threading.Event()
+    cancel.set()  # already cancelled before the probe starts
+    start = time.monotonic()
+    ok, detail = _probe_cuda(_FakeModel("hang"), _audio(), None, 5.0, None, cancel)
+    elapsed = time.monotonic() - start
+    assert not ok
+    assert "cancelled" in detail
+    assert elapsed < 1.0, f"cancel must be prompt, took {elapsed:.2f}s"
+
+
+def test_probe_cancel_event_none_is_unchanged():
+    ok, detail = _probe_cuda(_FakeModel("ok"), _audio(), None, 1.0, None, None)
+    assert ok and detail == ""
