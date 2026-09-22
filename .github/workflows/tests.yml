@@ -36,7 +36,7 @@ jobs:
         run: |
           pip install --quiet PySide6 numpy pydantic PyYAML python-dotenv httpx
           pip install --quiet pytest pytest-asyncio pypdf onnxruntime huggingface_hub
-          pip install --quiet faster-whisper sounddevice openai ctranslate2
+          pip install --quiet faster-whisper "av<15" sounddevice openai ctranslate2
           pip install --quiet -e . --no-deps
 
       - name: Run tests
@@ -46,10 +46,13 @@ jobs:
             --ignore=tests/test_whisper_engine.py
 
   # ── Job 2: Build .exe on self-hosted Windows runner ──
+  # ВРЕМЕННО ОТКЛЮЧЕНА (2026-09-22): релизные артефакты собираются вручную
+  # через scripts/build.sh; self-hosted раннер недоступен/не нужен.
+  # Включить обратно: убрать `false &&` из условия ниже.
   build-windows:
     needs: test
     runs-on: self-hosted
-    if: github.ref == 'refs/heads/main'
+    if: false && github.ref == 'refs/heads/main'
 
     steps:
       - uses: actions/checkout@v4
