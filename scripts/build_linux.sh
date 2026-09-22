@@ -27,15 +27,18 @@ for arg in "$@"; do
     esac
 done
 
-# Many distros ship only python3; prefer the venv's python, fall back to
-# python3 (PyInstaller must be importable in whatever wins).
-PY=python
-command -v "$PY" >/dev/null 2>&1 || PY=python3
+# Prefer the project venv (no activation needed), fall back to python/python3
+# (PyInstaller must be importable in whatever wins).
+PY=".venv/bin/python"
+if [ ! -x "$PY" ]; then
+    PY=python
+    command -v "$PY" >/dev/null 2>&1 || PY=python3
+fi
 if ! "$PY" -c 'import PyInstaller' >/dev/null 2>&1; then
     echo "ERROR: PyInstaller is not importable by '$PY'." >&2
-    echo "Create a build venv first:" >&2
-    echo "  python3 -m venv .venv && . .venv/bin/activate" >&2
-    echo "  pip install -e \".[dev]\" pyinstaller" >&2
+    echo "Create a build venv first (one-time, no activation needed after):" >&2
+    echo "  python3 -m venv .venv" >&2
+    echo "  .venv/bin/pip install -e \".[dev]\" pyinstaller" >&2
     exit 1
 fi
 
