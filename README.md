@@ -190,19 +190,24 @@ beam, endpoint/ключ LLM, путь к глоссарию). Смена бэк�
 
 ## Сборка Windows .exe
 
-Из WSL:
+Из WSL, единая точка входа:
 
 ```bash
-bash scripts/sync_and_build.sh        # rsync → PowerShell → PyInstaller (инкрементально)
-bash scripts/sync_and_build.sh --clean # полная пересборка без кэша PyInstaller
-bash scripts/sync_and_build.sh -Cpu   # CPU-only сборка
+bash scripts/build.sh all               # все артефакты: win-gpu + win-cpu + linux + model-pack
+bash scripts/build.sh win-gpu           # только CUDA-инсталлятор
+bash scripts/build.sh win-cpu           # только CPU-инсталлятор
+bash scripts/build.sh linux model-pack  # Linux + пак модели
+bash scripts/build.sh win-gpu --clean   # полная пересборка без кэша PyInstaller
 ```
 
-Собирается один exe: `mockingbird.exe` (оконный). Добавьте `-Installer` — и
-получите `installer\Mockingbird-<ver>-windows-x64-{cuda,cpu}-setup.exe`. Модель
+`build.sh` сам синкает проект на Windows-сторону, запускает сборку и
+возвращает готовые инсталляторы в WSL `installer/`.
+
+Собирается один exe: `mockingbird.exe` (оконный). Windows-цели дают
+`installer/Mockingbird-<ver>-windows-x64-{cuda,cpu}-setup.exe`. Модель
 whisper скачивается при первом запуске и в дистрибутив не включается (для
-оффлайна — `scripts/build_model_pack.sh`). Публикация релиза —
-`scripts/release.sh` (см. [BUILD.md](BUILD.md) §6).
+оффлайна — цель `model-pack`). Публикация релиза —
+`bash scripts/build.sh publish` (см. [BUILD.md](BUILD.md) §6).
 
 ## Тесты
 

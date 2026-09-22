@@ -49,6 +49,7 @@ rsync -a --delete \
     --exclude='.git' \
     --exclude='dist' \
     --exclude='build' \
+    --exclude='installer' \
     --exclude='*.egg-info' \
     --exclude='.pytest_cache' \
     --exclude='.mypy_cache' \
@@ -81,3 +82,18 @@ if [ "$RC" -ne 0 ]; then
     exit "$RC"
 fi
 echo ">>> Build complete. Output: ${DST}/dist/mockingbird/"
+
+# Pull the freshly built installer(s) back into the WSL project's installer/
+# so scripts/release.sh (which runs entirely in WSL) can find them. The
+# Windows build writes them to E:\mockingbird\installer (RootDir-anchored in
+# installer.iss); without this copy they never leave the Windows side.
+if [ -d "$DST/installer" ]; then
+    shopt -s nullglob
+    pulled=("$DST"/installer/Mockingbird-*-windows-x64-*-setup.exe)
+    shopt -u nullglob
+    if [ "${#pulled[@]}" -gt 0 ]; then
+        mkdir -p "$SRC/installer"
+        cp -f "${pulled[@]}" "$SRC/installer/"
+        echo ">>> Pulled ${#pulled[@]} installer(s) into $SRC/installer/"
+    fi
+fi

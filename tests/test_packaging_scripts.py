@@ -220,6 +220,35 @@ def test_deb_stage_mkdirs_before_copy():
     assert 'mkdir -p "$DEBDIR/usr/lib"$' not in sh  # stale standalone mkdir gone
 
 
+def test_linux_appimage_name_matches_release_script():
+    """REGRESSION 2026-09-22 (release): build_linux.sh emitted
+    Mockingbird-<ver>-x86_64.AppImage while release.sh looks for
+    ...-linux-x86_64.AppImage, so the release shipped WITHOUT the Linux
+    build (silent MISS). The names must agree."""
+    sh = _read("build_linux.sh")
+    assert "dist/Mockingbird-$VERSION-linux-x86_64.AppImage" in sh
+    assert "dist/Mockingbird-$VERSION-x86_64.AppImage" not in sh
+    release = _read("release.sh")
+    assert "linux-x86_64.AppImage" in release
+
+
+def test_linux_deb_has_no_dead_cli_symlink():
+    """REGRESSION 2026-09-22: the .deb staged a symlink to mockingbird-cli,
+    which was removed from the project — a broken link in the installed
+    package."""
+    sh = _read("build_linux.sh")
+    assert "mockingbird-cli" not in sh
+
+
+def test_release_clobber_uses_delete_not_create_flag():
+    """REGRESSION 2026-09-22: release.sh passed --clobber to
+    `gh release create`, which has no such flag (only `upload` does) — with
+    --clobber the release failed. It must delete the old release first."""
+    script = _read("release.sh")
+    assert "CREATE_ARGS+=(--clobber)" not in script
+    assert "gh release delete \"$TAG\" --yes --cleanup-tag" in script
+
+
 def test_flat_nvidia_libs_dest_is_directory():
     """REGRESSION 2026-09-21: binaries TOC dest must be a DIRECTORY
     ("ctranslate2"), never a file path. PyInstaller joins dest +
@@ -397,6 +426,41 @@ def test_release_script_exists_and_uses_gh():
     assert "SHA256SUMS" in script
     # Release notes are rendered from the template.
     assert "release_notes.md.in" in script
+
+
+def test_build_sh_single_entrypoint_dispatches_targets():
+    """scripts/build.sh is the single entry point: it must know every target
+    and forward --clean/-Cpu/-Installer to the right worker script."""
+    sh = _read("build.sh")
+    for target in ("win-gpu", "win-cpu", "linux", "model-pack", "all", "publish"):
+        assert target in sh, target
+    assert "bash scripts/sync_and_build.sh" in sh
+    assert "-Cpu -Installer" in sh
+    assert "bash scripts/build_linux.sh" in sh
+    assert "bash scripts/build_model_pack.sh" in sh
+    assert "bash scripts/release.sh" in sh
+
+
+def test_build_sh_does_not_clean_model_pack():
+    """--clean must NOT reach build_model_pack.sh (it would re-download the
+    1.6 GB model); every other target may take it."""
+    sh = _read("build.sh")
+    model_line = next(
+        l for l in sh.splitlines()
+        if "build_model_pack.sh" in l and l.strip().startswith("run ")
+    )
+    assert "$CLEAN" not in model_line and "--clean" not in model_line, model_line
+
+
+def test_sync_and_build_excludes_installer_and_pulls_back():
+    """REGRESSION 2026-09-22: rsync --delete mirrored the (empty) WSL
+    installer/ onto E:\\installer, deleting freshly built setup.exe before the
+    release could read them. installer/ must be excluded, and the built
+    installers must be copied back into the WSL project."""
+    sh = _read("sync_and_build.sh")
+    assert "--exclude='installer'" in sh
+    assert "Mockingbird-*-windows-x64-*-setup.exe" in sh
+    assert "cp -f" in sh
 
 
 def test_release_notes_template_has_download_table():

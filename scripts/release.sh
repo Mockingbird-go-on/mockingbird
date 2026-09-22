@@ -165,11 +165,16 @@ if [[ "$DRAFT" -eq 1 ]]; then
 else
   CREATE_ARGS+=(--latest)
 fi
-[[ "$CLOBBER" -eq 1 ]] && CREATE_ARGS+=(--clobber)
 
-if gh release view "$TAG" >/dev/null 2>&1 && [[ "$CLOBBER" -eq 0 ]]; then
-  echo "ERROR: release '$TAG' already exists. Re-run with --clobber to replace." >&2
-  exit 1
+if gh release view "$TAG" >/dev/null 2>&1; then
+  if [[ "$CLOBBER" -eq 0 ]]; then
+    echo "ERROR: release '$TAG' already exists. Re-run with --clobber to replace." >&2
+    exit 1
+  fi
+  # `gh release create` has no --clobber (only `upload` does): drop the old
+  # release + tag first so the new one is created cleanly.
+  echo "  --clobber: deleting existing release '$TAG'…"
+  gh release delete "$TAG" --yes --cleanup-tag
 fi
 
 echo "  creating release $TAG…"
