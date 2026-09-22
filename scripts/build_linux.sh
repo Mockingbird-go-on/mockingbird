@@ -86,8 +86,8 @@ APPRUN
     fi
 
     mkdir -p dist
-    ARCH=x86_64 "$APPIMAGETOOL" "$APPDIR" "dist/Mockingbird-$VERSION-x86_64.AppImage"
-    echo "== AppImage: dist/Mockingbird-$VERSION-x86_64.AppImage =="
+    ARCH=x86_64 "$APPIMAGETOOL" "$APPDIR" "dist/Mockingbird-$VERSION-linux-x86_64.AppImage"
+    echo "== AppImage: dist/Mockingbird-$VERSION-linux-x86_64.AppImage =="
 fi
 
 # --- 3. .deb (optional) -------------------------------------------------------
@@ -102,7 +102,6 @@ if [[ $MAKE_DEB -eq 1 ]]; then
                  "$DEBDIR/usr/share/icons/hicolor/scalable/apps" "$DEBDIR/DEBIAN"
         cp -r dist/mockingbird/. "$DEBDIR/usr/lib/mockingbird/"
         ln -s /usr/lib/mockingbird/mockingbird "$DEBDIR/usr/bin/mockingbird"
-        ln -s /usr/lib/mockingbird/mockingbird-cli "$DEBDIR/usr/bin/mockingbird-cli"
 
         cat > "$DEBDIR/usr/share/applications/mockingbird.desktop" <<DESKTOP
 [Desktop Entry]

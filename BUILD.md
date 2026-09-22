@@ -32,7 +32,17 @@
 Из WSL, в корне проекта:
 
 ```bash
-# 1) только синк файлов на Windows-сторону (без запуска PyInstaller):
+# один вход для любой сборки:
+bash scripts/build.sh win-gpu            # CUDA-инсталлятор (rsync + сборка + возврат exe)
+bash scripts/build.sh win-cpu            # CPU-инсталлятор
+```
+
+Готовые инсталляторы `sync_and_build.sh` сам копирует обратно в WSL
+`installer/`. Собрать всё сразу — `bash scripts/build.sh all`.
+
+Нужен только синк файлов без сборки:
+
+```bash
 bash scripts/sync_and_build.sh --no-build
 ```
 
@@ -167,7 +177,7 @@ AppDir (.desktop + SVG-иконка + AppRun) → скачивает `appimageto
 ### 2.4. Результаты
 
 
-- `dist/Mockingbird-<ver>-x86_64.AppImage` — один самодостаточный файл:
+- `dist/Mockingbird-<ver>-linux-x86_64.AppImage` — один самодостаточный файл:
   `chmod +x …AppImage && ./Mockingbird-…AppImage`. Установка не нужна.
 - `dist/mockingbird_<ver>_*.deb` — `sudo apt install ./mockingbird_…deb`;
   ставит в `/usr/lib/mockingbird`, ярлык `/usr/bin/mockingbird`.
@@ -269,12 +279,36 @@ GigaAM-бэкенд удалён (2026-09-20): whisper large-v3-turbo — еди
 
 ### 6.2. Сборка артефактов
 
+**Единая точка входа — `scripts/build.sh`.** Он собирает выбранные цели и,
+для Windows, сам возвращает готовые инсталляторы в WSL `installer/`
+(rsync WSL→Windows, сборка, обратное копирование exe).
+
 ```bash
-bash scripts/sync_and_build.sh --clean -Installer         # CUDA-инсталлятор
-bash scripts/sync_and_build.sh --clean -Cpu -Installer    # CPU-инсталлятор
+bash scripts/build.sh all                     # всё: win-gpu + win-cpu + linux + model-pack
+bash scripts/build.sh win-gpu win-cpu         # только Windows (CUDA + CPU)
+bash scripts/build.sh linux model-pack        # только Linux + пак модели
+bash scripts/build.sh win-gpu --clean         # CUDA с полной пересборкой (без кэша)
+bash scripts/build.sh publish --draft         # опубликовать релиз черновиком
+```
+
+Цели: `win-gpu` (CUDA-инсталлятор), `win-cpu` (CPU-инсталлятор), `linux`
+(AppImage + `.deb`), `model-pack` (пак модели whisper для оффлайна), `all`,
+`publish` (обёртка над `release.sh`). `--clean` применяется ко всем целям,
+кроме `model-pack` (иначе повторно тянет 1.6 ГБ); `--draft` — только к `publish`.
+
+Под капотом `build.sh` вызывает внутренние скрипты (их можно звать и напрямую
+для тонкого контроля):
+
+```bash
+bash scripts/sync_and_build.sh --clean -Installer         # CUDA (rsync + PyInstaller + Inno)
+bash scripts/sync_and_build.sh --clean -Cpu -Installer    # CPU
 bash scripts/build_model_pack.sh                          # model.zip (без --clean)
 bash scripts/build_linux.sh                               # AppImage + .deb
 ```
+
+> Windows-инсталляторы собираются на стороне Windows (`E:\mockingbird\installer`)
+> и затем копируются `sync_and_build.sh` обратно в WSL `installer/`, откуда их
+> берёт `release.sh`. Вручную ничего копировать не нужно.
 
 ### 6.3. Публикация
 
