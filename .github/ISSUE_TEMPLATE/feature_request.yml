@@ -1,0 +1,40 @@
+name: Предложить идею
+description: Новая функция, улучшение или изменение поведения
+title: "[Идея] "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Спасибо за идею! Опишите проблему и желаемый результат, а не только готовое решение —
+        так будет проще понять задачу.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Какую проблему это решает
+      description: Что неудобно или невозможно сейчас.
+      placeholder: Например, нет способа быстро переключить модель без перезапуска.
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Предлагаемое решение
+      placeholder: Как вы это видите.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Альтернативы
+      description: Какие ещё варианты рассматривали.
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Дополнительный контекст
+      description: Сценарии использования, ссылки, скриншоты.
+    validations:
+      required: false

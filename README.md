@@ -25,6 +25,8 @@ VAD → faster-whisper (CUDA, локально) или GigaAM-v3, распозн
 - [Сборка Windows .exe](#сборка-windows-exe)
 - [Тесты](#тесты)
 - [Структура проекта](#структура-проекта)
+- [Подпись и SmartScreen](#подпись-и-smartscreen)
+- [Лицензия](#лицензия)
 
 ## Скриншоты
 
@@ -109,12 +111,56 @@ VAD → faster-whisper (CUDA, локально) или GigaAM-v3, распозн
 
 ## Установка и запуск
 
+### Какую сборку скачать?
+
+Со страницы [**Releases**](https://github.com/Mockingbird-go-on/mockingbird/releases)
+возьмите файл по вашей ситуации:
+
+| Ваша ситуация | Файл |
+|---|---|
+| **NVIDIA GPU** (или не уверены) | `Mockingbird-<ver>-windows-x64-cuda-setup.exe` — работает и на GPU, и на CPU (авто-fallback) |
+| **Нет NVIDIA** / мало места / медленный интернет | `Mockingbird-<ver>-windows-x64-cpu-setup.exe` — лёгкая, только CPU |
+| **Linux** | `Mockingbird-<ver>-linux-x86_64.AppImage` (или `.deb`) |
+| **Машина без интернета** | инсталлятор **+** [пак модели](https://github.com/Mockingbird-go-on/mockingbird/releases/tag/models) (см. ниже) |
+
+Модель whisper (~1.6 ГБ) скачивается при **первом запуске**. Если интернета
+нет или прокси режет `huggingface.co` — скачайте `Mockingbird-whisper-*-model.zip`
+(~1.55 ГБ) из релиза `models`, распакуйте так, чтобы папка `cache/` лежала
+**рядом** с инсталлятором, и запустите установку: модель скопируется
+автоматически. Пак подходит к обеим сборкам (CUDA и CPU).
+
+### Установка из `.exe` (Windows, рекомендуется)
+
+Запустите скачанный `Mockingbird-<ver>-windows-x64-*-setup.exe`. После установки
+ярлык **Mockingbird** появится в меню «Пуск» и на рабочем столе.
+
+> ⚠️ **Windows SmartScreen / «неопознанное приложение»**
+>
+> На сегодняшний день мы **не используем code-signing сертификат**.
+> При первом запуске скачанного `Mockingbird-<ver>-windows-x64-*-setup.exe` Windows 10/11
+> покажет экран:
+>
+> > «Фильтр SmartScreen в Microsoft Defender предотвратил запуск
+> > неопознанного приложения, которое может подвергнуть компьютер риску».
+>
+> Это **нормально и безопасно**: SmartScreen не знает нашего издателя —
+> он **не** нашёл вирус. Чтобы запустить установщик:
+>
+> 1. Нажмите **«Подробнее»** (мелкая ссылка слева в окне SmartScreen).
+> 2. Нажмите появившуюся кнопку **«Выполнить в любом случае»**.
+>
+> Предупреждение появится **один раз** — после клика Windows запоминает
+> решение для всех наших обновлений. Чтобы убрать его навсегда и ускорить
+> репутацию — см. раздел «Подпись и SmartScreen» в самом конце README.
+
+### Запуск из исходников (для разработчиков)
+
 Требуется Python 3.12.
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
-pip install -e ".[dev]"            # + ".[gigaam]" для бэкенда GigaAM
+pip install -e ".[dev]"
 
 mockingbird                        # запуск GUI
 ```
@@ -122,8 +168,8 @@ mockingbird                        # запуск GUI
 > Для Linux нужны системные библиотеки PortAudio:
 > `sudo apt-get install libportaudio2`
 
-Модели whisper и Silero VAD скачиваются в `~/.mockingbird/models` при первом
-запуске.
+Модель whisper скачивается в `~/.mockingbird/models` при первом запуске
+(Silero VAD-модель вшита в пакет и доступна офлайн).
 
 ## Конфигурация
 
@@ -152,8 +198,11 @@ bash scripts/sync_and_build.sh --clean # полная пересборка бе�
 bash scripts/sync_and_build.sh -Cpu   # CPU-only сборка
 ```
 
-Собирается один exe: `mockingbird.exe` (оконный). Модели скачиваются при первом запуске и в дистрибутив
-не включаются.
+Собирается один exe: `mockingbird.exe` (оконный). Добавьте `-Installer` — и
+получите `installer\Mockingbird-<ver>-windows-x64-{cuda,cpu}-setup.exe`. Модель
+whisper скачивается при первом запуске и в дистрибутив не включается (для
+оффлайна — `scripts/build_model_pack.sh`). Публикация релиза —
+`scripts/release.sh` (см. [BUILD.md](BUILD.md) §6).
 
 ## Тесты
 
@@ -181,3 +230,64 @@ src/mockingbird/
 ## Лицензия
 
 MIT — см. [LICENSE](LICENSE).
+
+## Подпись и SmartScreen
+
+Если экран SmartScreen раздражает — есть несколько путей от него избавиться.
+
+### 1. Code-signing сертификат (единственный «настоящий» фикс)
+
+Microsoft доверяет подписанному `.exe` — SmartScreen уходит с первого запуска.
+
+- **Коммерческие CA** (Sectigo/Comodo, DigiCert, GlobalSign): **~$70–300/год**,
+  нужно подтверждение личности/компании. OV/DV набирают репутацию за
+  несколько сотен загрузок; **EV** (Extended Validation, дороже) — даёт
+  репутацию мгновенно.
+- **Self-signed бесплатно не работает**: SmartScreen фильтрует по репутации,
+  а не по наличию подписи. Self-signed = репутация = 0.
+
+После покупки подписать Inno Setup exe и его деинсталлятор:
+
+```bat
+:: Подписать собранный setup.exe (после ISCC)
+signtool sign /fd SHA256 /tr http://timestamp.digicert.com ^
+  "installer\Mockingbird-1.0.0.1-windows-x64-cuda-setup.exe"
+
+:: Опц. — подписать сам mockingbird.exe внутри _internal\
+signtool sign /fd SHA256 /tr http://timestamp.digicert.com ^
+  "dist\mockingbird\mockingbird.exe"
+```
+
+Чтобы подпись попадала в Inno-инсталлятор автоматически, добавьте в
+`scripts/installer.iss`:
+
+```iss
+[Setup]
+SignTool=signtool /fd SHA256 /tr http://timestamp.digicert.com $f
+SignedUninstaller=yes
+```
+
+### 2. Submit exe на Microsoft (бесплатно, но не мгновенно)
+
+Отправьте `Mockingbird-<ver>-windows-x64-*-setup.exe` на ручную проверку Microsoft —
+это ускоряет набор репутации (дни/недели):
+
+- https://www.microsoft.com/en-us/wdsi/filesubmission — нужен Microsoft-аккаунт.
+
+### 3. Опубликовать через GitHub Releases (бесплатно)
+
+GitHub Releases считается «известным каналом» — SmartScreen даёт файлу
+репутацию быстрее, чем прямой download с произвольного сайта. После
+нескольких десятков загрузок предупреждение обычно пропадает у большинства
+пользователей.
+
+### 4. Сценарии
+
+| Сценарий | Решение |
+|---|---|
+| Релиз «для себя и пары знакомых» | README + кнопка «Подробнее → Выполнить» |
+| Небольшая публика (GitHub Releases) | пункты 2 + 3 |
+| Широкая публика / корпоративный дистрибутив | пункт 1 (OV/DV или EV) |
+
+Мы идём по пути 2+3 (бесплатно). Как только у проекта появится
+спонсор/компания — переходим на 1.

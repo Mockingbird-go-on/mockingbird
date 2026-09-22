@@ -34,6 +34,12 @@ _ROOT = _find_project_root(SPECPATH)
 _ENTRY = os.path.join(_ROOT, "src", "mockingbird", "main.py")
 _SRC = os.path.join(_ROOT, "src")
 
+# CPU-only build switch. Set by scripts/build_linux.sh --cpu. On Linux the
+# CUDA stack is linked from the system (RPATH/LD_LIBRARY_PATH), so there is no
+# nested nvidia tree to drop; the flag mainly keeps PyInstaller from following
+# any nvidia-* packages present in the build env.
+_CPU_ONLY = os.environ.get("MOCKINGBIRD_CPU") == "1"
+
 datas = (
     collect_data_files("mockingbird")
     + [(os.path.join(_ROOT, "src", "mockingbird", "sound.mp3"), "mockingbird")]
@@ -43,13 +49,6 @@ datas = (
     + collect_data_files("ctranslate2")
     + collect_data_files("tokenizers")
 )
-
-
-def _collect_optional(name: str):
-    try:
-        return list(collect_dynamic_libs(name))
-    except Exception:
-        return []
 
 
 binaries = (
@@ -73,6 +72,24 @@ hiddenimports = (
     ]
 )
 
+_excludes = [
+    "pyaudiowpatch",
+    # GigaAM leftovers — nothing imports them; keep the bundle lean.
+    "torch",
+    "torchaudio",
+    "torchvision",
+    "transformers",
+    "speechbrain",
+    "pyannote",
+    "hydra",
+    "omegaconf",
+    "matplotlib",
+    "tkinter",
+    "IPython",
+]
+if _CPU_ONLY:
+    _excludes += ["nvidia"]
+
 a = Analysis(
     [_ENTRY],
     pathex=[_SRC],
@@ -81,21 +98,7 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     runtime_hooks=[],
-    excludes=[
-        "pyaudiowpatch",
-        # GigaAM leftovers — nothing imports them; keep the bundle lean.
-        "torch",
-        "torchaudio",
-        "torchvision",
-        "transformers",
-        "speechbrain",
-        "pyannote",
-        "hydra",
-        "omegaconf",
-        "matplotlib",
-        "tkinter",
-        "IPython",
-    ],
+    excludes=_excludes,
     noarchive=False,
 )
 

@@ -131,6 +131,127 @@ def select_compute_type(
     return next((t for t in preference if t in supported_set), choice or "float32")
 
 
+class _DownloadCancelled(Exception):
+    """Raised inside an in-flight model download to abort it.
+
+    huggingface_hub has no cancellation API: ``snapshot_download`` blocks
+    until the whole repo is fetched. We abort it from the one hook that fires
+    during the byte transfer — the per-file tqdm progress bar's ``update`` —
+    via :func:`_install_cancel_hook`, then translate it to a user-facing
+    RuntimeError in :func:`resolve_model_path`.
+    """
+
+
+def _install_cancel_hook(cancel_event):
+    """Make huggingface_hub's per-file progress bars abort on cancel.
+
+    Monitors ``cancel_event`` from inside the tqdm ``update()`` that the hub
+    calls on every downloaded chunk (~10 MB). Without this, clicking Cancel
+    during the single 1.6 GB ``model.bin`` transfer does nothing until the
+    whole download finishes — the GUI overlay sits on «Отмена…» for minutes.
+
+    Returns a zero-arg callable that restores the original function. No-op
+    (returns a no-op) on hub versions without the private seam, so the caller
+    degrades to the between-retry cancel check.
+    """
+    if cancel_event is None:
+        return lambda: None
+    try:
+        from huggingface_hub import file_download as _fd
+    except Exception:  # noqa: BLE001 - hub optional
+        return lambda: None
+    orig = getattr(_fd, "_get_progress_bar_context", None)
+    if orig is None:
+        return lambda: None
+
+    class _CancelBar:
+        """tqdm proxy whose ``update`` raises once cancel_event is set."""
+
+        def __init__(self, bar):
+            self._bar = bar
+
+        def __getattr__(self, name):
+            return getattr(self._bar, name)
+
+        def update(self, n=1):
+            if cancel_event.is_set():
+                raise _DownloadCancelled()
+            return self._bar.update(n)
+
+        def update_progress(self, n=1):
+            # huggingface_hub >= 1.x xet path uses update_progress().
+            if cancel_event.is_set():
+                raise _DownloadCancelled()
+            fn = getattr(self._bar, "update_progress", None)
+            if fn is not None:
+                return fn(n)
+            return self._bar.update(n)
+
+    class _CancelContext:
+        def __init__(self, cm):
+            self._cm = cm
+
+        def __enter__(self):
+            return _CancelBar(self._cm.__enter__())
+
+        def __exit__(self, *exc):
+            return self._cm.__exit__(*exc)
+
+    def _patched(*args, **kwargs):
+        cm = orig(*args, **kwargs)
+        # Only wrap self-created bars (no shared _tqdm_bar). The aggregate
+        # "Fetching N files" bar is our own _ProgressTqdm and checks cancel
+        # itself.
+        if kwargs.get("_tqdm_bar") is None:
+            return _CancelContext(cm)
+        return cm
+
+    try:
+        _fd._get_progress_bar_context = _patched
+    except Exception:  # noqa: BLE001
+        return lambda: None
+
+    def _restore():
+        try:
+            _fd._get_progress_bar_context = orig
+        except Exception as exc:  # noqa: BLE001
+            log.debug("could not restore hf progress-bar hook: %s", exc)
+
+    return _restore
+
+
+def _force_http_transport():
+    """Temporarily disable the hf_xet (Rust) transfer path.
+
+    The default whisper repo stores ``model.bin`` on Xet storage, and the
+    ``hf_xet`` extension **swallows** any exception raised from its progress
+    callback (``let _ = ... .log_error(...)`` in Rust). That makes a Xet
+    transfer impossible to abort from Python — Cancel would hang until the
+    whole 1.6 GB finished. The plain-HTTP path calls our progress ``update()``
+    directly in its Python chunk loop, so raising there aborts immediately.
+    Disabling Xet trades a little throughput for a working Cancel.
+
+    Returns a zero-arg callable that restores the previous setting.
+    """
+    try:
+        from huggingface_hub import constants
+    except Exception:  # noqa: BLE001 - hub optional
+        return lambda: None
+    prev = getattr(constants, "HF_HUB_DISABLE_XET", False)
+    try:
+        constants.HF_HUB_DISABLE_XET = True
+    except Exception:  # noqa: BLE001
+        return lambda: None
+
+    def _restore():
+        try:
+            constants.HF_HUB_DISABLE_XET = prev
+        except Exception as exc:  # noqa: BLE001
+            log.debug("could not restore HF_HUB_DISABLE_XET: %s", exc)
+
+    return _restore
+
+
 class _DownloadReporter:
     """Aggregates per-file download progress into one overall percentage.
 
@@ -500,47 +621,68 @@ def resolve_model_path(cfg: WhisperConfig, progress_cb=None, cancel_event=None) 
         reporter = _DownloadReporter(progress_cb)
         kwargs["tqdm_class"] = _progress_tqdm_class(reporter)
     last_exc: Exception | None = None
-    for attempt in range(1, 4):
-        if cancel_event is not None and cancel_event.is_set():
-            raise RuntimeError("whisper model download cancelled by user")
-        try:
-            path = snapshot_download(repo_id, **kwargs)
-            break
-        except TypeError:
-            # Older huggingface_hub may not accept tqdm_class/etag_timeout.
-            kwargs.pop("tqdm_class", None)
-            kwargs.pop("etag_timeout", None)
-            kwargs.pop("resume_download", None)
-            path = snapshot_download(repo_id, **kwargs)
-            break
-        except Exception as exc:  # noqa: BLE001
-            last_exc = exc
-            log.warning(
-                "whisper model download attempt %d failed: %s", attempt, exc
-            )
-            if "CERTIFICATE_VERIFY_FAILED" in str(exc) or (
-                isinstance(exc, Exception)
-                and "certificate verify failed" in str(exc).lower()
-            ):
-                log.error(
-                    "whisper model download blocked by TLS interception "
-                    "(self-signed certificate in certificate chain). This is "
-                    "usually a corporate proxy / antivirus MITM. Workarounds: "
-                    "disable SSL inspection for huggingface.co, or download "
-                    "the model on another machine and copy it to the models "
-                    "directory."
-                )
-            if attempt < 3 and cancel_event is not None and cancel_event.is_set():
+    # Abort the byte transfer itself (not just between retries) when the user
+    # clicks Cancel. No-op on hub versions lacking the private seam.
+    restore_cancel = _install_cancel_hook(cancel_event)
+    # The Xet (Rust) transport swallows progress-callback exceptions, so a
+    # Xet download cannot be aborted from Python. Fall back to the plain-HTTP
+    # path (whose chunk loop honours the callback) only when we actually need
+    # cancellability — otherwise keep the faster Xet transfer.
+    restore_xet = _force_http_transport() if cancel_event is not None else (lambda: None)
+    try:
+        for attempt in range(1, 4):
+            if cancel_event is not None and cancel_event.is_set():
+                raise RuntimeError("whisper model download cancelled by user")
+            try:
+                path = snapshot_download(repo_id, **kwargs)
+                break
+            except _DownloadCancelled as exc:
+                log.info("whisper model download cancelled mid-transfer by user")
                 raise RuntimeError(
                     "whisper model download cancelled by user"
                 ) from exc
-            if attempt < 3:
-                # Backoff before the next retry (1s, 5s).
-                time.sleep(1.0 if attempt == 1 else 5.0)
-    else:
-        raise RuntimeError(
-            f"whisper model download failed after retries: {last_exc}"
-        ) from last_exc
+            except TypeError:
+                # Older huggingface_hub may not accept tqdm_class/etag_timeout.
+                kwargs.pop("tqdm_class", None)
+                kwargs.pop("etag_timeout", None)
+                kwargs.pop("resume_download", None)
+                path = snapshot_download(repo_id, **kwargs)
+                break
+            except Exception as exc:
+                # hf_xet is a Rust extension: our _DownloadCancelled raised
+                # from the progress callback may come back wrapped. Treat any
+                # failure while the cancel flag is set as a user cancel.
+                if cancel_event is not None and cancel_event.is_set():
+                    log.info("whisper model download cancelled mid-transfer by user")
+                    raise RuntimeError(
+                        "whisper model download cancelled by user"
+                    ) from exc
+                last_exc = exc
+                log.warning(
+                    "whisper model download attempt %d failed: %s", attempt, exc
+                )
+                if "CERTIFICATE_VERIFY_FAILED" in str(exc) or (
+                    isinstance(exc, Exception)
+                    and "certificate verify failed" in str(exc).lower()
+                ):
+                    log.error(
+                        "whisper model download blocked by TLS interception "
+                        "(self-signed certificate in certificate chain). This is "
+                        "usually a corporate proxy / antivirus MITM. Workarounds: "
+                        "disable SSL inspection for huggingface.co, or download "
+                        "the model on another machine and copy it to the models "
+                        "directory."
+                    )
+                if attempt < 3:
+                    # Backoff before the next retry (1s, 5s).
+                    time.sleep(1.0 if attempt == 1 else 5.0)
+        else:
+            raise RuntimeError(
+                f"whisper model download failed after retries: {last_exc}"
+            ) from last_exc
+    finally:
+        restore_cancel()
+        restore_xet()
     problem = _model_dir_problem(path)
     if problem is not None:
         raise RuntimeError(f"downloaded whisper model at {path} is corrupted: {problem}")
@@ -596,18 +738,21 @@ class WhisperEngine:
         self.on_cuda_fallback = None
         self.on_progress = None
         self.on_speaker_identify = None  # callable(audio, sample_rate) -> str
-        # Set by the UI to abort an in-flight model download (Cancel in the
-        # download overlay); checked by resolve_model_path between retries.
-        self._cancel_download: threading.Event | None = None
+        # Aborts an in-flight model download (Cancel in the download overlay).
+        # Created EAGERLY: the download thread captures this exact object when
+        # it starts. request_cancel_download() must set THIS event — creating a
+        # fresh one there (the old behaviour) left the running transfer blind
+        # to Cancel, so the overlay hung on «Отмена…» for the whole 1.6 GB.
+        self._cancel_download = threading.Event()
 
     def request_cancel_download(self) -> None:
         """Ask an in-flight model download to stop (idempotent, thread-safe)."""
-        if self._cancel_download is None:
-            self._cancel_download = threading.Event()
         self._cancel_download.set()
 
     def clear_cancel_download(self) -> None:
-        self._cancel_download = None
+        # Reset the SAME event object (never replace it): a download thread may
+        # hold a reference to it; replacing would make a later Cancel invisible.
+        self._cancel_download.clear()
 
     def set_text_matcher(self, matcher) -> None:
         """Inject a PhoneticMatcher for post-correction of transcripts."""
@@ -800,6 +945,10 @@ class WhisperEngine:
             if self.on_progress:
                 self.on_progress(message, percent)
 
+        # Clear any cancel flag left over from a previous cancelled attempt:
+        # the Event is persistent (never replaced), so a stale set() would
+        # abort this fresh download instantly.
+        self._cancel_download.clear()
         report(f"Loading {self._cfg.model_size} whisper model…", -1.0)
         model_path = resolve_model_path(
             self._cfg, progress_cb=report, cancel_event=self._cancel_download
@@ -860,7 +1009,9 @@ class WhisperEngine:
                 log.warning("whisper: model.bin missing/corrupt, re-downloading...")
                 report("Модель повреждена, повторная загрузка…", -1.0)
                 _remove_snapshot(model_path)
-                model_path = resolve_model_path(self._cfg, report)
+                model_path = resolve_model_path(
+                    self._cfg, report, cancel_event=self._cancel_download
+                )
                 self._model = WhisperModel(
                     model_path,
                     device=device,

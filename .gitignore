@@ -37,10 +37,22 @@ RAG_DEVOPS_FIX_PLAN.md
 REMOVE_SELF_HIGHLIGHT_PLAN.md
 SIMPLE_MODE_PLAN.md
 STABILITY_PLAN.md
+STT_ACCURACY_PLAN.md
+TELEGRAM_NOTIFY_PLAN.md
 *_PLAN.md
+*_plan.md
+call_advocate_plan.md
+GLOSSARY_INTEGRATION.md
+QUALITY_ROADMAP.md
+REGENERATE_BUTTON_IMPLEMENTATION.md
+STT_PATTERNS.md
 
 # ─── Прочее ─────────────────────────────────────────────
 .cache/
 
-# Offline install bundles (huge; rebuilt from scripts/build_offline_bundle.sh)
-installer/Mockingbird-OfflineBundle-*.zip
+# ─── Артефакты сборки релиза (огромные; пересобираются скриптами) ─────
+# installer/ — только output (setup.exe, model.zip, offline bundle), в git не нужен.
+# Model packs + installers (huge; rebuilt from scripts/build_model_pack.sh)
+/installer/
+installer/Mockingbird-whisper-*-model.zip
+installer/Mockingbird-*-setup.exe

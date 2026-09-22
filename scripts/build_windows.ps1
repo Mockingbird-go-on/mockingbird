@@ -13,6 +13,10 @@
 # GPU (CUDA) is the DEFAULT build and needs an NVIDIA driver >= 550 and a
 # CUDA-capable GPU. Pass -Cpu to produce a smaller CPU-only exe instead.
 param(
+    # CPU-only build: skip the nvidia CUDA stack entirely (no pip install of
+    # the pinned nvidia-* wheels, no CUDA DLLs bundled). The output drops from
+    # ~4.1 GB to a few hundred MB but whisper runs on CPU (slower).
+    [switch]$Cpu,
     # Also build the Inno Setup installer (requires ISCC.exe on PATH or in
     # the default Program Files location). The PyInstaller dist\ outputs
     # must already exist - this script builds them first anyway.
@@ -66,38 +70,51 @@ $ErrorActionPreference = "Continue"
 # slows the PyInstaller graph analysis (its hooks still run) for zero
 # benefit. Best-effort removal - failures (not installed / locked) are fine.
 python -m pip uninstall -y torch torchaudio torchvision 2>$null | Out-Null
-python -m pip uninstall -y nvidia-cudnn-cu12 nvidia-cublas-cu12 nvidia-cuda-nvrtc-cu12 nvidia-cuda-runtime-cu12 nvidia-cufft-cu12 nvidia-curand-cu12 2>$null | Out-Null
-$ErrorActionPreference = $prevEAP
-Write-Host "(nvidia packages reset - reinstalling the pinned 12.4 line)"
-
-# cuDNN 9 + the CUDA runtime DLLs ctranslate2 needs for float16/int8 on GPU.
-# IMPORTANT: pin the nvidia-* stack to CUDA 12.4 - without torch in the env
-# (removed with GigaAM) pip resolves nvidia-cuda-nvrtc-cu12 to the NEWEST
-# release (12.9), whose DLLs require driver >= 575. On a 550-era driver the
-# DLL loads but fails to initialize (WinError 5) and ctranslate2 dies with
-# "CUDA unavailable". Same 12.4 line the old torch cu124 install enforced.
-Invoke-Pip -Arguments @(
-    "install",
-    "nvidia-cudnn-cu12==9.1.0.70",
-    "nvidia-cublas-cu12==12.4.5.8",
-    "nvidia-cuda-nvrtc-cu12==12.4.127",
-    "nvidia-cuda-runtime-cu12==12.4.127",
-    "nvidia-cufft-cu12==11.2.1.3",
-    "nvidia-curand-cu12==10.3.5.147"
-)
-# faster-whisper's ctranslate2 wheel from PyPI already ships CUDA 12 GPU
-# support on Windows; there is no separate -cu12 package to install.
-# Verify the installed binary can see the GPU so GPU inference really works.
-$ct2Devices = python -c "import ctranslate2; print(ctranslate2.get_cuda_device_count())" 2>$null
-if ($LASTEXITCODE -ne 0 -or $ct2Devices -notmatch '^\d+$') {
-    Write-Host "WARNING: could not probe ctranslate2 CUDA support (is faster-whisper installed?)."
-    Write-Host "        faster-whisper will fall back to CPU."
-} elseif ([int]$ct2Devices -eq 0) {
-    Write-Host "NOTE: ctranslate2 reports 0 CUDA devices on this machine."
-    Write-Host "      faster-whisper will run on CPU here."
-} else {
-    Write-Host "ctranslate2 sees $ct2Devices CUDA device(s); faster-whisper GPU inference enabled."
+if (-not $Cpu) {
+    # Only touch the nvidia stack on GPU builds: on -Cpu we neither install
+    # nor remove it (the spec excludes it via MOCKINGBIRD_CPU).
+    python -m pip uninstall -y nvidia-cudnn-cu12 nvidia-cublas-cu12 nvidia-cuda-nvrtc-cu12 nvidia-cuda-runtime-cu12 nvidia-cufft-cu12 nvidia-curand-cu12 2>$null | Out-Null
 }
+$ErrorActionPreference = $prevEAP
+
+if ($Cpu) {
+    Write-Host "(CPU-only build: skipping the nvidia CUDA stack)"
+} else {
+    Write-Host "(nvidia packages reset - reinstalling the pinned 12.4 line)"
+
+    # cuDNN 9 + the CUDA runtime DLLs ctranslate2 needs for float16/int8 on GPU.
+    # IMPORTANT: pin the nvidia-* stack to CUDA 12.4 - without torch in the env
+    # (removed with GigaAM) pip resolves nvidia-cuda-nvrtc-cu12 to the NEWEST
+    # release (12.9), whose DLLs require driver >= 575. On a 550-era driver the
+    # DLL loads but fails to initialize (WinError 5) and ctranslate2 dies with
+    # "CUDA unavailable". Same 12.4 line the old torch cu124 install enforced.
+    Invoke-Pip -Arguments @(
+        "install",
+        "nvidia-cudnn-cu12==9.1.0.70",
+        "nvidia-cublas-cu12==12.4.5.8",
+        "nvidia-cuda-nvrtc-cu12==12.4.127",
+        "nvidia-cuda-runtime-cu12==12.4.127",
+        "nvidia-cufft-cu12==11.2.1.3",
+        "nvidia-curand-cu12==10.3.5.147"
+    )
+    # faster-whisper's ctranslate2 wheel from PyPI already ships CUDA 12 GPU
+    # support on Windows; there is no separate -cu12 package to install.
+    # Verify the installed binary can see the GPU so GPU inference really works.
+    $ct2Devices = python -c "import ctranslate2; print(ctranslate2.get_cuda_device_count())" 2>$null
+    if ($LASTEXITCODE -ne 0 -or $ct2Devices -notmatch '^\d+$') {
+        Write-Host "WARNING: could not probe ctranslate2 CUDA support (is faster-whisper installed?)."
+        Write-Host "        faster-whisper will fall back to CPU."
+    } elseif ([int]$ct2Devices -eq 0) {
+        Write-Host "NOTE: ctranslate2 reports 0 CUDA devices on this machine."
+        Write-Host "      faster-whisper will run on CPU here."
+    } else {
+        Write-Host "ctranslate2 sees $ct2Devices CUDA device(s); faster-whisper GPU inference enabled."
+    }
+}
+
+# The spec reads MOCKINGBIRD_CPU: PyInstaller does not forward custom CLI
+# args to the spec. 1 = CPU-only bundle, 0/unset = CUDA bundle.
+$env:MOCKINGBIRD_CPU = if ($Cpu) { "1" } else { "0" }
 
 # Whisper models are downloaded at first run, not bundled.
 $pyiArgs = @("--noconfirm")
@@ -153,10 +170,15 @@ if ($Installer) {
     } else { $iscc = $iscc.Source }
 
     New-Item -ItemType Directory -Force -Path "installer" | Out-Null
-    & $iscc "scripts\installer.iss"
+    # Bake the variant into the output filename so the CUDA and CPU installers
+    # coexist (installer.iss turns /DBuildVariant=cpu|cuda into the
+    # "windows-x64-<variant>-setup" suffix). Without this both builds wrote
+    # Mockingbird-Setup-<ver>.exe and the second overwrote the first.
+    $variant = if ($Cpu) { "cpu" } else { "cuda" }
+    & $iscc "/DBuildVariant=$variant" "scripts\installer.iss"
     if ($LASTEXITCODE -ne 0) {
         throw "Inno Setup failed with exit code $LASTEXITCODE."
     }
     Write-Host ""
-    Write-Host "Installer complete: installer\"
+    Write-Host "Installer complete: installer\ ($variant variant)"
 }

@@ -9,6 +9,7 @@
 #   bash scripts/sync_and_build.sh            # default build
 #   bash scripts/sync_and_build.sh --no-build # sync only, skip the build
 #   bash scripts/sync_and_build.sh --clean    # full rebuild (drop PyInstaller cache)
+#   bash scripts/sync_and_build.sh --cpu      # CPU-only build (no CUDA stack)
 #
 # Requires: rsync, /mnt/e mounted, Windows Python 3.11+ on the target machine.
 
@@ -35,6 +36,7 @@ for arg in "$@"; do
         --no-build) DO_BUILD=0 ;;
         # translate to the PowerShell switch spelling
         --clean) BUILD_ARGS+=("-Clean") ;;
+        --cpu) BUILD_ARGS+=("-Cpu") ;;
         *) BUILD_ARGS+=("$arg") ;;
     esac
 done

@@ -31,25 +31,23 @@ _ENTRY = os.path.join(_ROOT, "src", "mockingbird", "main.py")
 _SRC = os.path.join(_ROOT, "src")
 _ICON = os.path.join(SPECPATH, "logo_mockingbird.ico")
 
+# CPU-only build switch. Set by scripts/build_windows.ps1 -Cpu (env var, since
+# PyInstaller does not forward custom CLI args to the spec). Drops the whole
+# nvidia CUDA stack (~1.9 GB) from the bundle; ctranslate2 then runs on CPU.
+_CPU_ONLY = os.environ.get("MOCKINGBIRD_CPU") == "1"
+
 datas = (
     collect_data_files("mockingbird")
     + [(os.path.join(SPECPATH, "logo_mockingbird.ico"), "mockingbird")]
     + [(os.path.join(_ROOT, "src", "mockingbird", "sound.mp3"), "mockingbird")]
     + [(os.path.join(_ROOT, "src", "mockingbird", "assets", "icons", "*.svg"),
         os.path.join("mockingbird", "assets", "icons"))]
+    + [(os.path.join(_ROOT, "src", "mockingbird", "assets", "models", "*.onnx"),
+        os.path.join("mockingbird", "assets", "models"))]
     + collect_data_files("faster_whisper")
     + collect_data_files("ctranslate2")
     + collect_data_files("tokenizers")
 )
-
-def _collect_optional(name: str):
-    """Collect dynamic libs for an optional backend package (CUDA-only deps
-    are absent on CPU builds; never fail the whole freeze because of that)."""
-    try:
-        return list(collect_dynamic_libs(name))
-    except Exception:
-        return []
-
 
 def _flat_nvidia_libs(collected):
     """Find the installed nvidia-* wheels and return (src, dest) pairs that
@@ -100,27 +98,19 @@ _base_binaries = (
     collect_dynamic_libs("ctranslate2")
     + collect_dynamic_libs("onnxruntime")
     + collect_dynamic_libs("sentencepiece")
-    # CUDA torch: torch/lib holds c10/torch_cuda/asmjit/fbgemm/OpenMP DLLs.
-    # cuDNN/cuBLAS/etc. live in the nvidia-* wheels and are picked up by
-    # PyInstaller's nvidia hooks; the guarded collections below are a fallback
-    # for any lib the hooks miss on GPU builds (and are no-ops on CPU builds).
-    + _collect_optional("nvidia.cudnn")
-    + _collect_optional("nvidia.cublas")
-    + _collect_optional("nvidia.cufft")
-    + _collect_optional("nvidia.curand")
-    + _collect_optional("nvidia.cusolver")
-    + _collect_optional("nvidia.cusparse")
-    + _collect_optional("nvidia.cuda_runtime")
 )
-binaries = (
-    _base_binaries
-    # cuDNN/cuBLAS sub-DLLs (cudnn_engines_*, cudnn_graph*, cublas*, ...) must
-    # sit NEXT to ctranslate2.dll in a directory the Windows loader searches
-    # (_internal/ctranslate2/); the nvidia/<lib>/bin/ wheel layout is invisible
-    # to the loader, cuDNN then fails to load and whisper silently falls back
-    # to float32. Locate the nvidia wheels on disk and add a FLAT copy.
-    + _flat_nvidia_libs(_base_binaries)
-)
+
+# CUDA: cuDNN/cuBLAS/cuFFT/cuRAND sub-DLLs (cudnn_engines_*, cudnn_graph*,
+# cublas*, ...) must sit NEXT to ctranslate2.dll in a directory the Windows
+# loader searches (_internal/ctranslate2/). The nvidia/<lib>/bin/ wheel layout
+# is invisible to the loader, so cuDNN fails to load and whisper silently falls
+# back to float32. We therefore ship ONE flat copy and do NOT collect the
+# nested nvidia tree (that used to duplicate every DLL, ~1.9 GB). Skipped
+# entirely on CPU builds.
+if _CPU_ONLY:
+    binaries = _base_binaries
+else:
+    binaries = _base_binaries + _flat_nvidia_libs(_base_binaries)
 
 hiddenimports = (
     collect_submodules("mockingbird")
@@ -135,6 +125,27 @@ hiddenimports = (
     + ["PySide6.QtSvg", "PySide6.QtMultimedia"]
 )
 
+_excludes = [
+    # GigaAM leftovers in the build env (installed as user packages):
+    # nothing in mockingbird imports them anymore, but PyInstaller still
+    # follows them through transitive deps and ships ~2 GB of torch.
+    "torch",
+    "torchaudio",
+    "torchvision",
+    "transformers",
+    "speechbrain",
+    "pyannote",
+    "hydra",
+    "omegaconf",
+    "matplotlib",
+    "tkinter",
+    "IPython",
+]
+if _CPU_ONLY:
+    # No CUDA runtime in a CPU build. The nvidia-* wheels may still be
+    # installed in the build env; keep PyInstaller from following them.
+    _excludes += ["nvidia"]
+
 a = Analysis(
     [_ENTRY],
     pathex=[_SRC],
@@ -143,22 +154,7 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     runtime_hooks=[],
-    excludes=[
-        # GigaAM leftovers in the build env (installed as user packages):
-        # nothing in mockingbird imports them anymore, but PyInstaller still
-        # follows them through transitive deps and ships ~2 GB of torch.
-        "torch",
-        "torchaudio",
-        "torchvision",
-        "transformers",
-        "speechbrain",
-        "pyannote",
-        "hydra",
-        "omegaconf",
-        "matplotlib",
-        "tkinter",
-        "IPython",
-    ],
+    excludes=_excludes,
     noarchive=False,
 )
 

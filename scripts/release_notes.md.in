@@ -1,0 +1,61 @@
+# Mockingbird __VERSION__
+
+## Какую сборку скачать?
+
+| Ваша ситуация | Файл |
+|---|---|
+| **NVIDIA GPU** (или не уверены) | `Mockingbird-__VERSION__-windows-x64-cuda-setup.exe` — работает и на GPU, и на CPU (авто-fallback) |
+| **Нет NVIDIA** / мало места / медленный интернет | `Mockingbird-__VERSION__-windows-x64-cpu-setup.exe` — лёгкая, только CPU |
+| **Linux** | `Mockingbird-__VERSION__-linux-x86_64.AppImage` (или `.deb`) |
+| **Машина без интернета** (или прокси режет huggingface.co) | инсталлятор **+** [модель whisper](__MODELS_URL__) (см. ниже) |
+
+Модель whisper (~1.6 ГБ) скачивается при **первом запуске** приложения. Если
+интернета нет — скачайте отдельно пак модели:
+**[`Mockingbird-whisper-large-v3-turbo-model.zip`](__MODELS_URL__)** (~1.55 ГБ).
+Распакуйте так, чтобы папка `cache/` лежала **рядом** с инсталлятором, и
+запустите установку — модель скопируется автоматически. Пак подходит к обеим
+сборкам (CUDA и CPU).
+
+> ⚠️ Windows SmartScreen может показать «неопознанное приложение» — мы пока
+> не используем code-signing. Нажмите **«Подробнее → Выполнить в любом случае»**
+> (один раз). Подробнее — в README.
+
+## Контрольные суммы
+
+Скачайте `SHA256SUMS.txt` и проверьте:
+
+```bash
+sha256sum -c SHA256SUMS.txt          # Linux
+certutil -hashfile <файл> SHA256     # Windows
+```
+
+## Что нового
+
+<!-- CHANGELOG: опишите изменения этого релиза -->
+
+## Установка (Windows)
+
+1. Скачайте подходящий `…-setup.exe` (см. таблицу выше).
+2. Запустите → Next… Ярлыки: меню «Пуск» + рабочий стол (опционально).
+3. Ставится в `%ProgramFiles%\Mockingbird` (или per-user без админ-прав).
+
+**Удаление**: «Параметры → Приложения → Mockingbird → Удалить». Мастер
+спросит про пользовательские данные (`%USERPROFILE%\.mockingbird`) — по
+умолчанию они **сохраняются**.
+
+## Установка (Linux)
+
+```bash
+chmod +x Mockingbird-__VERSION__-linux-x86_64.AppImage
+./Mockingbird-__VERSION__-linux-x86_64.AppImage          # AppImage
+
+# —или—
+sudo apt install ./Mockingbird-__VERSION__-linux-amd64.deb
+mockingbird
+```
+
+Нужен `libfuse2` (AppImage) и PulseAudio/PipeWire для loopback-режима.
+
+---
+
+Полная документация и сборка из исходников — в [README](README.md) и [BUILD.md](BUILD.md).

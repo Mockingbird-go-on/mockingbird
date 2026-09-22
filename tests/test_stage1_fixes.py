@@ -141,11 +141,29 @@ def test_ensure_vad_model_uses_short_timeout(monkeypatch, tmp_path):
     monkeypatch.setattr(vad_mod, "SILERO_VAD_URL", "http://x/y.onnx")
     monkeypatch.setenv("MOCKINGBIRD_HOME", str(tmp_path))
     monkeypatch.setattr(vad_mod.urllib.request, "urlopen", fake_urlopen)
+    # Force the network path (a bundled asset would otherwise short-circuit it).
+    monkeypatch.setattr(vad_mod, "_install_bundled_vad", lambda target: False)
     # app_dir is cached via lru? verify by direct call
     path = vad_mod.ensure_vad_model(None)
     assert captured["timeout"] is not None and captured["timeout"] <= 15
     assert Path(path).exists()
     assert Path(path).read_bytes() == b"fake-onnx"
+
+
+def test_ensure_vad_model_uses_bundled_asset_offline(monkeypatch, tmp_path):
+    """Offline install: the VAD model ships inside the package, so a fresh
+    machine (empty user cache, no network) must NOT hit GitHub."""
+    from mockingbird.audio import vad as vad_mod
+
+    monkeypatch.setenv("MOCKINGBIRD_HOME", str(tmp_path))
+
+    def boom(*a, **kw):
+        raise AssertionError("network must not be touched when the bundled model exists")
+
+    monkeypatch.setattr(vad_mod.urllib.request, "urlopen", boom)
+    path = vad_mod.ensure_vad_model(None)
+    assert Path(path) == vad_mod.app_dir() / "models" / "silero_vad.onnx"
+    assert Path(path).exists() and Path(path).stat().st_size > 100_000
 
 
 def test_ensure_vad_model_cached_no_network(monkeypatch, tmp_path):

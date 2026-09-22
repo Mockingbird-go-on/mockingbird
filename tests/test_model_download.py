@@ -24,7 +24,11 @@ def _make_cfg(tmp_path) -> WhisperConfig:
 
 
 def test_retries_three_times_on_persistent_failure(monkeypatch, tmp_path):
-    """Three attempts (1 + 2 retries) when every call raises."""
+    """Three download attempts (1 + 2 retries) when every call raises.
+
+    The cache probe (local_files_only=True) also calls snapshot_download, so
+    count only the real download attempts (those carrying resume_download).
+    """
     pytest.importorskip("huggingface_hub")
     import huggingface_hub
 
@@ -41,8 +45,9 @@ def test_retries_three_times_on_persistent_failure(monkeypatch, tmp_path):
 
     with pytest.raises(RuntimeError, match="failed after retries"):
         resolve_model_path(_make_cfg(tmp_path))
-    assert len(attempts) == 3, attempts
-    assert all(a.get("resume_download") is True for a in attempts), attempts
+    downloads = [a for a in attempts if "resume_download" in a]
+    assert len(downloads) == 3, attempts
+    assert all(a.get("resume_download") is True for a in downloads), attempts
 
 
 def test_cancel_event_aborts_early(monkeypatch, tmp_path):
@@ -109,13 +114,94 @@ def test_normalize_repo_id_known_overrides():
 
 
 def test_whisper_engine_cancel_helpers():
-    """request_cancel_download / clear_cancel_download are idempotent + safe."""
+    """request_cancel_download / clear_cancel_download are idempotent + safe.
+
+    The event is created EAGERLY in __init__ and must NEVER be replaced:
+    the download thread holds a reference to the object, so a Cancel that
+    creates a new Event would be invisible to the running transfer (the
+    original Cancel-hang bug). clear() resets it in place.
+    """
     cfg = WhisperConfig(model_size="tiny")
     eng = WhisperEngine(cfg)
-    assert eng._cancel_download is None
+    ev = eng._cancel_download
+    assert ev is not None and not ev.is_set()
     eng.request_cancel_download()
-    assert eng._cancel_download is not None and eng._cancel_download.is_set()
-    # Calling twice stays set (idempotent).
+    assert eng._cancel_download is ev and ev.is_set()
+    # Calling twice stays set (idempotent) and keeps the same object.
     eng.request_cancel_download()
+    assert eng._cancel_download is ev and ev.is_set()
     eng.clear_cancel_download()
-    assert eng._cancel_download is None
+    # Same object, now unset (never replaced — see docstring).
+    assert eng._cancel_download is ev and not ev.is_set()
+
+
+def test_cancel_aborts_mid_transfer_via_progress_hook(monkeypatch, tmp_path):
+    """REGRESSION (Cancel-hang): clicking Cancel must abort an in-flight
+    download, not just wait for the next retry. huggingface_hub has no
+    cancellation API, so _install_cancel_hook wraps the per-file progress
+    bar's update() to raise _DownloadCancelled once the event is set — the
+    hook the real 1.6 GB model.bin transfer floods with update() calls.
+    """
+    pytest.importorskip("huggingface_hub")
+    from huggingface_hub import file_download
+
+    cancel = threading.Event()
+
+    import mockingbird.stt.whisper_engine as we
+
+    restore = we._install_cancel_hook(cancel)
+    try:
+        cm = file_download._get_progress_bar_context(
+            desc="model.bin", log_level=0, total=1
+        )
+        with cm as progress:
+            # Before Cancel: updates flow through to the real bar.
+            progress.update(1)
+            # User clicks Cancel; the NEXT chunk must abort the transfer.
+            cancel.set()
+            with pytest.raises(we._DownloadCancelled):
+                progress.update(1)
+    finally:
+        restore()
+    # The hook must be removed after restore() so unrelated code is untouched.
+    assert file_download._get_progress_bar_context.__name__ != "_patched"
+
+
+def test_force_http_transport_disables_and_restores_xet():
+    """The whisper repo's model.bin lives on Xet storage, whose Rust
+    progress callback swallows exceptions — an uncancellable transfer. The
+    download path must force the plain-HTTP transport so Cancel works, then
+    restore the previous setting afterwards."""
+    pytest.importorskip("huggingface_hub")
+    from huggingface_hub import constants
+
+    import mockingbird.stt.whisper_engine as we
+
+    prev = constants.HF_HUB_DISABLE_XET
+    restore = we._force_http_transport()
+    try:
+        assert constants.HF_HUB_DISABLE_XET is True
+    finally:
+        restore()
+    assert constants.HF_HUB_DISABLE_XET == prev
+
+
+def test_cancel_event_aborts_before_retry(monkeypatch, tmp_path):
+    """If the progress hook cannot fire (cancel set between attempts), the
+    loop-level check still raises a user-facing cancellation."""
+    pytest.importorskip("huggingface_hub")
+    import huggingface_hub
+
+    cancel = threading.Event()
+
+    def fake_snapshot(*args, **kwargs):
+        cancel.set()
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot)
+    import mockingbird.stt.whisper_engine as we
+
+    monkeypatch.setattr(we.time, "sleep", lambda _: None)
+
+    with pytest.raises(RuntimeError, match="cancelled by user"):
+        resolve_model_path(_make_cfg(tmp_path), cancel_event=cancel)

@@ -31,6 +31,10 @@ VERSION="$(PYTHONPATH=src python -c 'from mockingbird import __version__; print(
 echo "== Mockingbird Linux build v$VERSION =="
 
 # --- 1. PyInstaller ----------------------------------------------------------
+# CPU_ONLY is forwarded to the spec via MOCKINGBIRD_CPU (PyInstaller does not
+# pass custom CLI args to the spec). On Linux the CUDA libs come from the
+# system, so the flag mainly excludes any nvidia-* packages in the build env.
+export MOCKINGBIRD_CPU=$CPU_ONLY
 python -m PyInstaller --clean --noconfirm scripts/mockingbird_linux.spec
 test -x dist/mockingbird/mockingbird || { echo "PyInstaller produced no executable"; exit 1; }
 
