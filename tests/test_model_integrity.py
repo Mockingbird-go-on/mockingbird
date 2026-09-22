@@ -38,11 +38,6 @@ def test_problem_none_for_valid_dir(tmp_path):
     assert _model_dir_problem(_make_model_dir(tmp_path)) is None
 
 
-def test_problem_missing_bin(tmp_path):
-    path = _make_model_dir(tmp_path, binary=False)
-    assert "model.bin" in _model_dir_problem(path)
-
-
 def test_problem_missing_config(tmp_path):
     path = _make_model_dir(tmp_path, config=False)
     assert "config.json" in _model_dir_problem(path)

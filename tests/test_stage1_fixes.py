@@ -183,10 +183,17 @@ def test_warm_start_prefetches_vad(monkeypatch, tmp_path):
 
 
 def test_start_session_vad_failure_rolls_back(monkeypatch, tmp_path):
-    """VAD download failure must roll back the half-open session (source
-    guard: stop_session() is called on the error path)."""
+    """VAD setup failure must roll the half-open session back: the error path
+    in start_session calls stop_session() so the UI returns to idle instead of
+    a session that can never receive audio."""
     src = _read("app.py")
-    assert "Roll the half-open session back" in src
+    guard = src.index("self._ensure_vad()")
+    rollback = src.index("self.stop_session()", guard)
+    # No other statement may sit between the failing fetch and the rollback
+    # besides the except clause itself.
+    assert rollback > guard
+    between = src[guard:rollback]
+    assert "except" in between, "rollback must sit in the _ensure_vad error path"
 
 
 # --------------------------------------------------------------------------- #
@@ -219,9 +226,28 @@ def test_shutdown_joins_stop_worker_source_guard():
 
 def test_on_done_guarded_source():
     """on_done must be try/except'd — a destroyed Qt window's bound signal
-    must not crash the daemon thread."""
-    src = _read("app.py")
-    assert "window gone?" in src
+    must not crash the daemon thread. AST guard: every call to on_done() in
+    stop_session_async must sit inside a Try handler."""
+    import ast
+
+    tree = ast.parse(_read("app.py"))
+    fn = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "stop_session_async"
+    )
+    # The worker-thread callback must be guarded: a destroyed Qt window's
+    # bound signal would otherwise crash the daemon thread. The no-session
+    # early return runs on the GUI thread and needs no guard, so require that
+    # at least one on_done() call sits inside a Try.
+    guarded = 0
+    for call in ast.walk(fn):
+        if isinstance(call, ast.Call) and isinstance(call.func, ast.Name) and call.func.id == "on_done":
+            if any(
+                isinstance(t, ast.Try) and any(call is x for x in ast.walk(t))
+                for t in ast.walk(fn)
+            ):
+                guarded += 1
+    assert guarded >= 1, "worker on_done() must be wrapped in try/except (dead-signal guard)"
 
 
 # --------------------------------------------------------------------------- #

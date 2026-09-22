@@ -23,8 +23,27 @@ def _read(rel: str) -> str:
 # 2.1 — segment-state race
 # --------------------------------------------------------------------------- #
 def test_finalize_snapshots_segment_state_under_lock():
+    """_finalize must read _rolling/_segment_id under the lock (they are
+    mutated by the audio-callback thread via start_segment). Behavioural
+    proxy: the fixture-free source must reference the lock around the copy."""
+    import ast
+
     src = _read("stt/whisper_engine.py")
-    assert "Snapshot the segment state under the lock" in src
+    tree = ast.parse(src)
+    fn = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_finalize"
+    )
+    withs = [
+        w for w in ast.walk(fn)
+        if isinstance(w, ast.With)
+        and any(
+            isinstance(item.context_expr, ast.Attribute)
+            and item.context_expr.attr == "_lock"
+            for item in w.items
+        )
+    ]
+    assert withs, "_finalize must snapshot segment state under self._lock"
 
 
 def test_cleanup_segment_holds_lock():
