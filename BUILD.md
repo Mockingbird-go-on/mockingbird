@@ -68,7 +68,7 @@ nvrtc 12.9, чьи DLL требуют драйвер ≥575 — на драйв�
 |---|---|
 | (нет) | Инкрементальная сборка (~1–2 мин) с CUDA-поддержкой |
 | `-Cpu` | CPU-only сборка: не ставит nvidia-стек и не кладёт CUDA-DLL в бандл (dist ~200–300 МБ вместо ~2.2 ГБ; whisper на CPU, медленнее) |
-| `-Installer` | дополнительно собрать `installer\Mockingbird-Setup-<ver>.exe` через Inno Setup |
+| `-Installer` | дополнительно собрать `installer\Mockingbird-<ver>-windows-x64-<variant>-setup.exe` через Inno Setup |
 | `-Clean` | полная пересборка без кэша PyInstaller (~6–8 мин); нужна после смены версий pip-пакетов |
 
 Из WSL: `bash scripts/sync_and_build.sh --clean` (транслируется в `-Clean`),

@@ -141,10 +141,26 @@ fi
 NOTES="build/release_notes-$VERSION.md"
 mkdir -p build
 python3 - "$VERSION" "$MODELS_URL" "$NOTES" <<'PY'
+import re
 import sys
 version, models_url, out = sys.argv[1], sys.argv[2], sys.argv[3]
 tpl = open("scripts/release_notes.md.in", encoding="utf-8").read()
 tpl = tpl.replace("__VERSION__", version).replace("__MODELS_URL__", models_url)
+# Inline the current version's section from CHANGELOG.md under "Что нового".
+# H2 sections are "## <version> (date)"; take everything up to the next H2.
+try:
+    changelog = open("CHANGELOG.md", encoding="utf-8").read()
+    m = re.search(
+        rf"^## {re.escape(version)} \([^\n]*\)\n(.*?)(?=^## |\Z)",
+        changelog,
+        re.M | re.S,
+    )
+    if m:
+        tpl = tpl.replace("__CHANGELOG__", m.group(1).strip())
+    else:
+        sys.exit(f"CHANGELOG.md has no '## {version} (date)' section")
+except FileNotFoundError:
+    sys.exit("CHANGELOG.md not found — release notes cannot be rendered")
 open(out, "w", encoding="utf-8").write(tpl)
 print("  notes: %s" % out)
 PY
