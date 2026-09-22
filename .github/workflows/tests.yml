@@ -36,7 +36,7 @@ jobs:
         run: |
           pip install --quiet PySide6 numpy pydantic PyYAML python-dotenv httpx
           pip install --quiet pytest pytest-asyncio pypdf onnxruntime huggingface_hub
-          pip install --quiet faster-whisper "av<15" sounddevice openai ctranslate2
+          pip install --quiet faster-whisper sounddevice openai ctranslate2 "av==14.2.0" --only-binary av
           pip install --quiet -e . --no-deps
 
       - name: Run tests
