@@ -73,6 +73,19 @@ for t in "${TARGETS[@]}"; do
   esac
 done
 
+# Сборка Linux требует venv с установленным проектом (build_linux.sh найдёт
+# .venv/bin/python сам, но стоит проверить заранее, чтобы не падать посреди
+# долгого `all` после Windows-сборки).
+NEEDS_LINUX=0
+for t in "${EXPANDED[@]}"; do [ "$t" = "linux" ] && NEEDS_LINUX=1; done
+if [ "$NEEDS_LINUX" -eq 1 ] && [ ! -x "$ROOT_DIR/.venv/bin/python" ]; then
+  echo "ERROR: Linux-сборка требует venv, но '$ROOT_DIR/.venv' не найден." >&2
+  echo "Активация НЕ нужна — достаточно создать один раз:" >&2
+  echo "  python3 -m venv .venv" >&2
+  echo "  .venv/bin/pip install -e \".[dev]\" pyinstaller" >&2
+  exit 2
+fi
+
 run() {
   echo ""
   echo "======================================================================"
