@@ -79,11 +79,43 @@ def test_start_raises_clear_error_when_worker_stuck():
     eng._thread = threading.Thread(target=_stuck_run, name="whisper-engine", daemon=True)
     eng._thread.start()
     time.sleep(0.05)
+    # Simulate a stop() that timed out mid-decode: _CMD_STOP was sent
+    # (so _stopping is set) but the worker never exited.
+    eng._stopping = True
 
     with pytest.raises(RuntimeError, match="завершает предыдущую"):
         eng.start.__wrapped__(eng) if hasattr(eng.start, "__wrapped__") else _start_with_short_wait(eng)
     release.set()
     eng._thread.join(3)
+
+
+def test_start_reuses_live_warmstart_worker_without_waiting():
+    """REGRESSION 2026-09-23: warm_start() starts the worker at app boot and
+    never stops it; the first «Старт» click calls start() again. The old
+    logic waited 30 s for the LIVE worker to exit and then always raised
+    («Распознавание ещё завершает предыдущую сессию»). A live, never-stopped
+    worker must be REUSED (no second queue consumer), not waited on."""
+    eng = _engine()
+    alive = threading.Event()
+
+    def _live_worker():
+        alive.set()
+        time.sleep(10)  # simulates the running warm-start worker
+
+    eng._thread = threading.Thread(target=_live_worker, name="whisper-engine", daemon=True)
+    eng._thread.start()
+    alive.wait(2)
+    assert eng._thread is not None and eng._thread.is_alive()
+
+    t0 = time.monotonic()
+    eng.start()  # must be a no-op: instant, no RuntimeError, same thread
+    assert time.monotonic() - t0 < 1.0, "start() waited on a live (never stopped) worker"
+    assert eng._thread.is_alive(), "start() must reuse the live worker, not replace it"
+
+    # Contrast: after a timed-out stop() (_stopping set), start() raises.
+    eng._stopping = True
+    with pytest.raises(RuntimeError, match="завершает предыдущую"):
+        _start_with_short_wait(eng)
 
 
 def _start_with_short_wait(eng):
