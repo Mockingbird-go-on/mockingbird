@@ -281,6 +281,14 @@ class MainWindow(QMainWindow):
             self._app.start_session()
         except Exception as exc:  # noqa: BLE001
             log.exception("start failed")
+            # Явное модальное уведомление: статусбар легко не заметить.
+            from PySide6.QtWidgets import QMessageBox
+
+            QMessageBox.warning(
+                self,
+                "Не удалось начать сессию",
+                str(exc),
+            )
             self._sig.error.emit(str(exc))
             return
         self._set_running(True)
