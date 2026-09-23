@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+import time
 from pathlib import Path
 
 _SCHEMA = """
@@ -34,6 +35,15 @@ CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS screenshots (
+    id TEXT PRIMARY KEY,
+    session_id TEXT,
+    created_at REAL NOT NULL,
+    image_path TEXT NOT NULL,
+    question TEXT NOT NULL,
+    answer TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_screenshots_session ON screenshots(session_id);
 CREATE TABLE IF NOT EXISTS kb_jobs (
     id TEXT PRIMARY KEY,
     status TEXT NOT NULL,
@@ -186,6 +196,25 @@ class SQLiteStore:
             self._conn.commit()
 
     # -- settings --
+    def save_screenshot(self, shot_id: str, session_id: str | None, image_path: str,
+                        question: str) -> None:
+        with self._lock:
+            self._ensure_open()
+            self._conn.execute(
+                "INSERT INTO screenshots (id, session_id, created_at, image_path, question) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (shot_id, session_id, time.time(), image_path, question),
+            )
+            self._conn.commit()
+
+    def update_screenshot_answer(self, shot_id: str, answer: str) -> None:
+        with self._lock:
+            self._ensure_open()
+            self._conn.execute(
+                "UPDATE screenshots SET answer=? WHERE id=?", (answer, shot_id)
+            )
+            self._conn.commit()
+
     def get_setting(self, key: str) -> str | None:
         with self._lock:
             row = self._conn.execute(

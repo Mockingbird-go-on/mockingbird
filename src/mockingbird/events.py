@@ -38,6 +38,13 @@ class AppSignals(QObject):
     source = Signal(str)
     # Bridge: global hotkey (Ctrl+Alt+H) → MainWindow toggle capture mode.
     toggle_capture_request = Signal()
+    # Screenshot-to-answer: vision-capability check result (payload: True,
+    # False or None while the probe is still running).
+    vision_probe_result = Signal(object)
+    # Bridge: Ctrl+Shift+S global hotkey → MainWindow opens the grab overlay.
+    screenshot_request = Signal()
+    # Screenshot answer finished (payload: shot_id) — UI refreshes history.
+    screenshot_answer_done = Signal(str)
     # Bridge: STT worker → GUI thread for SQLite writes (avoids cross-thread
     # access to the shared SQLiteStore connection from the decode worker).
     save_segment_request = Signal(object)

@@ -67,6 +67,9 @@ class MainWindow(QMainWindow):
         # Lazy download overlay — created on the first download progress
         # event (see _on_model_load_progress).
         self._model_dl = None
+        # Vision capability of the current LLM: True/False after the probe,
+        # None before it (dialog shows «проверка…»).
+        self._vision_state: bool | None = None
         self._session_timer = QTimer(self)
         self._session_timer.setInterval(1000)
         self._session_timer.timeout.connect(self._tick_session)
@@ -162,6 +165,14 @@ class MainWindow(QMainWindow):
         self._cancel_load_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._cancel_load_btn.clicked.connect(self._on_cancel_model_load)
         self._cancel_load_btn.hide()
+        # Screenshot-to-answer: toolbar button (global hotkey is Windows-only).
+        self._shot_btn = QPushButton()
+        self._shot_btn.setIcon(lucide_icon("camera"))
+        self._shot_btn.setIconSize(QSize(18, 18))
+        self._shot_btn.setToolTip("Скриншот-вопрос (Ctrl+Shift+S)\nВыделите область экрана и задайте вопрос")
+        self._shot_btn.clicked.connect(self._on_screenshot)
+        if not getattr(self._app.config, "screenshot", None) or not self._app.config.screenshot.enabled:
+            self._shot_btn.hide()
         self._timer_label = QLabel("00:00")
         self._timer_label.setObjectName("sessionTimer")
         self._timer_label.setStyleSheet(
@@ -176,6 +187,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._cancel_load_btn)
         layout.addWidget(self._timer_label)
         layout.addStretch(1)
+        layout.addWidget(self._shot_btn)
         layout.addWidget(self._device_badge)
         layout.addWidget(self._status)
         layout.addWidget(self._settings_btn)
@@ -274,6 +286,16 @@ class MainWindow(QMainWindow):
         self._sig.model_load_cancelled.connect(self._on_model_load_cancelled)
         # Async session stop completion (marshalled from the stop worker).
         self._stop_done.connect(self._on_stop_done)
+        # Screenshot-to-answer.
+        self._sig.screenshot_answer_done.connect(self._on_screenshot_answer_done)
+        self._sig.vision_probe_result.connect(self._on_vision_probe_result)
+        self._sig.screenshot_request.connect(self._on_screenshot)
+
+    def _on_vision_probe_result(self, ok) -> None:
+        self._vision_state = bool(ok)
+        dlg = getattr(self, "_shot_dlg", None)
+        if dlg is not None and dlg.isVisible():
+            dlg._set_vision(self._vision_state)
 
     def _on_start(self) -> None:
         try:
@@ -568,6 +590,66 @@ class MainWindow(QMainWindow):
         # disabled forever with no live session behind it.
         if self._app.session_id is None:
             self._set_running(False)
+
+    # -- screenshot-to-answer ---------------------------------------------------
+
+    def request_screenshot(self) -> None:
+        """Programmatic entry (global hotkey bridge / tests)."""
+        self._on_screenshot()
+
+    def _on_screenshot(self) -> None:
+        cfg = getattr(self._app.config, "screenshot", None)
+        if cfg is None or not cfg.enabled:
+            return
+        from mockingbird.ui.screenshot import ScreenGrabOverlay
+
+        self._shot_overlay = ScreenGrabOverlay()
+        self._shot_overlay.finished.connect(self._on_region_selected)
+        self._shot_overlay.cancelled.connect(lambda: setattr(self, "_shot_overlay", None))
+        self._shot_overlay.start()
+
+    def _on_region_selected(self, rect) -> None:
+        from PySide6.QtCore import QRect
+
+        cfg = self._app.config.screenshot
+        from mockingbird.ui.screenshot import ScreenshotQuestionDialog, grab_screen_region
+
+        try:
+            jpeg, preview = grab_screen_region(
+                QRect(rect), max_dim=cfg.max_image_dim, jpeg_quality=cfg.jpeg_quality
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("screenshot grab failed: %s", exc)
+            self.statusBar().showMessage(f"Скриншот не получен: {exc}", 5000)
+            return
+        self._shot_dlg = ScreenshotQuestionDialog(jpeg, preview, vision_ok=self._vision_state)
+        self._shot_dlg.asked.connect(self._on_screenshot_question)
+        self._shot_dlg.center_on(self)
+        # Vision probe lazily on first use (and again if it failed before).
+        if self._vision_state is None or self._vision_state is False:
+            self._app.check_vision_async()
+
+    def _on_screenshot_question(self, question: str) -> None:
+        dlg = getattr(self, "_shot_dlg", None)
+        if dlg is None:
+            return
+        # Make the interview pane accept this answer stream: on_llm_answer
+        # matches by _pending_llm_query; history browsing must be off.
+        self._interview._browsing_history = False
+        self._interview._pending_llm_query = question
+        self._interview.set_current_query(question)
+        self._app.answer_screenshot(dlg.jpeg_bytes(), question)
+
+    def _on_screenshot_answer_done(self, shot_id: str) -> None:
+        dlg = getattr(self, "_shot_dlg", None)
+        if dlg is not None and dlg.isVisible():
+            dlg.set_busy(False, "Ответ — в панели «Ответ ИИ»")
+            dlg.close()
+        # History entry: the query is the screenshot question; the topic
+        # marker makes the strip visually distinct from voice questions.
+        query = getattr(self._interview, "_pending_llm_query", "") or ""
+        if query:
+            self._interview._history.add_entry(f"📸 {query}", "screenshot")
 
     def _on_cuda_fallback(self, detail: str) -> None:
         """Configured CUDA turned out unusable; the engine already reloaded

@@ -14,8 +14,10 @@ log = logging.getLogger(__name__)
 
 MOD_ALT = 0x0001
 MOD_CONTROL = 0x0002
+MOD_SHIFT = 0x0004
 MOD_NOREPEAT = 0x4000
 VK_H = 0x48
+VK_S = 0x53
 
 PM_REMOVE = 0x0001
 
@@ -31,8 +33,12 @@ class GlobalHotkey:
     via a signal or ``QMetaObject.invokeMethod``.
     """
 
-    def __init__(self, callback):
+    def __init__(self, callback, modifiers: int | None = None, vk: int | None = None,
+                 hotkey_id: int = 1):
         self._callback = callback
+        self._modifiers = modifiers if modifiers is not None else (MOD_CONTROL | MOD_ALT)
+        self._vk = vk if vk is not None else VK_H
+        self._hotkey_id = hotkey_id
         self._thread: threading.Thread | None = None
         self._stop = False
         self._registered = False
@@ -80,8 +86,12 @@ class GlobalHotkey:
         ]
         user32.PeekMessageW.restype = ctypes.c_int  # BOOL
 
-        if not user32.RegisterHotKey(None, 1, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_H):
-            log.warning("RegisterHotKey(Ctrl+Alt+H) failed — key already taken?")
+        if not user32.RegisterHotKey(
+            None, self._hotkey_id, self._modifiers | MOD_NOREPEAT, self._vk
+        ):
+            log.warning(
+                "RegisterHotKey(id=%d) failed — key already taken?", self._hotkey_id
+            )
             return
         self._registered = True
 
@@ -96,7 +106,7 @@ class GlobalHotkey:
             threading.Event().wait(0.05)
 
         if self._registered:
-            user32.UnregisterHotKey(None, 1)
+            user32.UnregisterHotKey(None, self._hotkey_id)
             self._registered = False
 
     def stop(self):

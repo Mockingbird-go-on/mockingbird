@@ -446,15 +446,29 @@ def main() -> int:
                 )
 
     # Global hotkey Ctrl+Alt+H (Windows only; no-op elsewhere).
-    from mockingbird.ui.global_hotkey import GlobalHotkey
+    from mockingbird.ui.global_hotkey import MOD_CONTROL, MOD_SHIFT, GlobalHotkey, VK_S
 
     hotkey = GlobalHotkey(
         callback=context.signals.toggle_capture_request.emit
     )
     hotkey.start()
 
+    # Screenshot-to-answer hotkey Ctrl+Shift+S (Windows only). The signal
+    # bridges the WinAPI listener thread into the Qt GUI thread.
+    from mockingbird.ui.global_hotkey import GlobalHotkey as _GH
+
+    shot_hotkey = _GH(
+        callback=context.signals.screenshot_request.emit,
+        modifiers=MOD_CONTROL | MOD_SHIFT,
+        vk=VK_S,
+        hotkey_id=2,
+    )
+    if getattr(config, "screenshot", None) and config.screenshot.enabled:
+        shot_hotkey.start()
+
     app.aboutToQuit.connect(context.shutdown)
     app.aboutToQuit.connect(lambda: hotkey.stop())
+    app.aboutToQuit.connect(lambda: shot_hotkey.stop())
     return app.exec()
 
 
