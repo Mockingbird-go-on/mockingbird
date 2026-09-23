@@ -845,7 +845,12 @@ def resolve_model_path(cfg: WhisperConfig, progress_cb=None, cancel_event=None) 
         t = threading.Timer(_DOWNLOAD_STALL_S, _fire)
         t.daemon = True
         stall_state["timer"] = t
-        t.start()
+        try:
+            t.start()
+        except RuntimeError:
+            # Interpreter is shutting down — no new threads can be created.
+            # Nothing left to guard; drop the timer reference quietly.
+            stall_state["timer"] = None
 
     def _poke_stall() -> None:
         if not stall_state["stalled"]:
