@@ -712,6 +712,11 @@ class WhisperEngine:
         self._end_ahead = end_ahead
         self._queue: queue.Queue = queue.Queue()
         self._thread: threading.Thread | None = None
+        # True between stop() putting _CMD_STOP and the worker thread actually
+        # exiting. start() only waits for the leftover worker when this is set:
+        # a thread that was never stopped is the LIVE warm-start worker, not a
+        # stuck teardown — waiting 30 s for it would always raise.
+        self._stopping = False
         self._model = None
         self._ready = False
         self._device: str | None = None
@@ -818,16 +823,24 @@ class WhisperEngine:
         if self._thread is not None:
             # A previous stop() timed out mid-decode: wait for the old worker
             # to drain its queue instead of racing it with a second consumer.
-            if not self._wait_for_stopped_worker():
-                raise RuntimeError(
-                    "Распознавание ещё завершает предыдущую сессию "
-                    "(долгий финальный декод). Подождите пару секунд "
-                    "и нажмите «Старт» снова."
-                )
+            if self._stopping:
+                if not self._wait_for_stopped_worker():
+                    raise RuntimeError(
+                        "Распознавание ещё завершает предыдущую сессию "
+                        "(долгий финальный декод). Подождите пару секунд "
+                        "и нажмите «Старт» снова."
+                    )
+            elif self._thread.is_alive():
+                # The warm-start worker is live and was never stopped —
+                # reuse it. Spawning a second thread would create a second
+                # consumer of the same queue (duplicated/lost finals).
+                return
+        self._stopping = False
         self._thread = threading.Thread(target=self._run, name="whisper-engine", daemon=True)
         self._thread.start()
 
     def stop(self, timeout: float = 8.0) -> None:
+        self._stopping = True
         self._queue.put((_CMD_STOP, None))
         thread = self._thread
         if thread is not None and thread.is_alive():
@@ -843,6 +856,7 @@ class WhisperEngine:
             )
             return
         self._thread = None
+        self._stopping = False
 
     def _wait_for_stopped_worker(self, timeout: float = 30.0) -> bool:
         """Wait for a leftover (timed-out) worker thread to exit.
@@ -856,6 +870,7 @@ class WhisperEngine:
         if thread.is_alive():
             return False
         self._thread = None
+        self._stopping = False
         return True
 
     # -- audio-worker API (called from the capture thread) --
