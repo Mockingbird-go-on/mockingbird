@@ -42,6 +42,9 @@ def _show_system_warnings(parent, warnings: list) -> None:
 
     dlg = QDialog(parent)
     dlg.setWindowTitle("Проверка системы")
+    # Stay above the (always-on-top) model-download overlay: without this
+    # the overlay stacks over this modal dialog on some platforms.
+    dlg.setWindowFlags(dlg.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
     dlg.setModal(True)
     layout = QVBoxLayout(dlg)
     layout.setContentsMargins(20, 18, 20, 18)
