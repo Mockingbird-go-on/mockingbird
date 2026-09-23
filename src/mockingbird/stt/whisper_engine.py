@@ -43,6 +43,24 @@ _MAX_OPEN_SEGMENT_S = 45.0
 # more means real speech resumed and the speculative text is incomplete.
 _SPECULATIVE_REUSE_MAX_DELTA_S = 3.0
 
+# If no byte arrives for this long during a model download, abort with a
+# readable error instead of a forever-0% overlay (blocked CDN transfer,
+# stuck proxy, filelock held by a stalled sibling process).
+_DOWNLOAD_STALL_S = 60.0
+
+
+def _abort_stalled_download(repo_id: str, cancel_event) -> None:
+    """Fired by the stall watchdog: cancels the in-flight download."""
+    log.error(
+        "whisper download of %s stalled (no bytes for %.0f s) — aborting; "
+        "check the network / antivirus, another mockingbird process may be "
+        "holding the model cache locks",
+        repo_id,
+        _DOWNLOAD_STALL_S,
+    )
+    if cancel_event is not None:
+        cancel_event.set()
+
 
 # Known-good repo overrides. Systran never published a turbo conversion —
 # the community CT2 build of large-v3-turbo is the standard faster-whisper
@@ -306,6 +324,8 @@ class _DownloadReporter:
         self._last_t = time.monotonic()
         self._last_done = 0.0
         self._cancel_event = cancel_event
+        # Stall watchdog: re-armed by resolve_model_path, poked on every byte.
+        self._on_bytes = None
 
     def new_file(self, total: float, name: str) -> None:
         if self._cur_done > 0:
@@ -330,6 +350,11 @@ class _DownloadReporter:
         # _install_cancel_hook only wraps hub-created bars).
         if self._cancel_event is not None and self._cancel_event.is_set():
             raise _DownloadCancelled()
+        if self._on_bytes is not None:
+            try:
+                self._on_bytes()
+            except Exception:  # noqa: BLE001 - watchdog must never kill the feed
+                pass
         self._cur_done += float(n)
         if not getattr(self, "_first_byte_logged", False) and self._cur_done > 0:
             self._first_byte_logged = True
@@ -672,6 +697,14 @@ def _fuzzy_fix_latin_partial(text: str, matcher) -> str:
     return _LATIN_TOKEN_RE.sub(_fix, text)
 
 
+# Single-flight guard for resolve_model_path downloads: a second concurrent
+# download of the same repo would block forever on the hub's per-blob
+# filelock while holding its own locks (observed deadlock: warm-start worker
+# #1 stalled mid-transfer, retry spun worker #2, both frozen at 0 bytes).
+_RESOLVE_LOCKS: dict[str, threading.Lock] = {}
+_RESOLVE_LOCKS_GUARD = threading.Lock()
+
+
 def resolve_model_path(cfg: WhisperConfig, progress_cb=None, cancel_event=None) -> str:
     """Resolve the whisper model to a local path, checking local storage first.
 
@@ -718,6 +751,28 @@ def resolve_model_path(cfg: WhisperConfig, progress_cb=None, cancel_event=None) 
         pass
 
     log.info("whisper model not cached, downloading %s to %s", repo_id, download_root)
+
+    # ---- single-flight -------------------------------------------------------
+    # A second concurrent download of the same repo deadlocks on the hub's
+    # per-blob filelocks (worker #1 holds them while stalled, worker #2 waits
+    # forever — observed as a permanent «0 из 0 МБ» overlay). Only one
+    # download per repo may run at a time; the loser cancels itself (or, if
+    # it is the only interested party because the winner already finished,
+    # picks the result up from the cache on its next attempt).
+    with _RESOLVE_LOCKS_GUARD:
+        flight_lock = _RESOLVE_LOCKS.setdefault(repo_id, threading.Lock())
+    if not flight_lock.acquire(blocking=False):
+        log.warning(
+            "whisper download of %s already in progress in another worker — "
+            "aborting this duplicate attempt (model_load_failed dialog offers "
+            "retry once the first one finishes)",
+            repo_id,
+        )
+        raise RuntimeError(
+            "Загрузка модели уже идёт в другом потоке — дождитесь её "
+            "завершения или нажмите «Отмена» перед повтором."
+        )
+
     kwargs: dict = {
         "cache_dir": download_root,
         # etag_timeout bounds the initial HTTP HEAD: without it a flaky
@@ -745,6 +800,41 @@ def resolve_model_path(cfg: WhisperConfig, progress_cb=None, cancel_event=None) 
     # path (whose chunk loop honours the callback) only when we actually need
     # cancellability — otherwise keep the faster Xet transfer.
     restore_xet = _force_http_transport() if cancel_event is not None else (lambda: None)
+
+    # ---- stall guard ---------------------------------------------------------
+    # If no byte arrives for _DOWNLOAD_STALL_S (blocked CDN transfer, a
+    # stuck proxy, anything the socket timeouts do not cover), abort with a
+    # readable error instead of sitting on «0 из 0 МБ» forever. The watchdog
+    # fires through the same cancel event as the user's Cancel button, so it
+    # also unblocks the filelock-waiting duplicate downloads of this repo.
+    stall_state = {"timer": None, "stalled": False}
+
+    def _arm_stall() -> None:
+        def _fire() -> None:
+            stall_state["stalled"] = True
+            _abort_stalled_download(repo_id, cancel_event)
+
+        t = threading.Timer(_DOWNLOAD_STALL_S, _fire)
+        t.daemon = True
+        stall_state["timer"] = t
+        t.start()
+
+    def _poke_stall() -> None:
+        if not stall_state["stalled"]:
+            t = stall_state["timer"]
+            if t is not None:
+                t.cancel()
+            _arm_stall()
+
+    if reporter is not None:
+        reporter._on_bytes = _poke_stall
+        _arm_stall()
+
+    def _stall_disarm() -> None:
+        t = stall_state["timer"]
+        if t is not None:
+            t.cancel()
+
     try:
         for attempt in range(1, 4):
             if cancel_event is not None and cancel_event.is_set():
@@ -797,8 +887,10 @@ def resolve_model_path(cfg: WhisperConfig, progress_cb=None, cancel_event=None) 
                 f"whisper model download failed after retries: {last_exc}"
             ) from last_exc
     finally:
+        _stall_disarm()
         restore_cancel()
         restore_xet()
+        flight_lock.release()
     problem = _model_dir_problem(path)
     if problem is not None:
         raise RuntimeError(f"downloaded whisper model at {path} is corrupted: {problem}")
