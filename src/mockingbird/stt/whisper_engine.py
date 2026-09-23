@@ -306,11 +306,19 @@ class _DownloadReporter:
         done = self._finished + self._cur_done
         pct = min(99.0, done / total * 100.0) if total > 0 else 0.0
         name = os.path.basename(self._name) or self._name
-        detail = f"Скачивание {name}: {done / 1e6:.0f} из {total / 1e6:.0f} МБ"
-        if self._speed_ema > 0:
+        if total > 0:
+            detail = f"Скачивание {name}: {done / 1e6:.0f} из {total / 1e6:.0f} МБ"
+        else:
+            # Unknown file size (no Content-Length / pre-flight phase):
+            # "0 из 0 МБ" reads like a bug, show what we have.
+            detail = f"Скачивание {name}: {done / 1e6:.0f} МБ"
+        # Only quote a speed once it is measurable (> ~100 КБ/с); a
+        # near-zero EMA right after a burst prints as "0.0 МБ/с".
+        if self._speed_ema > 100_000:
             detail += f" · {self._speed_ema / 1e6:.1f} МБ/с"
-            remaining = (total - done) / self._speed_ema if total > done else 0.0
-            detail += f" · осталось ~{int(remaining)} с"
+            if total > done > 0:
+                remaining = (total - done) / self._speed_ema
+                detail += f" · осталось ~{int(remaining)} с"
         self._cb(detail, pct)
 
 
