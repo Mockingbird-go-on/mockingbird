@@ -259,12 +259,17 @@ class _DownloadReporter:
     their bytes to present a single, monotonically increasing percentage.
     """
 
-    def __init__(self, cb):
+    def __init__(self, cb, cancel_event=None):
         self._cb = cb
         self._finished = 0.0
         self._cur_total = 0.0
         self._cur_done = 0.0
         self._name = "model files"
+        # Speed estimation (EMA over update() calls).
+        self._speed_ema = 0.0
+        self._last_t = time.monotonic()
+        self._last_done = 0.0
+        self._cancel_event = cancel_event
 
     def new_file(self, total: float, name: str) -> None:
         if self._cur_done > 0:
@@ -272,17 +277,41 @@ class _DownloadReporter:
         self._cur_total = float(total or 0)
         self._cur_done = 0.0
         self._name = name or "model files"
+        self._last_done = 0.0
+        self._speed_ema = 0.0
+        self._last_t = time.monotonic()
         self._report()
 
     def update(self, n: float) -> None:
+        # Also abort through the AGGREGATE bar (the per-file hook in
+        # _install_cancel_hook only wraps hub-created bars).
+        if self._cancel_event is not None and self._cancel_event.is_set():
+            raise _DownloadCancelled()
         self._cur_done += float(n)
+        now = time.monotonic()
+        dt = now - self._last_t
+        if dt >= 0.5:
+            done = self._finished + self._cur_done
+            inst = (done - self._last_done) / dt
+            # EMA smooths chunked bursts into a readable speed.
+            self._speed_ema = inst if self._speed_ema <= 0 else (
+                0.3 * inst + 0.7 * self._speed_ema
+            )
+            self._last_done = done
+            self._last_t = now
         self._report()
 
     def _report(self) -> None:
         total = self._finished + self._cur_total
         done = self._finished + self._cur_done
         pct = min(99.0, done / total * 100.0) if total > 0 else 0.0
-        self._cb(f"Downloading {self._name}…", pct)
+        name = os.path.basename(self._name) or self._name
+        detail = f"Скачивание {name}: {done / 1e6:.0f} из {total / 1e6:.0f} МБ"
+        if self._speed_ema > 0:
+            detail += f" · {self._speed_ema / 1e6:.1f} МБ/с"
+            remaining = (total - done) / self._speed_ema if total > done else 0.0
+            detail += f" · осталось ~{int(remaining)} с"
+        self._cb(detail, pct)
 
 
 def _progress_tqdm_class(reporter: _DownloadReporter):
@@ -632,7 +661,7 @@ def resolve_model_path(cfg: WhisperConfig, progress_cb=None, cancel_event=None) 
     }
     if progress_cb is not None:
         progress_cb("Downloading whisper model…", 0.0)
-        reporter = _DownloadReporter(progress_cb)
+        reporter = _DownloadReporter(progress_cb, cancel_event=cancel_event)
         kwargs["tqdm_class"] = _progress_tqdm_class(reporter)
     last_exc: Exception | None = None
     # Abort the byte transfer itself (not just between retries) when the user

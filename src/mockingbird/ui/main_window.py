@@ -269,7 +269,6 @@ class MainWindow(QMainWindow):
         self._sig.error.connect(self._on_error)
         self._sig.cuda_fallback.connect(self._on_cuda_fallback)
         # log_line is wired lazily — see _on_log_panel_toggled.
-        self._sig.model_load.connect(self._activity.set_loading)
         self._sig.model_load.connect(self._on_model_load_progress)
         self._sig.model_load_failed.connect(self._on_model_load_failed)
         self._sig.model_load_cancelled.connect(self._on_model_load_cancelled)
@@ -332,14 +331,20 @@ class MainWindow(QMainWindow):
             if self._model_dl is not None and self._model_dl.isVisible():
                 self._model_dl.done_ok()
             return
-        downloading = percent >= 0 or "download" in message.lower()
+        downloading = percent >= 0 or "download" in message.lower() or "скачиван" in message.lower()
         if not downloading:
             # In-memory load: keep the cancel cross available.
             self._set_cancel_load_visible(True)
             if self._model_dl is not None and self._model_dl.isVisible():
                 self._model_dl.done_ok()
+            # No overlay is open for this phase — show the toolbar loader.
+            if self._model_dl is None or not self._model_dl.isVisible():
+                self._activity.set_loading(message, percent)
             return
-        self._set_cancel_load_visible(True)
+        # Download phase: the dedicated overlay owns the progress display;
+        # the toolbar loader is suppressed so the user is not ping-ponged
+        # between two busy indicators.
+        self._activity.set_idle()
         if self._model_dl is None:
             from mockingbird.ui.model_download_dialog import ModelDownloadDialog
 

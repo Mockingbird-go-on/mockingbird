@@ -124,13 +124,27 @@ class ModelDownloadDialog(QWidget):
         self._cancel_btn.setEnabled(False)
         self._detail.setText("Отмена…")
         self.cancelled.emit()
+        # The abort seam is best-effort: if the underlying transfer ignores
+        # the cancel (e.g. hub version without the hook), model_load_cancelled
+        # never fires and the dialog would hang on «Отмена…» forever.
+        # Close it ourselves after a grace period (download continues in the
+        # background — the dialog is non-modal by design).
+        self._hide_timer.stop()
+        QTimer.singleShot(3000, self._cancel_grace_elapsed)
+
+    def _cancel_grace_elapsed(self) -> None:
+        if self.isVisible() and not self._cancel_btn.isEnabled():
+            self.hide()
 
     def show_above(self, window: QWidget) -> None:
         if window is not None:
             geo = window.geometry()
+            # Fully centre over the parent window (was: 90 px below the top,
+            # which read as off-centre on tall screens).
+            self.adjustSize()
             self.move(
                 geo.center().x() - self.width() // 2,
-                geo.y() + 90,
+                geo.center().y() - self.height() // 2,
             )
         self.show()
         self.raise_()
