@@ -142,13 +142,20 @@ class _DownloadCancelled(Exception):
     """
 
 
-def _install_cancel_hook(cancel_event):
+def _install_cancel_hook(cancel_event, reporter=None):
     """Make huggingface_hub's per-file progress bars abort on cancel.
 
     Monitors ``cancel_event`` from inside the tqdm ``update()`` that the hub
     calls on every downloaded chunk (~10 MB). Without this, clicking Cancel
     during the single 1.6 GB ``model.bin`` transfer does nothing until the
     whole download finishes — the GUI overlay sits on «Отмена…» for minutes.
+
+    ``reporter``: on huggingface_hub >= 1.x the per-file bars are created by
+    the hub's own tqdm class (NOT our ``tqdm_class`` subclass — that one only
+    gets the aggregate «Fetching N files» bar with no known total), so the
+    only reliable seam for real byte progress is right here: the wrapped
+    per-file bar feeds the reporter. Passing the reporter here is what keeps
+    «640 из 1600 МБ · 5 МБ/с» working on hub 1.32.
 
     Returns a zero-arg callable that restores the original function. No-op
     (returns a no-op) on hub versions without the private seam, so the caller
@@ -165,34 +172,61 @@ def _install_cancel_hook(cancel_event):
         return lambda: None
 
     class _CancelBar:
-        """tqdm proxy whose ``update`` raises once cancel_event is set."""
+        """tqdm proxy: aborts on cancel, feeds the reporter per-file bytes.
 
-        def __init__(self, bar):
+        Never trusts ``bar.n``: in a GUI build the hub bars resolve to
+        ``disable=True`` (no TTY), and a disabled tqdm does not count bytes.
+        We accumulate the ``n`` passed to ``update()`` ourselves.
+        """
+
+        def __init__(self, bar, desc="", total=0):
             self._bar = bar
+            self._desc = desc
+            self._total = float(total or 0)
+            self._announced = False
 
         def __getattr__(self, name):
             return getattr(self._bar, name)
 
+        def _announce(self):
+            if not self._announced:
+                reporter.new_file(self._total, self._desc)
+                self._announced = True
+
         def update(self, n=1):
             if cancel_event.is_set():
                 raise _DownloadCancelled()
-            return self._bar.update(n)
+            res = self._bar.update(n)
+            if reporter is not None:
+                self._announce()
+                reporter.update(float(n))
+            return res
 
         def update_progress(self, n=1):
             # huggingface_hub >= 1.x xet path uses update_progress().
             if cancel_event.is_set():
                 raise _DownloadCancelled()
             fn = getattr(self._bar, "update_progress", None)
-            if fn is not None:
-                return fn(n)
-            return self._bar.update(n)
+            res = fn(n) if fn is not None else self._bar.update(n)
+            if reporter is not None:
+                self._announce()
+                reporter.update(float(n))
+            return res
+
+        def refresh(self, nolock=False, lock_args=None):
+            return self._bar.refresh(nolock=nolock, lock_args=lock_args)
+
+        def close(self):
+            return self._bar.close()
 
     class _CancelContext:
-        def __init__(self, cm):
+        def __init__(self, cm, desc="", total=0):
             self._cm = cm
+            self._desc = desc
+            self._total = total
 
         def __enter__(self):
-            return _CancelBar(self._cm.__enter__())
+            return _CancelBar(self._cm.__enter__(), desc=self._desc, total=self._total)
 
         def __exit__(self, *exc):
             return self._cm.__exit__(*exc)
@@ -200,10 +234,12 @@ def _install_cancel_hook(cancel_event):
     def _patched(*args, **kwargs):
         cm = orig(*args, **kwargs)
         # Only wrap self-created bars (no shared _tqdm_bar). The aggregate
-        # "Fetching N files" bar is our own _ProgressTqdm and checks cancel
-        # itself.
+        # "Fetching N files" bar is our own _ProgressTqdm (muted) and checks
+        # cancel itself via the reporter.
         if kwargs.get("_tqdm_bar") is None:
-            return _CancelContext(cm)
+            return _CancelContext(
+                cm, desc=kwargs.get("desc") or "", total=kwargs.get("total") or 0
+            )
         return cm
 
     try:
@@ -323,7 +359,14 @@ class _DownloadReporter:
 
 
 def _progress_tqdm_class(reporter: _DownloadReporter):
-    """Build a tqdm subclass wired to the reporter for snapshot_download.
+    """Build a tqdm subclass for snapshot_download's ``tqdm_class``.
+
+    On older hub versions this class receives the per-file bars (real byte
+    progress); on hub >= 1.x it only gets the aggregate «Fetching N files»
+    bar, whose bytes would double-count the per-file feed from
+    ``_install_cancel_hook`` — so the aggregate bar is muted (detected by
+    its desc). The class is still needed there for hub's shared-bar machinery
+    and honours cancel via the reporter.
 
     The bar is never rendered to a console: the built Windows .exe runs with
     console=False, so sys.stderr may be None and tqdm would crash while trying
@@ -333,15 +376,23 @@ def _progress_tqdm_class(reporter: _DownloadReporter):
     from tqdm.auto import tqdm
 
     class _ProgressTqdm(tqdm):
+        _mute = False
+
         def __init__(self, *args, **kwargs):
             self._reporter = reporter
-            reporter.new_file(kwargs.get("total") or 0, kwargs.get("desc") or "")
+            desc = kwargs.get("desc") or ""
+            import re as _re
+
+            self._mute = bool(_re.match(r"Fetching \d+ files?", desc))
+            if not self._mute:
+                reporter.new_file(kwargs.get("total") or 0, desc)
             kwargs["file"] = kwargs.get("file") or io.StringIO()
             super().__init__(*args, **kwargs)
 
         def update(self, n=1):
             super().update(n)
-            self._reporter.update(n)
+            if not self._mute:
+                self._reporter.update(n)
 
     return _ProgressTqdm
 
@@ -667,6 +718,7 @@ def resolve_model_path(cfg: WhisperConfig, progress_cb=None, cancel_event=None) 
         # the 1.6 GB model.bin from scratch on every attempt.
         "resume_download": True,
     }
+    reporter = None
     if progress_cb is not None:
         progress_cb("Downloading whisper model…", 0.0)
         reporter = _DownloadReporter(progress_cb, cancel_event=cancel_event)
@@ -674,7 +726,10 @@ def resolve_model_path(cfg: WhisperConfig, progress_cb=None, cancel_event=None) 
     last_exc: Exception | None = None
     # Abort the byte transfer itself (not just between retries) when the user
     # clicks Cancel. No-op on hub versions lacking the private seam.
-    restore_cancel = _install_cancel_hook(cancel_event)
+    # The hook ALSO feeds the reporter: on hub >= 1.x per-file bars are
+    # hub-created (tqdm_class only wraps the aggregate bar) — without the
+    # feed the overlay would sit on «Fetching 7 files: 0 из 0 МБ» forever.
+    restore_cancel = _install_cancel_hook(cancel_event, reporter=reporter)
     # The Xet (Rust) transport swallows progress-callback exceptions, so a
     # Xet download cannot be aborted from Python. Fall back to the plain-HTTP
     # path (whose chunk loop honours the callback) only when we actually need
