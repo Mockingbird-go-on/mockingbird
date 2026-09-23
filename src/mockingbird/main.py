@@ -216,6 +216,22 @@ def _download_model_cli() -> int:
     print(f"diag log: {log_path}")
     print(f"model: {cfg.whisper.model_size} -> {cfg.whisper.model_dir}")
     try:
+        import huggingface_hub
+
+        print(f"hub version: {huggingface_hub.__version__}")
+        # Verify the cancel/progress hook seam exists and is patchable.
+        from mockingbird.stt import whisper_engine as _we
+
+        from huggingface_hub import file_download as _fd
+
+        print(
+            "seam:",
+            _fd._get_progress_bar_context.__module__,
+            _fd._get_progress_bar_context.__name__,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"env check failed: {exc}")
+    try:
         path = resolve_model_path(cfg.whisper, progress_cb=report)
         print(f"OK: {path}")
         return 0

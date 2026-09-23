@@ -807,10 +807,38 @@ def resolve_model_path(cfg: WhisperConfig, progress_cb=None, cancel_event=None) 
     # readable error instead of sitting on «0 из 0 МБ» forever. The watchdog
     # fires through the same cancel event as the user's Cancel button, so it
     # also unblocks the filelock-waiting duplicate downloads of this repo.
-    stall_state = {"timer": None, "stalled": False}
+    stall_state = {"timer": None, "stalled": False, "last_bytes_on_disk": -1}
+
+    def _incomplete_bytes() -> int:
+        """Bytes currently held in the hub's *.incomplete staging files.
+
+        The truthful progress source: even when the reporter feed is dead
+        (frozen-build import quirks), a growing .incomplete file means the
+        transfer is alive.
+        """
+        total = 0
+        try:
+            blobs = Path(download_root) / "models--" / repo_id.replace("/", "--")
+            # hub layout: <cache>/models--<org>--<name>/blobs/*.incomplete
+            blobs = Path(download_root) / f"models--{repo_id.replace('/', '--')}" / "blobs"
+            for f in blobs.glob("*.incomplete"):
+                try:
+                    total += f.stat().st_size
+                except OSError:
+                    pass
+        except Exception:  # noqa: BLE001
+            pass
+        return total
 
     def _arm_stall() -> None:
         def _fire() -> None:
+            on_disk = _incomplete_bytes()
+            if on_disk > stall_state["last_bytes_on_disk"]:
+                # Bytes ARE arriving (the reporter feed just doesn't see
+                # them — e.g. the frozen build). Not stalled: re-arm.
+                stall_state["last_bytes_on_disk"] = on_disk
+                _arm_stall()
+                return
             stall_state["stalled"] = True
             _abort_stalled_download(repo_id, cancel_event)
 
