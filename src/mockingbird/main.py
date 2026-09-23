@@ -153,20 +153,56 @@ def _resolve_icon_path() -> str | None:
 def _download_model_cli() -> int:
     """Hidden diagnostic: download the configured model without the GUI.
 
-    Used to debug frozen-build download stalls (console exe output shows the
-    hub/httpx activity that the GUI overlay cannot).
+    Used to debug frozen-build download stalls. The Windows exe is built
+    with console=False, so ALL output is additionally mirrored to
+    ``mockingbird-download-diag.log`` next to the exe (and to stdout for
+    the dev/Linux runs where a console exists).
     """
     import threading
+    from pathlib import Path
 
     from mockingbird.config import load_config
     from mockingbird.stt.whisper_engine import resolve_model_path
 
+    # Verbose httpx/hub logging for this diagnostic path only.
+    import logging
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    for name in ("httpx", "huggingface_hub", "urllib3", "filelock"):
+        logging.getLogger(name).setLevel(logging.INFO)
+
+    log_path = Path("mockingbird-download-diag.log").resolve()
+
+    class _Tee:
+        def __init__(self, *streams):
+            self._streams = streams
+
+        def write(self, s):
+            for st in self._streams:
+                try:
+                    st.write(s)
+                except Exception:  # noqa: BLE001
+                    pass
+
+        def flush(self):
+            for st in self._streams:
+                try:
+                    st.flush()
+                except Exception:  # noqa: BLE001
+                    pass
+
     cfg = load_config()
-    done = threading.Event()
 
     def report(message: str, percent: float) -> None:
         print(f"[{percent:6.1f}%] {message}", flush=True)
 
+    fh = open(log_path, "w", encoding="utf-8")  # noqa: SIM115
+    import sys as _sys
+
+    _sys.stdout = _Tee(_sys.__stdout__, fh) if _sys.__stdout__ else fh
+    _sys.stderr = _Tee(_sys.__stderr__, fh) if _sys.__stderr__ else fh
+    print(f"diag log: {log_path}")
+    print(f"model: {cfg.whisper.model_size} -> {cfg.whisper.model_dir}")
     try:
         path = resolve_model_path(cfg.whisper, progress_cb=report)
         print(f"OK: {path}")
@@ -175,7 +211,8 @@ def _download_model_cli() -> int:
         print(f"FAILED: {exc}")
         return 1
     finally:
-        done.set()
+        fh.flush()
+        fh.close()
 
 
 def main() -> int:
