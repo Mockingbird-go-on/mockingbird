@@ -101,7 +101,9 @@ APPRUN
     fi
 
     mkdir -p dist
-    ARCH=x86_64 "$APPIMAGETOOL" "$APPDIR" "dist/Mockingbird-$VERSION-linux-x86_64.AppImage"
+    # WSL2/CI без FUSE: appimagetool (сам AppImage) запускаем через extract,
+    # иначе «No suitable fusermount binary found».
+    ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 "$APPIMAGETOOL" "$APPDIR" "dist/Mockingbird-$VERSION-linux-x86_64.AppImage"
     echo "== AppImage: dist/Mockingbird-$VERSION-linux-x86_64.AppImage =="
 fi
 
