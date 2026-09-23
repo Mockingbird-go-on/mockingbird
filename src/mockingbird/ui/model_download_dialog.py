@@ -11,6 +11,7 @@ import time
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
+    QApplication,
     QHBoxLayout,
     QLabel,
     QProgressBar,
@@ -90,6 +91,16 @@ class ModelDownloadDialog(QWidget):
         self._hide_timer.setSingleShot(True)
         self._hide_timer.timeout.connect(self.hide)
 
+        # Track the main window's activation: the overlay is only visible
+        # while the app itself is active. Switching to a browser hides it
+        # (it has WindowStaysOnTopHint and would otherwise hover over
+        # unrelated windows); coming back re-shows it mid-download.
+        self._main_window: QWidget | None = None
+        self._download_active = False
+        self._active_timer = QTimer(self)
+        self._active_timer.setInterval(300)
+        self._active_timer.timeout.connect(self._sync_visibility_with_main)
+
     # -- public API ---------------------------------------------------------
 
     def set_model_name(self, name: str) -> None:
@@ -101,6 +112,7 @@ class ModelDownloadDialog(QWidget):
         percent < 0 means "indeterminate" (cache check / loading into
         memory): show a busy marquee text without moving the bar.
         """
+        self._download_active = True
         if percent >= 0:
             self._bar.setRange(0, 100)
             self._bar.setValue(int(percent))
@@ -109,14 +121,26 @@ class ModelDownloadDialog(QWidget):
         else:
             self._bar.setRange(0, 0)
             self._detail.setText(message)
+        # Late progress events must also restore visibility if the app
+        # window is active (covers the case where the timer was stopped).
+        self._sync_visibility_with_main()
 
     def done_ok(self) -> None:
         """Model loaded — fade the dialog out shortly."""
+        self._download_active = False
+        self._active_timer.stop()
         self.set_progress("Модель загружена", 100.0)
         self._hide_timer.start(1200)
 
     def done_failed(self, error: str) -> None:
+        self._download_active = False
+        self._active_timer.stop()
         self.hide()
+
+    def _cancelled_confirmed(self) -> None:
+        """Download cancellation was confirmed by the engine."""
+        self._download_active = False
+        self._active_timer.stop()
 
     # -- internals -----------------------------------------------------------
 
@@ -134,10 +158,25 @@ class ModelDownloadDialog(QWidget):
 
     def _cancel_grace_elapsed(self) -> None:
         if self.isVisible() and not self._cancel_btn.isEnabled():
+            self._download_active = False
+            self._active_timer.stop()
+            self.hide()
+
+    def _sync_visibility_with_main(self) -> None:
+        """Show the overlay only while the main window is the active window."""
+        if not self._download_active:
+            return
+        main_active = QApplication.activeWindow() is not None
+        if main_active:
+            if not self.isVisible():
+                self.show()
+                self.raise_()
+        else:
             self.hide()
 
     def show_above(self, window: QWidget) -> None:
         if window is not None:
+            self._main_window = window
             geo = window.geometry()
             # Fully centre over the parent window (was: 90 px below the top,
             # which read as off-centre on tall screens).
@@ -148,3 +187,5 @@ class ModelDownloadDialog(QWidget):
             )
         self.show()
         self.raise_()
+        self._download_active = True
+        self._active_timer.start()
