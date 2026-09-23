@@ -328,6 +328,13 @@ class MainWindow(QMainWindow):
         if not message and percent >= 100.0:
             # Model ready: nothing is cancellable any more.
             self._set_cancel_load_visible(False)
+            # Reset the toolbar loader (the direct model_load→set_loading
+            # connect is gone; without this the spinner ran forever after
+            # the model became ready).
+            if self._app.session_id is not None:
+                self._activity.set_live()
+            else:
+                self._activity.set_idle()
             if self._model_dl is not None and self._model_dl.isVisible():
                 self._model_dl.done_ok()
             return
