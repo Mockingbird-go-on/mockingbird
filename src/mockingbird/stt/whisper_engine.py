@@ -316,6 +316,13 @@ class _DownloadReporter:
         self._last_done = 0.0
         self._speed_ema = 0.0
         self._last_t = time.monotonic()
+        self._first_byte_logged = False
+        log.info(
+            "whisper download: file %s (%.0f MB, overall %.0f MB done)",
+            self._name,
+            self._cur_total / 1e6,
+            self._finished / 1e6,
+        )
         self._report()
 
     def update(self, n: float) -> None:
@@ -324,6 +331,9 @@ class _DownloadReporter:
         if self._cancel_event is not None and self._cancel_event.is_set():
             raise _DownloadCancelled()
         self._cur_done += float(n)
+        if not getattr(self, "_first_byte_logged", False) and self._cur_done > 0:
+            self._first_byte_logged = True
+            log.info("whisper download: first bytes received for %s", self._name)
         now = time.monotonic()
         dt = now - self._last_t
         if dt >= 0.5:
