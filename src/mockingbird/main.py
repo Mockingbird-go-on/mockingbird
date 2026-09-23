@@ -167,11 +167,10 @@ def _download_model_cli() -> int:
     # Verbose httpx/hub logging for this diagnostic path only.
     import logging
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
-    for name in ("httpx", "huggingface_hub", "urllib3", "filelock"):
-        logging.getLogger(name).setLevel(logging.INFO)
-
     log_path = Path("mockingbird-download-diag.log").resolve()
+    fh = open(log_path, "w", encoding="utf-8")  # noqa: SIM115
+
+    import sys as _sys
 
     class _Tee:
         def __init__(self, *streams):
@@ -191,16 +190,29 @@ def _download_model_cli() -> int:
                 except Exception:  # noqa: BLE001
                     pass
 
+    # Redirect BEFORE basicConfig: the windowed exe has stderr=None and a
+    # StreamHandler(None) explodes on every record (as seen in the first run).
+    _sys.stdout = _Tee(_sys.__stdout__, fh) if _sys.__stdout__ else fh
+    _sys.stderr = _Tee(_sys.__stderr__, fh) if _sys.__stderr__ else fh
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        stream=fh,
+    )
+    for name in ("httpx", "huggingface_hub", "urllib3", "filelock", "requests"):
+        logging.getLogger(name).setLevel(logging.DEBUG)
+
+    # Thread dump 45 s in: if the download stalled we see the exact frame
+    # every worker thread is blocked on.
+    import faulthandler
+
+    faulthandler.dump_traceback_later(45, repeat=True, file=fh)
+
     cfg = load_config()
 
     def report(message: str, percent: float) -> None:
         print(f"[{percent:6.1f}%] {message}", flush=True)
 
-    fh = open(log_path, "w", encoding="utf-8")  # noqa: SIM115
-    import sys as _sys
-
-    _sys.stdout = _Tee(_sys.__stdout__, fh) if _sys.__stdout__ else fh
-    _sys.stderr = _Tee(_sys.__stderr__, fh) if _sys.__stderr__ else fh
     print(f"diag log: {log_path}")
     print(f"model: {cfg.whisper.model_size} -> {cfg.whisper.model_dir}")
     try:
@@ -211,6 +223,7 @@ def _download_model_cli() -> int:
         print(f"FAILED: {exc}")
         return 1
     finally:
+        faulthandler.cancel_dump_traceback_later()
         fh.flush()
         fh.close()
 
