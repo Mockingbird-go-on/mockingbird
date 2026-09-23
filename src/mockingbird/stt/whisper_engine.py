@@ -705,6 +705,127 @@ _RESOLVE_LOCKS: dict[str, threading.Lock] = {}
 _RESOLVE_LOCKS_GUARD = threading.Lock()
 
 
+_MODEL_RELEASE_REPO = "Mockingbird-go-on/mockingbird"
+_MODEL_RELEASE_TAG = "models"
+# asset name pattern produced by scripts/build_model_pack.sh
+_MODEL_RELEASE_ASSET = "Mockingbird-whisper-large-v3-turbo-model.zip"
+# GitHub caps release assets at 2 GiB; the pack zip is ~1.55 GB — fits.
+_CHUNK = 1 << 20  # 1 MiB
+
+
+def _github_model_url() -> str:
+    return (
+        f"https://github.com/{_MODEL_RELEASE_REPO}/"
+        f"releases/download/{_MODEL_RELEASE_TAG}/{_MODEL_RELEASE_ASSET}"
+    )
+
+
+def _download_from_github(
+    cfg: WhisperConfig, repo_id: str, download_root: str,
+    progress_cb=None, cancel_event=None,
+) -> str | None:
+    """Fetch the model pack zip from OUR GitHub release and unpack it.
+
+    The release asset is produced by scripts/build_model_pack.sh and contains
+    cache/models--<slug>/{refs,snapshots} — the same layout the installer
+    drops into the models dir. Returns the resolved snapshot path, or None
+    when the release is unreachable (falls back to huggingface_hub).
+    """
+    import urllib.request
+    import zipfile
+
+    url = _github_model_url()
+    root = Path(download_root)
+
+    def _report(message: str, percent: float) -> None:
+        if progress_cb is not None:
+            progress_cb(message, percent)
+
+    _report("Подключение к GitHub (релиз моделей)…", 0.0)
+    try:
+        req = urllib.request.Request(url, method="GET")
+        # Follow the redirect to objects.githubusercontent.com ourselves so
+        # we can stream with progress + cancel (urlopen follows redirects but
+        # hides the intermediate response; a direct urlopen is fine too).
+        resp = urllib.request.urlopen(req, timeout=30)
+    except Exception as exc:  # noqa: BLE001
+        log.info("whisper: GitHub model release unavailable (%s) — falling back to HuggingFace", exc)
+        return None
+
+    total = float(resp.headers.get("Content-Length") or 0)
+    zip_path = root / ".github-model-pack.zip"
+    root.mkdir(parents=True, exist_ok=True)
+    done = 0.0
+    try:
+        with open(zip_path, "wb") as f:
+            while True:
+                if cancel_event is not None and cancel_event.is_set():
+                    raise RuntimeError("whisper model download cancelled by user")
+                chunk = resp.read(_CHUNK)
+                if not chunk:
+                    break
+                f.write(chunk)
+                done += len(chunk)
+                if total > 0:
+                    pct = min(99.0, done / total * 100.0)
+                    _report(
+                        f"Скачивание model-pack.zip: {done / 1e6:.0f} из {total / 1e6:.0f} МБ",
+                        pct,
+                    )
+                else:
+                    _report(f"Скачивание model-pack.zip: {done / 1e6:.0f} МБ", -1.0)
+    except Exception:
+        try:
+            zip_path.unlink()
+        except OSError:
+            pass
+        raise
+
+    _report("Распаковка модели…", -1.0)
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            zf.extractall(root)
+    except Exception as exc:  # noqa: BLE001
+        log.exception("whisper: model pack unpack failed")
+        try:
+            zip_path.unlink()
+        except OSError:
+            pass
+        return None
+    finally:
+        try:
+            zip_path.unlink()
+        except OSError:
+            pass
+
+    # The pack contains cache/models--<slug>; move it under the root.
+    pack_cache = root / "cache"
+    if pack_cache.is_dir():
+        for entry in pack_cache.iterdir():
+            target = root / entry.name
+            if target.exists():
+                continue
+            entry.rename(target)
+        try:
+            pack_cache.rmdir()
+        except OSError:
+            pass
+
+    slug = f"models--{repo_id.replace('/', '--')}"
+    refs = root / slug / "refs" / "main"
+    snaps = root / slug / "snapshots"
+    if not (refs.is_file() and snaps.is_dir()):
+        log.error("whisper: GitHub model pack has unexpected layout under %s", root)
+        return None
+    commit = refs.read_text(encoding="utf-8").strip()
+    snapshot = snaps / commit
+    if not snapshot.is_dir():
+        log.error("whisper: pack refs point to missing snapshot %s", snapshot)
+        return None
+    log.info("whisper: model installed from GitHub release: %s", snapshot)
+    return str(snapshot)
+
+
 def resolve_model_path(cfg: WhisperConfig, progress_cb=None, cancel_event=None) -> str:
     """Resolve the whisper model to a local path, checking local storage first.
 
@@ -773,156 +894,187 @@ def resolve_model_path(cfg: WhisperConfig, progress_cb=None, cancel_event=None) 
             "завершения или нажмите «Отмена» перед повтором."
         )
 
-    kwargs: dict = {
-        "cache_dir": download_root,
-        # etag_timeout bounds the initial HTTP HEAD: without it a flaky
-        # proxy can hold the connection open forever ("Загрузка модели…"
-        # with no error and no way out but a restart).
-        "etag_timeout": 10,
-        # Resume partial blob downloads across retries instead of starting
-        # the 1.6 GB model.bin from scratch on every attempt.
-        "resume_download": True,
-    }
-    reporter = None
-    if progress_cb is not None:
-        progress_cb("Downloading whisper model…", 0.0)
-        reporter = _DownloadReporter(progress_cb, cancel_event=cancel_event)
-        kwargs["tqdm_class"] = _progress_tqdm_class(reporter)
-    last_exc: Exception | None = None
-    # Abort the byte transfer itself (not just between retries) when the user
-    # clicks Cancel. No-op on hub versions lacking the private seam.
-    # The hook ALSO feeds the reporter: on hub >= 1.x per-file bars are
-    # hub-created (tqdm_class only wraps the aggregate bar) — without the
-    # feed the overlay would sit on «Fetching 7 files: 0 из 0 МБ» forever.
-    restore_cancel = _install_cancel_hook(cancel_event, reporter=reporter)
-    # The Xet (Rust) transport swallows progress-callback exceptions, so a
-    # Xet download cannot be aborted from Python. Fall back to the plain-HTTP
-    # path (whose chunk loop honours the callback) only when we actually need
-    # cancellability — otherwise keep the faster Xet transfer.
-    restore_xet = _force_http_transport() if cancel_event is not None else (lambda: None)
-
-    # ---- stall guard ---------------------------------------------------------
-    # If no byte arrives for _DOWNLOAD_STALL_S (blocked CDN transfer, a
-    # stuck proxy, anything the socket timeouts do not cover), abort with a
-    # readable error instead of sitting on «0 из 0 МБ» forever. The watchdog
-    # fires through the same cancel event as the user's Cancel button, so it
-    # also unblocks the filelock-waiting duplicate downloads of this repo.
-    stall_state = {"timer": None, "stalled": False, "last_bytes_on_disk": -1}
-
-    def _incomplete_bytes() -> int:
-        """Bytes currently held in the hub's *.incomplete staging files.
-
-        The truthful progress source: even when the reporter feed is dead
-        (frozen-build import quirks), a growing .incomplete file means the
-        transfer is alive.
-        """
-        total = 0
+    # ---- primary source: OUR GitHub release (models tag) ---------------------
+    # huggingface.co's CDN proved unreachable from frozen Windows builds on
+    # some machines (transfer stalls at 0 bytes while the API works);
+    # github.com release assets are under our control and reliable. Falls
+    # back to the huggingface_hub path below when the release is unreachable
+    # or yields a corrupt snapshot. The flight lock is held throughout and
+    # released by the finally below on every exit path.
+    try:
         try:
-            blobs = Path(download_root) / "models--" / repo_id.replace("/", "--")
-            # hub layout: <cache>/models--<org>--<name>/blobs/*.incomplete
-            blobs = Path(download_root) / f"models--{repo_id.replace('/', '--')}" / "blobs"
-            for f in blobs.glob("*.incomplete"):
-                try:
-                    total += f.stat().st_size
-                except OSError:
-                    pass
-        except Exception:  # noqa: BLE001
-            pass
-        return total
+            if repo_id == "deepdml/faster-whisper-large-v3-turbo-ct2":
+                gh_path = _download_from_github(
+                    cfg, repo_id, download_root,
+                    progress_cb=progress_cb, cancel_event=cancel_event,
+                )
+                if gh_path is not None:
+                    problem = _model_dir_problem(gh_path)
+                    if problem is None:
+                        return gh_path
+                    log.error(
+                        "whisper: GitHub-installed model at %s is corrupted (%s) — "
+                        "falling back to HuggingFace",
+                        gh_path, problem,
+                    )
+                    _remove_snapshot(gh_path)
+        except Exception as exc:  # noqa: BLE001
+            # A user cancel must propagate; anything else degrades to HF.
+            if cancel_event is not None and cancel_event.is_set():
+                raise
+            log.warning("whisper: GitHub model download failed (%s) — trying HuggingFace", exc)
 
-    def _arm_stall() -> None:
-        def _fire() -> None:
-            on_disk = _incomplete_bytes()
-            if on_disk > stall_state["last_bytes_on_disk"]:
-                # Bytes ARE arriving (the reporter feed just doesn't see
-                # them — e.g. the frozen build). Not stalled: re-arm.
-                stall_state["last_bytes_on_disk"] = on_disk
+        kwargs: dict = {
+            "cache_dir": download_root,
+            # etag_timeout bounds the initial HTTP HEAD: without it a flaky
+            # proxy can hold the connection open forever ("Загрузка модели…"
+            # with no error and no way out but a restart).
+            "etag_timeout": 10,
+            # Resume partial blob downloads across retries instead of starting
+            # the 1.6 GB model.bin from scratch on every attempt.
+            "resume_download": True,
+        }
+        reporter = None
+        if progress_cb is not None:
+            progress_cb("Downloading whisper model…", 0.0)
+            reporter = _DownloadReporter(progress_cb, cancel_event=cancel_event)
+            kwargs["tqdm_class"] = _progress_tqdm_class(reporter)
+        last_exc: Exception | None = None
+        # Abort the byte transfer itself (not just between retries) when the user
+        # clicks Cancel. No-op on hub versions lacking the private seam.
+        # The hook ALSO feeds the reporter: on hub >= 1.x per-file bars are
+        # hub-created (tqdm_class only wraps the aggregate bar) — without the
+        # feed the overlay would sit on «Fetching 7 files: 0 из 0 МБ» forever.
+        restore_cancel = _install_cancel_hook(cancel_event, reporter=reporter)
+        # The Xet (Rust) transport swallows progress-callback exceptions, so a
+        # Xet download cannot be aborted from Python. Fall back to the plain-HTTP
+        # path (whose chunk loop honours the callback) only when we actually need
+        # cancellability — otherwise keep the faster Xet transfer.
+        restore_xet = _force_http_transport() if cancel_event is not None else (lambda: None)
+
+        # ---- stall guard ---------------------------------------------------------
+        # If no byte arrives for _DOWNLOAD_STALL_S (blocked CDN transfer, a
+        # stuck proxy, anything the socket timeouts do not cover), abort with a
+        # readable error instead of sitting on «0 из 0 МБ» forever. The watchdog
+        # fires through the same cancel event as the user's Cancel button, so it
+        # also unblocks the filelock-waiting duplicate downloads of this repo.
+        stall_state = {"timer": None, "stalled": False, "last_bytes_on_disk": -1}
+
+        def _incomplete_bytes() -> int:
+            """Bytes currently held in the hub's *.incomplete staging files.
+
+            The truthful progress source: even when the reporter feed is dead
+            (frozen-build import quirks), a growing .incomplete file means the
+            transfer is alive.
+            """
+            total = 0
+            try:
+                blobs = Path(download_root) / "models--" / repo_id.replace("/", "--")
+                # hub layout: <cache>/models--<org>--<name>/blobs/*.incomplete
+                blobs = Path(download_root) / f"models--{repo_id.replace('/', '--')}" / "blobs"
+                for f in blobs.glob("*.incomplete"):
+                    try:
+                        total += f.stat().st_size
+                    except OSError:
+                        pass
+            except Exception:  # noqa: BLE001
+                pass
+            return total
+
+        def _arm_stall() -> None:
+            def _fire() -> None:
+                on_disk = _incomplete_bytes()
+                if on_disk > stall_state["last_bytes_on_disk"]:
+                    # Bytes ARE arriving (the reporter feed just doesn't see
+                    # them — e.g. the frozen build). Not stalled: re-arm.
+                    stall_state["last_bytes_on_disk"] = on_disk
+                    _arm_stall()
+                    return
+                stall_state["stalled"] = True
+                _abort_stalled_download(repo_id, cancel_event)
+
+            t = threading.Timer(_DOWNLOAD_STALL_S, _fire)
+            t.daemon = True
+            stall_state["timer"] = t
+            try:
+                t.start()
+            except RuntimeError:
+                # Interpreter is shutting down — no new threads can be created.
+                # Nothing left to guard; drop the timer reference quietly.
+                stall_state["timer"] = None
+
+        def _poke_stall() -> None:
+            if not stall_state["stalled"]:
+                t = stall_state["timer"]
+                if t is not None:
+                    t.cancel()
                 _arm_stall()
-                return
-            stall_state["stalled"] = True
-            _abort_stalled_download(repo_id, cancel_event)
 
-        t = threading.Timer(_DOWNLOAD_STALL_S, _fire)
-        t.daemon = True
-        stall_state["timer"] = t
-        try:
-            t.start()
-        except RuntimeError:
-            # Interpreter is shutting down — no new threads can be created.
-            # Nothing left to guard; drop the timer reference quietly.
-            stall_state["timer"] = None
+        if reporter is not None:
+            reporter._on_bytes = _poke_stall
+            _arm_stall()
 
-    def _poke_stall() -> None:
-        if not stall_state["stalled"]:
+        def _stall_disarm() -> None:
             t = stall_state["timer"]
             if t is not None:
                 t.cancel()
-            _arm_stall()
 
-    if reporter is not None:
-        reporter._on_bytes = _poke_stall
-        _arm_stall()
-
-    def _stall_disarm() -> None:
-        t = stall_state["timer"]
-        if t is not None:
-            t.cancel()
-
-    try:
-        for attempt in range(1, 4):
-            if cancel_event is not None and cancel_event.is_set():
-                raise RuntimeError("whisper model download cancelled by user")
-            try:
-                path = snapshot_download(repo_id, **kwargs)
-                break
-            except _DownloadCancelled as exc:
-                log.info("whisper model download cancelled mid-transfer by user")
-                raise RuntimeError(
-                    "whisper model download cancelled by user"
-                ) from exc
-            except TypeError:
-                # Older huggingface_hub may not accept tqdm_class/etag_timeout.
-                kwargs.pop("tqdm_class", None)
-                kwargs.pop("etag_timeout", None)
-                kwargs.pop("resume_download", None)
-                path = snapshot_download(repo_id, **kwargs)
-                break
-            except Exception as exc:
-                # hf_xet is a Rust extension: our _DownloadCancelled raised
-                # from the progress callback may come back wrapped. Treat any
-                # failure while the cancel flag is set as a user cancel.
+        try:
+            for attempt in range(1, 4):
                 if cancel_event is not None and cancel_event.is_set():
+                    raise RuntimeError("whisper model download cancelled by user")
+                try:
+                    path = snapshot_download(repo_id, **kwargs)
+                    break
+                except _DownloadCancelled as exc:
                     log.info("whisper model download cancelled mid-transfer by user")
                     raise RuntimeError(
                         "whisper model download cancelled by user"
                     ) from exc
-                last_exc = exc
-                log.warning(
-                    "whisper model download attempt %d failed: %s", attempt, exc
-                )
-                if "CERTIFICATE_VERIFY_FAILED" in str(exc) or (
-                    isinstance(exc, Exception)
-                    and "certificate verify failed" in str(exc).lower()
-                ):
-                    log.error(
-                        "whisper model download blocked by TLS interception "
-                        "(self-signed certificate in certificate chain). This is "
-                        "usually a corporate proxy / antivirus MITM. Workarounds: "
-                        "disable SSL inspection for huggingface.co, or download "
-                        "the model on another machine and copy it to the models "
-                        "directory."
+                except TypeError:
+                    # Older huggingface_hub may not accept tqdm_class/etag_timeout.
+                    kwargs.pop("tqdm_class", None)
+                    kwargs.pop("etag_timeout", None)
+                    kwargs.pop("resume_download", None)
+                    path = snapshot_download(repo_id, **kwargs)
+                    break
+                except Exception as exc:
+                    # hf_xet is a Rust extension: our _DownloadCancelled raised
+                    # from the progress callback may come back wrapped. Treat any
+                    # failure while the cancel flag is set as a user cancel.
+                    if cancel_event is not None and cancel_event.is_set():
+                        log.info("whisper model download cancelled mid-transfer by user")
+                        raise RuntimeError(
+                            "whisper model download cancelled by user"
+                        ) from exc
+                    last_exc = exc
+                    log.warning(
+                        "whisper model download attempt %d failed: %s", attempt, exc
                     )
-                if attempt < 3:
-                    # Backoff before the next retry (1s, 5s).
-                    time.sleep(1.0 if attempt == 1 else 5.0)
-        else:
-            raise RuntimeError(
-                f"whisper model download failed after retries: {last_exc}"
-            ) from last_exc
+                    if "CERTIFICATE_VERIFY_FAILED" in str(exc) or (
+                        isinstance(exc, Exception)
+                        and "certificate verify failed" in str(exc).lower()
+                    ):
+                        log.error(
+                            "whisper model download blocked by TLS interception "
+                            "(self-signed certificate in certificate chain). This is "
+                            "usually a corporate proxy / antivirus MITM. Workarounds: "
+                            "disable SSL inspection for huggingface.co, or download "
+                            "the model on another machine and copy it to the models "
+                            "directory."
+                        )
+                    if attempt < 3:
+                        # Backoff before the next retry (1s, 5s).
+                        time.sleep(1.0 if attempt == 1 else 5.0)
+            else:
+                raise RuntimeError(
+                    f"whisper model download failed after retries: {last_exc}"
+                ) from last_exc
+        finally:
+            _stall_disarm()
+            restore_cancel()
+            restore_xet()
     finally:
-        _stall_disarm()
-        restore_cancel()
-        restore_xet()
         flight_lock.release()
     problem = _model_dir_problem(path)
     if problem is not None:
