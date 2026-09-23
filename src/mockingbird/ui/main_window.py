@@ -372,8 +372,10 @@ class MainWindow(QMainWindow):
     def _on_model_load_cancelled(self) -> None:
         """User cancelled the load: reset the affordances without an error."""
         self._set_cancel_load_visible(False)
-        if self._model_dl is not None and self._model_dl.isVisible():
-            self._model_dl.hide()
+        if self._model_dl is not None:
+            if self._model_dl.isVisible():
+                self._model_dl.hide()
+            self._model_dl._cancelled_confirmed()
         self._activity.set_idle()
 
     def _on_model_load_failed(self, error: str) -> None:
