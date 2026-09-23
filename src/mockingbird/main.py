@@ -150,12 +150,42 @@ def _resolve_icon_path() -> str | None:
     return None
 
 
+def _download_model_cli() -> int:
+    """Hidden diagnostic: download the configured model without the GUI.
+
+    Used to debug frozen-build download stalls (console exe output shows the
+    hub/httpx activity that the GUI overlay cannot).
+    """
+    import threading
+
+    from mockingbird.config import load_config
+    from mockingbird.stt.whisper_engine import resolve_model_path
+
+    cfg = load_config()
+    done = threading.Event()
+
+    def report(message: str, percent: float) -> None:
+        print(f"[{percent:6.1f}%] {message}", flush=True)
+
+    try:
+        path = resolve_model_path(cfg.whisper, progress_cb=report)
+        print(f"OK: {path}")
+        return 0
+    except Exception as exc:  # noqa: BLE001
+        print(f"FAILED: {exc}")
+        return 1
+    finally:
+        done.set()
+
+
 def main() -> int:
     if "--version" in sys.argv or "-V" in sys.argv:
         from mockingbird import __version__
 
         print(f"mockingbird {__version__}")
         return 0
+    if "--download-model" in sys.argv:
+        return _download_model_cli()
     _harden_hf_symlinks()
     _set_app_user_model_id()
     from mockingbird import diagnostics
