@@ -146,6 +146,14 @@ class KGenConfig(BaseModel):
     max_blocks_per_topic: int = 24
 
 
+class ScreenshotConfig(BaseModel):
+    """Screenshot-to-answer: select a screen region, ask about it."""
+
+    enabled: bool = True
+    max_image_dim: int = 1600  # px, longest side sent to the LLM
+    jpeg_quality: int = 80
+
+
 class Config(BaseModel):
     audio: AudioConfig = Field(default_factory=AudioConfig)
     vad: VadConfig = Field(default_factory=VadConfig)
@@ -157,6 +165,7 @@ class Config(BaseModel):
     window: WindowConfig = Field(default_factory=WindowConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
     kgen: KGenConfig = Field(default_factory=KGenConfig)
+    screenshot: ScreenshotConfig = Field(default_factory=ScreenshotConfig)
     profile_id: str = "devops"
 
 
@@ -183,6 +192,7 @@ ENV_OVERRIDES: dict[str, tuple[str, str]] = {
     "MOCKINGBIRD_WHISPER_MODEL_DIR": ("whisper", "model_dir"),
     "MOCKINGBIRD_STT_BACKEND": ("stt", "backend"),
     "MOCKINGBIRD_STT_END_AHEAD": ("stt", "end_ahead"),
+    "MOCKINGBIRD_SCREENSHOT_ENABLED": ("screenshot", "enabled"),
     "MOCKINGBIRD_TERMS_LLM_FALLBACK": ("terms", "llm_fallback"),
     "MOCKINGBIRD_TERMS_LLM_PRIMARY": ("terms", "llm_primary"),
     "MOCKINGBIRD_TERMS_CONTEXT_SEGMENTS": ("terms", "context_segments"),

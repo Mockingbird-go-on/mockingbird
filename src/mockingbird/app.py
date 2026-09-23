@@ -13,7 +13,7 @@ from mockingbird.audio.capture import AudioCapture
 from mockingbird.audio.chunker import SpeechChunker
 from mockingbird.audio.loopback import LoopbackCapture
 from mockingbird.audio.vad import SileroVAD, ensure_vad_model
-from mockingbird.config import Config, apply_saved_settings
+from mockingbird.config import Config, app_dir, apply_saved_settings
 from mockingbird.events import AppSignals
 from mockingbird.kb.context import ConversationContext
 from mockingbird.kb.interview_engine import InterviewEngine
@@ -311,6 +311,94 @@ class App:
     def cancel_model_download(self) -> None:
         """Cancel an in-flight model download OR load (single entry point)."""
         self.engine.request_cancel_download()
+
+    # -- screenshot-to-answer ---------------------------------------------------
+
+    def check_vision_async(self) -> None:
+        """Probe vision support of the current LLM off the GUI thread."""
+
+        def _worker() -> None:
+            if not self.llm.available:
+                self.signals.vision_probe_result.emit(None)
+                return
+            try:
+                ok = self.llm.probe_vision()
+            except Exception:  # noqa: BLE001
+                ok = False
+            self.signals.vision_probe_result.emit(ok)
+
+        threading.Thread(target=_worker, name="vision-probe", daemon=True).start()
+
+    def answer_screenshot(self, jpeg_bytes: bytes, question: str) -> None:
+        """Ask the LLM about a screenshot; stream into the answer pane.
+
+        Runs on a daemon thread; the answer is delivered through the regular
+        ``llm_answer`` signal channel so the existing «Ответ ИИ» streaming
+        machinery renders it. The screenshot + question + final answer are
+        recorded in the screenshots table.
+        """
+        import base64 as _b64
+
+        shot_id = uuid.uuid4().hex[:12]
+        shots_dir = app_dir() / "screenshots"
+        shots_dir.mkdir(parents=True, exist_ok=True)
+        image_path = shots_dir / f"{shot_id}.jpg"
+        try:
+            image_path.write_bytes(jpeg_bytes)
+        except OSError as exc:
+            log.warning("screenshot: failed to persist image (%s)", exc)
+            image_path = ""
+        self.store.save_screenshot(
+            shot_id, self.session_id, str(image_path), question
+        )
+
+        mode = "technical"
+        with getattr(self.interview, "_mode_lock", threading.Lock()):
+            mode = getattr(self.interview, "_current_answer_mode", "technical") or "technical"
+
+        def _worker() -> None:
+            stream_id = f"shot-{shot_id}"
+            try:
+                self.signals.llm_answer.emit(
+                    protocol.LlmAnswer(
+                        query=question, topic="screenshot", title="Скриншот",
+                        answer="", delta="", done=False, stream_id=stream_id,
+                    )
+                )
+                acc: list[str] = []
+                for piece in self.llm.answer_image_question_stream(
+                    _b64.b64encode(jpeg_bytes).decode("ascii"), question, mode=mode
+                ):
+                    acc.append(piece)
+                    self.signals.llm_answer.emit(
+                        protocol.LlmAnswer(
+                            query=question, topic="screenshot", title="Скриншот",
+                            answer="", delta=piece, done=False, stream_id=stream_id,
+                        )
+                    )
+                text = "".join(acc).strip()
+                self.signals.llm_answer.emit(
+                    protocol.LlmAnswer(
+                        query=question, topic="screenshot", title="Скриншот",
+                        answer=text or "(пустой ответ)", delta="", done=True,
+                        stream_id=stream_id,
+                    )
+                )
+                if text:
+                    self.store.update_screenshot_answer(shot_id, text)
+            except Exception as exc:  # noqa: BLE001
+                log.exception("screenshot answer failed")
+                self.signals.llm_answer.emit(
+                    protocol.LlmAnswer(
+                        query=question, topic="screenshot", title="Скриншот",
+                        answer=f"Не удалось получить ответ по скриншоту: {exc}",
+                        delta="", done=True, stream_id=stream_id,
+                    )
+                )
+            finally:
+                self.signals.screenshot_answer_done.emit(shot_id)
+
+        threading.Thread(target=_worker, name="llm-image-answer", daemon=True).start()
 
     def _on_term(self, detected) -> None:
         self.signals.term.emit(detected)

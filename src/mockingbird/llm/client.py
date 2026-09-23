@@ -534,6 +534,7 @@ class LlmClient:
         self._streaming_count = 0
         self._answer_pending = 0
         self._streaming_lock = threading.Lock()
+        self._vision_cache: dict[tuple[str, str], bool] = {}
 
     def set_profile(self, profile) -> None:
         """Render answer-mode prompts from the given specialization profile."""
@@ -655,6 +656,143 @@ class LlmClient:
                 timeout=self._cfg.timeout_s,
             )
         return self._failover_client
+
+    # -- vision (screenshot-to-answer) ----------------------------------------
+
+    # 1x1 red PNG: the cheapest possible image probe payload.
+    _PROBE_PNG_B64 = (
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4"
+        "z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg=="
+    )
+
+    def probe_vision(self) -> bool:
+        """Check whether the configured model accepts image inputs.
+
+        Sends a 1x1 PNG with a trivial question; a 200 response means the
+        model is vision-capable, a 4xx mentioning the content type means it
+        is not, anything else (network, auth) also yields False — the caller
+        shows a readable message either way. Result is cached per
+        (base_url, model) and invalidated on apply_settings.
+        """
+        key = (self._cfg.base_url, self._cfg.model)
+        if self._vision_cache.get(key) is not None:
+            return self._vision_cache[key]
+        client = self._ensure()
+        if client is None:
+            return False
+        try:
+            response = client.chat.completions.create(
+                model=self._cfg.model,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "What color is this image? One word."},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/png;base64,{self._PROBE_PNG_B64}"},
+                            },
+                        ],
+                    }
+                ],
+                max_tokens=5,
+                timeout=15,
+            )
+            ok = bool(response.choices)
+        except Exception as exc:  # noqa: BLE001
+            low = str(exc).lower()
+            # Provider rejected the image content — definitive "no vision".
+            if any(t in low for t in ("image", "modality", "content type", "vision", "multimodal")):
+                log.info("llm: model %s does not support images (%s)", self._cfg.model, exc)
+                ok = False
+            else:
+                log.warning("llm: vision probe failed (%s) — assuming no vision", exc)
+                ok = False
+        self._vision_cache[key] = ok
+        return ok
+
+    def invalidate_vision_cache(self) -> None:
+        self._vision_cache.clear()
+
+    def answer_image_question_stream(
+        self, image_jpeg_b64: str, question: str, mode: str = "technical", context: str = ""
+    ) -> Iterator[str]:
+        """Stream an answer to a question about a screenshot.
+
+        Falls back to a non-streaming request when the provider rejects
+        streaming with image content (common with multimodal endpoints) —
+        the full text is then yielded as one chunk. Raises RuntimeError with
+        a readable message on hard failures so the UI can show a dialog.
+        """
+        client = self._ensure()
+        if client is None:
+            raise RuntimeError("LLM не настроен (нет base_url/api_key)")
+        system = _SYSTEM_BY_MODE.get(mode, _SYSTEM_BY_MODE["technical"])
+        gen = _GEN_PARAMS_BY_MODE.get(mode, _GEN_PARAMS_BY_MODE["technical"])
+        text_part = (
+            f"Вопрос по содержимому скриншота: {question}"
+            + (f"\n\nКонтекст из базы знаний:\n{context}" if context else "")
+        )
+        messages = [
+            {"role": "system", "content": system},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": text_part},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{image_jpeg_b64}"},
+                    },
+                ],
+            },
+        ]
+        self._enter_stream()
+        try:
+            try:
+                stream = client.chat.completions.create(
+                    model=self._cfg.model,
+                    messages=messages,
+                    temperature=gen["temperature"],
+                    max_tokens=gen["max_tokens"],
+                    stream=True,
+                )
+                got_any = False
+                for delta in stream:
+                    piece = (delta.choices[0].delta.content or "") if delta.choices else ""
+                    if piece:
+                        got_any = True
+                        yield piece
+                if got_any:
+                    return
+                # Empty stream: some providers return an empty streamed body
+                # for image requests — fall through to the non-stream path.
+            except Exception as exc:  # noqa: BLE001
+                low = str(exc).lower()
+                vision_reject = any(
+                    t in low for t in (
+                        "modality", "multimodal",
+                        "does not support image", "image input",
+                        "images are not supported", "not support images",
+                    )
+                )
+                if vision_reject:
+                    raise RuntimeError(
+                        "Модель не поддерживает изображения — настройте "
+                        "vision-модель в настройках LLM"
+                    ) from exc
+                log.warning("llm: image stream failed (%s) — retrying without stream", exc)
+            # Non-stream fallback.
+            response = client.chat.completions.create(
+                model=self._cfg.model,
+                messages=messages,
+                temperature=gen["temperature"],
+                max_tokens=gen["max_tokens"],
+            )
+            text = (response.choices[0].message.content or "").strip()
+            if text:
+                yield text
+        finally:
+            self._exit_stream()
 
     def analyze_terms(self, transcript: str) -> list[dict]:
         """Ask the LLM to pull all relevant terms for the conversation.
