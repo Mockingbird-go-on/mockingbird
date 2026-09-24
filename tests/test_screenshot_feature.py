@@ -331,3 +331,26 @@ def test_model_dialog_finalized_blocks_late_progress():
     # And a fresh download cycle re-opens it.
     dlg.show_above(None)
     assert dlg._finalized is False and dlg._download_active is True
+
+
+def test_model_dialog_done_ok_while_hidden(monkeypatch):
+    """done_ok must finalize the overlay even when it is currently hidden
+    (auto-hidden because the main window lost activation mid-download):
+    otherwise the 300 ms visibility timer resurrects it at 99% forever
+    once the user returns to the app."""
+    from PySide6.QtWidgets import QApplication
+
+    from mockingbird.ui.model_download_dialog import ModelDownloadDialog
+
+    app = QApplication.instance() or QApplication([])
+    dlg = ModelDownloadDialog(parent=None)
+    dlg._finalized = False
+    dlg._download_active = True
+    dlg.set_progress("Скачивание model-pack.zip: 420 из 426 МБ", 99.0)
+    # Simulate the overlay being auto-hidden (app inactive).
+    dlg.hide()
+    assert not dlg.isVisible()
+    dlg.done_ok()  # main_window now calls this regardless of visibility
+    dlg._sync_visibility_with_main()  # what the 300 ms timer does on return
+    assert dlg._finalized is True
+    assert dlg._download_active is False
