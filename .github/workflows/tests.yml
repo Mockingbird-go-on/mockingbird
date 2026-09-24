@@ -53,6 +53,10 @@ jobs:
     needs: test
     runs-on: self-hosted
     if: false && github.ref == 'refs/heads/main'
+    env:
+      # Override on the runner if Python lives elsewhere
+      WIN_PY_DIR: '%LOCALAPPDATA%\Programs\Python\Python312'
+      WIN_BUILD_DIR: 'E:\mockingbird'
 
     steps:
       - uses: actions/checkout@v4
@@ -60,28 +64,28 @@ jobs:
       - name: Sync project to build directory
         shell: cmd
         run: |
-          robocopy "${{ github.workspace }}\src" "E:\mockingbird\src" /MIR /XD __pycache__ .pytest_cache /NJH /NJS
-          robocopy "${{ github.workspace }}\scripts" "E:\mockingbird\scripts" /MIR /NJH /NJS
-          robocopy "${{ github.workspace }}\tests" "E:\mockingbird\tests" /MIR /XD __pycache__ /NJH /NJS
-          copy /Y "${{ github.workspace }}\pyproject.toml" "E:\mockingbird\pyproject.toml"
+          robocopy "${{ github.workspace }}\src" "%WIN_BUILD_DIR%\src" /MIR /XD __pycache__ .pytest_cache /NJH /NJS
+          robocopy "${{ github.workspace }}\scripts" "%WIN_BUILD_DIR%\scripts" /MIR /NJH /NJS
+          robocopy "${{ github.workspace }}\tests" "%WIN_BUILD_DIR%\tests" /MIR /XD __pycache__ /NJH /NJS
+          copy /Y "${{ github.workspace }}\pyproject.toml" "%WIN_BUILD_DIR%\pyproject.toml"
           exit /b 0
 
       - name: Build .exe (PyInstaller)
         shell: cmd
         run: |
-          set "PATH=C:\Users\Happy\AppData\Local\Programs\Python\Python312;C:\Users\Happy\AppData\Local\Programs\Python\Python312\Scripts;%PATH%"
-          cd /d E:\mockingbird
+          set "PATH=%WIN_PY_DIR%;%WIN_PY_DIR%\Scripts;%PATH%"
+          cd /d %WIN_BUILD_DIR%
           powershell.exe -ExecutionPolicy Bypass -File scripts\build_windows.ps1
 
       - name: Smoke test
         shell: cmd
         run: |
-          set "PATH=C:\Users\Happy\AppData\Local\Programs\Python\Python312;C:\Users\Happy\AppData\Local\Programs\Python\Python312\Scripts;%PATH%"
-          E:\mockingbird\dist\mockingbird\mockingbird.exe --version
+          set "PATH=%WIN_PY_DIR%;%WIN_PY_DIR%\Scripts;%PATH%"
+          %WIN_BUILD_DIR%\dist\mockingbird\mockingbird.exe --version
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: mockingbird-windows-exe
-          path: E:\mockingbird\dist\mockingbird\
+          path: dist\mockingbird\
           retention-days: 30
