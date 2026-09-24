@@ -39,7 +39,7 @@ fallback на CPU), распознанные вопросы обрабатыва
 
 ## Демонстрация
 
-![Mockingbird в работе](docs/demo/mockingbird-demo.gif)
+![Mockingbird в работе](docs/demo/mockingbird-demo.gif?v=3)
 
 > Живой транскрипт вопроса, ответ ИИ из базы знаний и LLM, история
 > интервью — всё в реальном времени.
