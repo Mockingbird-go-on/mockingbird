@@ -127,6 +127,15 @@ def test_download_retry_actually_retries(monkeypatch, tmp_path):
 
     monkeypatch.setattr(fake_hf, "snapshot_download", smart_snapshot, raising=False)
     monkeypatch.setattr(we, "_model_dir_problem", lambda p: None)
+    # The GitHub-first source must be unavailable in this test so the HF
+    # retry path is exercised (added 2026-09-24: resolve_model_path prefers
+    # our GitHub release before huggingface).
+    import urllib.request as _ur
+
+    def _no_github(req, timeout=None):
+        raise OSError("github unreachable in test")
+
+    monkeypatch.setattr(_ur, "urlopen", _no_github)
     cfg = we.WhisperConfig()
     cfg.model_dir = str(tmp_path)  # download root; no cached snapshot inside
     path = we.resolve_model_path(cfg, progress_cb=None)
