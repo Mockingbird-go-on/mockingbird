@@ -1,5 +1,3 @@
-# Mockingbird
-
 <p>
   <img src="docs/brand_banner.png?v=3" alt="Mockingbird" width="412" align="top">
 </p>
