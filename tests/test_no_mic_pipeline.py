@@ -56,6 +56,7 @@ def fake_audio_app(monkeypatch, tmp_path):
 
     saved_capture = sys.modules.get("mockingbird.audio.capture")
     saved_loopback = sys.modules.get("mockingbird.audio.loopback")
+    saved_engine = sys.modules.get("mockingbird.stt.whisper_engine")
 
     fake_engine_mod = types.ModuleType("mockingbird.stt.whisper_engine")
 
@@ -131,7 +132,13 @@ def fake_audio_app(monkeypatch, tmp_path):
 
     yield
 
-    sys.modules.pop("mockingbird.stt.whisper_engine", None)
+    # Restore the REAL engine module (do not pop: a pop makes later imports
+    # create a second copy of whisper_engine, and monkeypatches such as the
+    # no_github_model_mirror fixture then miss the copy the tests call).
+    if saved_engine is not None:
+        sys.modules["mockingbird.stt.whisper_engine"] = saved_engine
+    else:
+        sys.modules.pop("mockingbird.stt.whisper_engine", None)
     if saved_whisper_attr is not None:
         setattr(_stt_pkg, "whisper_engine", saved_whisper_attr)
     else:
