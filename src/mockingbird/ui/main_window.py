@@ -674,6 +674,13 @@ class MainWindow(QMainWindow):
     def _on_cuda_fallback(self, detail: str) -> None:
         """Configured CUDA turned out unusable; the engine already reloaded
         on CPU. Ask the user how to proceed (info-only — CPU already works)."""
+        from mockingbird.build import is_cpu_build
+
+        if is_cpu_build():
+            # CPU bundle: the user deliberately chose it — "GPU not working"
+            # is not a fallback here, no dialog.
+            log.info("cuda_fallback suppressed: CPU build")
+            return
         from PySide6.QtWidgets import QMessageBox
 
         box = QMessageBox(self)

@@ -127,6 +127,13 @@ _excludes = [
 ]
 if _CPU_ONLY:
     _excludes += ["nvidia"]
+    # Runtime marker — see mockingbird.spec for the rationale.
+    import tempfile
+
+    _marker = os.path.join(tempfile.gettempdir(), "mockingbird_cpu_build.marker")
+    with open(_marker, "w", encoding="utf-8") as f:
+        f.write("cpu")
+    datas = datas + [(_marker, "mockingbird")]
 
 a = Analysis(
     [_ENTRY],
