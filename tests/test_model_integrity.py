@@ -57,7 +57,7 @@ def test_problem_null_config(tmp_path):
     assert "not a JSON object" in _model_dir_problem(path)
 
 
-def test_resolve_self_heals_corrupt_cache(tmp_path, monkeypatch):
+def test_resolve_self_heals_corrupt_cache(tmp_path, monkeypatch, no_github_model_mirror):
     cfg = WhisperConfig(model_size="Systran/faster-whisper-tiny", model_dir=str(tmp_path))
     corrupt = tmp_path / "snap"
     corrupt.mkdir()
@@ -76,7 +76,7 @@ def test_resolve_self_heals_corrupt_cache(tmp_path, monkeypatch):
     assert not corrupt.exists()
 
 
-def test_resolve_raises_when_download_still_broken(tmp_path, monkeypatch):
+def test_resolve_raises_when_download_still_broken(tmp_path, monkeypatch, no_github_model_mirror):
     cfg = WhisperConfig(model_size="Systran/faster-whisper-tiny", model_dir=str(tmp_path))
     broken = tmp_path / "snap"
     broken.mkdir()

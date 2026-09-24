@@ -44,7 +44,7 @@ def test_local_cache_used_first(monkeypatch, tmp_path):
     assert calls == [{"repo_id": "Systran/faster-whisper-tiny", "local_files_only": True}]
 
 
-def test_falls_back_to_network_when_not_cached(monkeypatch, tmp_path):
+def test_falls_back_to_network_when_not_cached(monkeypatch, tmp_path, no_github_model_mirror):
     calls = []
     downloaded = _make_snapshot(tmp_path, "downloaded-snapshot")
 
@@ -63,7 +63,7 @@ def test_falls_back_to_network_when_not_cached(monkeypatch, tmp_path):
     ]
 
 
-def test_download_reports_progress(monkeypatch, tmp_path):
+def test_download_reports_progress(monkeypatch, tmp_path, no_github_model_mirror):
     events: list[tuple[str, float]] = []
     downloaded = _make_snapshot(tmp_path, "downloaded-snapshot")
 

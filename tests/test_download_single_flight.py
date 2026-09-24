@@ -63,7 +63,7 @@ def test_second_download_of_same_repo_aborts_immediately(tmp_path, monkeypatch):
     release.set()
 
 
-def test_stall_watchdog_aborts_after_timeout(tmp_path, monkeypatch):
+def test_stall_watchdog_aborts_after_timeout(tmp_path, monkeypatch, no_github_model_mirror):
     """A download that never yields a byte must abort via the cancel event,
     not hang forever."""
     cancel = threading.Event()
@@ -102,7 +102,7 @@ def test_reporter_pokes_stall_watchdog_on_bytes():
     assert len(pokes) == 2
 
 
-def test_cancel_event_aborts_before_retry(tmp_path, monkeypatch):
+def test_cancel_event_aborts_before_retry(tmp_path, monkeypatch, no_github_model_mirror):
     cancel = threading.Event()
 
     def fake_snapshot(repo_id=None, **kwargs):
@@ -116,7 +116,7 @@ def test_cancel_event_aborts_before_retry(tmp_path, monkeypatch):
         we.resolve_model_path(_cfg(tmp_path), cancel_event=cancel)
 
 
-def test_flight_lock_released_after_failure(tmp_path, monkeypatch):
+def test_flight_lock_released_after_failure(tmp_path, monkeypatch, no_github_model_mirror):
     """The single-flight lock must be released even when the download fails,
     otherwise every later retry of the same repo is rejected forever."""
     attempts = []
