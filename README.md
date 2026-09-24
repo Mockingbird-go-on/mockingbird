@@ -1,7 +1,7 @@
 # Mockingbird
 
-<p align="center">
-  <img src="docs/logo.png" alt="Mockingbird" width="180">
+<p>
+  <img src="docs/brand_banner.png" alt="Mockingbird" width="412" align="top">
 </p>
 
 [![CI](https://github.com/Mockingbird-go-on/mockingbird/actions/workflows/tests.yml/badge.svg)](https://github.com/Mockingbird-go-on/mockingbird/actions/workflows/tests.yml)
