@@ -2,7 +2,7 @@
 # Sync the WSL project to a Windows-native path and build the .exe there.
 #
 # Why: PyInstaller must run from a Windows-native path (not \\wsl.localhost\...).
-# This script rsyncs the project to E:\mockingbird and launches the Windows
+# This script rsyncs the project to a Windows-native dir and launches the Windows
 # build from WSL, streaming PowerShell output back to the terminal.
 #
 # Usage (from anywhere in WSL):
@@ -11,20 +11,23 @@
 #   bash scripts/sync_and_build.sh --clean    # full rebuild (drop PyInstaller cache)
 #   bash scripts/sync_and_build.sh --cpu      # CPU-only build (no CUDA stack)
 #
-# Requires: rsync, /mnt/e mounted, Windows Python 3.11+ on the target machine.
+# Requires: rsync, a mounted Windows drive, Windows Python 3.11+ on the target
+# machine. Override the destination via env:
+#   MOCKINGBIRD_DST=/mnt/e/mockingbird MOCKINGBIRD_WIN_DST=E:\\mockingbird bash scripts/sync_and_build.sh
 
 set -euo pipefail
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DST="/mnt/e/mockingbird"
-WIN_DST="E:\\mockingbird"
+DST="${MOCKINGBIRD_DST:-/mnt/e/mockingbird}"
+WIN_DST="${MOCKINGBIRD_WIN_DST:-E:\\mockingbird}"
+MOUNT_DIR="$(dirname "$DST")"
 
 if [ ! -d "$SRC" ]; then
     echo "ERROR: source not found: $SRC" >&2
     exit 1
 fi
-if [ ! -d /mnt/e ]; then
-    echo "ERROR: /mnt/e is not mounted. Make sure drive E: is accessible from WSL." >&2
+if [ ! -d "$MOUNT_DIR" ]; then
+    echo "ERROR: $MOUNT_DIR is not mounted. Make sure the Windows drive is accessible from WSL." >&2
     exit 1
 fi
 
@@ -85,7 +88,7 @@ echo ">>> Build complete. Output: ${DST}/dist/mockingbird/"
 
 # Pull the freshly built installer(s) back into the WSL project's installer/
 # so scripts/release.sh (which runs entirely in WSL) can find them. The
-# Windows build writes them to E:\mockingbird\installer (RootDir-anchored in
+# Windows build writes them to the Windows installer dir (RootDir-anchored in
 # installer.iss); without this copy they never leave the Windows side.
 # Filtered by the CURRENT package version so stale installers from older
 # builds never leak into the release.

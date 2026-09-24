@@ -46,11 +46,11 @@ bash scripts/build.sh win-cpu            # CPU-инсталлятор
 bash scripts/sync_and_build.sh --no-build
 ```
 
-Далее в PowerShell **на Windows** (например, `E:\mockingbird`):
+Далее в PowerShell **на Windows** (в каталоге, куда синкнулся проект):
 
 ```powershell
 # 2) сборка exe + инсталлятор:
-powershell -ExecutionPolicy Bypass -File E:\mockingbird\scripts\build_windows.ps1 -Installer
+powershell -ExecutionPolicy Bypass -File scripts\build_windows.ps1 -Installer
 ```
 
 `build_windows.ps1` сам: ставит зависимости (`pip install -e ".[dev]"` +
@@ -306,7 +306,7 @@ bash scripts/build_model_pack.sh                          # model.zip (без --
 bash scripts/build_linux.sh                               # AppImage + .deb
 ```
 
-> Windows-инсталляторы собираются на стороне Windows (`E:\mockingbird\installer`)
+> Windows-инсталляторы собираются на стороне Windows (в Windows-каталоге проекта, `installer/`)
 > и затем копируются `sync_and_build.sh` обратно в WSL `installer/`, откуда их
 > берёт `release.sh`. Вручную ничего копировать не нужно.
 

@@ -23,7 +23,7 @@
 #   --draft      для цели publish: создать релиз черновиком
 #
 # Внутренние скрипты (их можно звать и напрямую, если нужен тонкий контроль):
-#   scripts/sync_and_build.sh   rsync WSL -> E:\mockingbird + build_windows.ps1
+#   scripts/sync_and_build.sh   rsync WSL -> Windows-каталог + build_windows.ps1
 #   scripts/build_linux.sh      PyInstaller Linux spec -> AppImage/.deb
 #   scripts/build_model_pack.sh пак модели whisper
 #   scripts/release.sh          публикация в GitHub Releases
