@@ -994,6 +994,11 @@ class InterviewPanel(QWidget):
         # screen (covered by F1 at the engine layer; this is the UI-side belt).
         if self._llm_stream_text:
             return
+        # An answer request is in flight (placeholder shown, watchdog armed):
+        # showing «Ответ ИИ недоступен» here flashed a scary error during the
+        # TTFB window before the first token landed.
+        if self._llm_watchdog.isActive():
+            return
         self._llm_answer_from_kb = False
         self._llm_answer_text = ""
         if view.blocks:
