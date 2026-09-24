@@ -38,7 +38,7 @@ from mockingbird.config import Config
 from mockingbird.ui import theme
 from mockingbird.ui.toggle import ToggleSwitch
 
-_WHISPER_MODELS = ["tiny", "base", "small", "medium", "large-v3", "large-v3-turbo"]
+_WHISPER_MODELS = ["tiny", "base", "small", "medium", "large-v3-turbo"]
 _BEAM_SIZES = [("1", "1 (рекомендуется)"), ("3", "3"), ("5", "5")]
 _COMPUTE_TYPES = [
     ("int8", "int8 (быстрее, CPU)"),

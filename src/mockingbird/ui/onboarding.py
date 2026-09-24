@@ -30,7 +30,7 @@ from mockingbird.ui.toggle import ToggleSwitch
 class OnboardingWizard(QDialog):
     """Multi-step setup wizard for first-launch configuration."""
 
-    _WHISPER_MODELS = ["tiny", "base", "small", "medium", "large-v3", "large-v3-turbo"]
+    _WHISPER_MODELS = ["tiny", "base", "small", "medium", "large-v3-turbo"]
     _COMPUTE_TYPES = [("int8", "int8 (быстрее)"), ("float16", "float16"), ("float32", "float32 (точнее)")]
     _DEVICES = [("auto", "авто"), ("cpu", "CPU"), ("cuda", "CUDA (GPU)")]
 
