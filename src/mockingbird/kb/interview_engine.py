@@ -896,6 +896,20 @@ class InterviewEngine:
         
         return view
 
+    def submit_external_answer(self, key: str, run) -> bool:
+        """Serialize an out-of-band answer job (e.g. screenshot questions).
+
+        Routes external LLM streams through the SAME serial question queue as
+        voice answers: the provider serializes per-key, so a parallel
+        screenshot stream would inflate the voice answer's TTFB, and the UI
+        answer pane has per-stream state — interleaved streams garble it.
+        """
+        k = _query_key(key)
+        if not k:
+            return False
+        self._question_queue.ensure_started()
+        return self._question_queue.submit(key=f"shot::{k}", segment_id="", run=run)
+
     def ask_concept(self, query: str) -> None:
         """Answer a pure concept/term question via LLM without KB context.
 

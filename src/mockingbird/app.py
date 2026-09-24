@@ -295,7 +295,18 @@ class App:
         if "model" in low and "cancelled" in low:
             self.signals.model_load_cancelled.emit()
             return
-        if "model" in low and "download" in low:
+        # Broad load-failure detection: a warm-start/download failure phrased
+        # without the exact pair "model"+"download" previously slipped past,
+        # leaving the download overlay stuck with a frozen progress bar and a
+        # forever-polling visibility timer.
+        is_load_failure = (
+            ("model" in low and "download" in low)
+            or "model load failed" in low
+            or "whisper model" in low
+            or "failed to load whisper" in low
+            or "загрузк" in low and "модел" in low
+        )
+        if is_load_failure:
             self.signals.model_load_failed.emit(message)
         self.signals.error.emit(message)
 
@@ -329,13 +340,16 @@ class App:
 
         threading.Thread(target=_worker, name="vision-probe", daemon=True).start()
 
-    def answer_screenshot(self, jpeg_bytes: bytes, question: str) -> None:
+    def answer_screenshot(self, jpeg_bytes: bytes, question: str, stream_id: str = "") -> None:
         """Ask the LLM about a screenshot; stream into the answer pane.
 
-        Runs on a daemon thread; the answer is delivered through the regular
-        ``llm_answer`` signal channel so the existing «Ответ ИИ» streaming
-        machinery renders it. The screenshot + question + final answer are
-        recorded in the screenshots table.
+        The stream runs through the interview engine's SERIAL question queue
+        (same as voice answers): the provider serializes per-key, so a
+        parallel image stream would inflate a concurrent voice answer's
+        latency, and the answer pane's per-stream state cannot render two
+        interleaved streams. The answer is delivered through the regular
+        ``llm_answer`` signal channel; the screenshot + question + final
+        answer are recorded in the screenshots table.
         """
         import base64 as _b64
 
@@ -352,12 +366,12 @@ class App:
             shot_id, self.session_id, str(image_path), question
         )
 
-        mode = "technical"
         with getattr(self.interview, "_mode_lock", threading.Lock()):
             mode = getattr(self.interview, "_current_answer_mode", "technical") or "technical"
+        payload = _b64.b64encode(jpeg_bytes).decode("ascii")
+        stream_id = stream_id or f"shot-{shot_id}"
 
         def _worker() -> None:
-            stream_id = f"shot-{shot_id}"
             try:
                 self.signals.llm_answer.emit(
                     protocol.LlmAnswer(
@@ -367,7 +381,7 @@ class App:
                 )
                 acc: list[str] = []
                 for piece in self.llm.answer_image_question_stream(
-                    _b64.b64encode(jpeg_bytes).decode("ascii"), question, mode=mode
+                    payload, question, mode=mode
                 ):
                     acc.append(piece)
                     self.signals.llm_answer.emit(
@@ -398,7 +412,7 @@ class App:
             finally:
                 self.signals.screenshot_answer_done.emit(shot_id)
 
-        threading.Thread(target=_worker, name="llm-image-answer", daemon=True).start()
+        self.interview.submit_external_answer(question, _worker)
 
     def _on_term(self, detected) -> None:
         self.signals.term.emit(detected)

@@ -70,6 +70,10 @@ class MainWindow(QMainWindow):
         # Vision capability of the current LLM: True/False after the probe,
         # None before it (dialog shows «проверка…»).
         self._vision_state: bool | None = None
+        # The question of the screenshot stream in flight — used for the
+        # history entry (the engine's pending query may belong to a voice
+        # question that arrived meanwhile).
+        self._pending_screenshot_question: str = ""
         self._session_timer = QTimer(self)
         self._session_timer.setInterval(1000)
         self._session_timer.timeout.connect(self._tick_session)
@@ -622,9 +626,19 @@ class MainWindow(QMainWindow):
             log.warning("screenshot grab failed: %s", exc)
             self.statusBar().showMessage(f"Скриншот не получен: {exc}", 5000)
             return
-        self._shot_dlg = ScreenshotQuestionDialog(jpeg, preview, vision_ok=self._vision_state)
-        self._shot_dlg.asked.connect(self._on_screenshot_question)
-        self._shot_dlg.center_on(self)
+        # Close (and let Qt delete) any previous dialog before opening a new
+        # one — the overwritten reference used to orphan a visible dialog
+        # that could then be garbage-collected on screen.
+        old = getattr(self, "_shot_dlg", None)
+        if old is not None:
+            old.close()
+            old.deleteLater()
+        self._shot_overlay = None
+        dlg = ScreenshotQuestionDialog(jpeg, preview, vision_ok=self._vision_state)
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
+        dlg.asked.connect(self._on_screenshot_question)
+        self._shot_dlg = dlg
+        dlg.center_on(self)
         # Vision probe lazily on first use (and again if it failed before).
         if self._vision_state is None or self._vision_state is False:
             self._app.check_vision_async()
@@ -633,23 +647,29 @@ class MainWindow(QMainWindow):
         dlg = getattr(self, "_shot_dlg", None)
         if dlg is None:
             return
-        # Make the interview pane accept this answer stream: on_llm_answer
-        # matches by _pending_llm_query; history browsing must be off.
-        self._interview._browsing_history = False
-        self._interview._pending_llm_query = question
-        self._interview.set_current_query(question)
-        self._app.answer_screenshot(dlg.jpeg_bytes(), question)
+        # Prepare the answer pane BEFORE the (queue-serialized) stream starts:
+        # latches the pending query, resets any previous stream buffer, shows
+        # the placeholder and starts the 15 s watchdog (a hung image stream
+        # previously left the old answer on screen with no timeout at all).
+        import uuid as _uuid
+
+        stream_id = f"shot-{_uuid.uuid4().hex[:12]}"
+        self._interview.begin_external_stream(question, stream_id)
+        self._pending_screenshot_question = question
+        self._app.answer_screenshot(dlg.jpeg_bytes(), question, stream_id=stream_id)
 
     def _on_screenshot_answer_done(self, shot_id: str) -> None:
         dlg = getattr(self, "_shot_dlg", None)
         if dlg is not None and dlg.isVisible():
             dlg.set_busy(False, "Ответ — в панели «Ответ ИИ»")
             dlg.close()
-        # History entry: the query is the screenshot question; the topic
-        # marker makes the strip visually distinct from voice questions.
-        query = getattr(self._interview, "_pending_llm_query", "") or ""
+        # History entry: the query is the screenshot question (NOT the
+        # engine's _pending_llm_query — a voice question may have arrived
+        # meanwhile and would be mislabeled as a screenshot).
+        query = getattr(self, "_pending_screenshot_question", "") or ""
         if query:
             self._interview._history.add_entry(f"📸 {query}", "screenshot")
+            self._pending_screenshot_question = ""
 
     def _on_cuda_fallback(self, detail: str) -> None:
         """Configured CUDA turned out unusable; the engine already reloaded

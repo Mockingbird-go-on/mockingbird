@@ -508,6 +508,11 @@ class InterviewPanel(QWidget):
         self._llm_stream_text = ""
         self._llm_answer_text = ""
         self._llm_answer_from_kb = False
+        # Active stream guard: only ONE stream may feed the pane. The first
+        # message (done=False with no delta, or the first delta) latches its
+        # stream_id; deltas from any other concurrent stream are dropped
+        # instead of interleaving into the shared buffer.
+        self._active_stream_id = ""
         self._live_text = ""
         self._live_muted = False
 
@@ -739,6 +744,15 @@ class InterviewPanel(QWidget):
         """
         if not self._llm_matches(msg.query):
             return
+        # Single-stream guard: once a stream is active, only its deltas may
+        # feed the pane. A different concurrent stream (e.g. a stale voice
+        # answer arriving after a screenshot question took over the pane) is
+        # dropped instead of interleaving into the shared buffer.
+        sid = getattr(msg, "stream_id", "") or ""
+        if self._active_stream_id and sid and sid != self._active_stream_id:
+            return
+        if not self._active_stream_id and sid:
+            self._active_stream_id = sid
         if msg.done:
             self._llm_timer.stop()
             self._llm_watchdog.stop()
@@ -871,6 +885,32 @@ class InterviewPanel(QWidget):
     def _reset_llm_stream(self) -> None:
         self._llm_timer.stop()
         self._llm_stream_text = ""
+        self._active_stream_id = ""
+
+    def begin_external_stream(self, query: str, stream_id: str) -> None:
+        """Prepare the pane for an out-of-band answer stream (screenshot).
+
+        Mirrors what ``on_question`` does for voice questions: latch the
+        pending query (for ``_llm_matches``), reset the previous stream
+        buffer, show the placeholder and START the 15 s watchdog — without
+        this a hung image stream left the previous answer on screen with no
+        timeout at all.
+        """
+        import html as _html
+
+        self._browsing_history = False
+        self._current_query = query
+        self._pending_llm_query = query
+        self._answer_llm.set_current_query(query)
+        self._reset_llm_stream()
+        self._llm_answer_text = ""
+        if self._llm_primary and self._llm_available:
+            self._answer_llm.browser().setHtml(_themed_html(
+                f"<p style='color:{theme.TEXT_SECONDARY};'>{_html.escape(_LLM_PLACEHOLDER)}</p>"
+            ))
+            self._llm_watchdog.start()
+        # Latch the stream id so on_llm_answer accepts it immediately.
+        self._active_stream_id = stream_id or ""
 
     def _render_view(self, view: protocol.KnowledgeView, record: bool = True) -> None:
         self._view = view
@@ -1044,11 +1084,19 @@ class InterviewPanel(QWidget):
         # Stop the streaming flush timer so it does not keep repainting after
         # we decided what to show.
         self._llm_timer.stop()
-        if not self._llm_answer_text:
+        if not self._llm_answer_text and not self._llm_stream_text:
             self._answer_llm.browser().setHtml(_themed_html(
                 f"<p style='color:{theme.TEXT_SECONDARY};'>Ответ ИИ задерживается. "
                 "Если он не появится — нажмите ⟳ для перегенерации.</p>"
             ))
+        elif self._llm_stream_text:
+            # A partial stream stalled mid-answer without a done message:
+            # keep what was rendered but mark it clearly as truncated, so it
+            # does not silently pass for the final answer.
+            self._llm_stream_text += (
+                "\n\n⏳ Ответ оборвался — нажмите ⟳ для перегенерации."
+            )
+            self._flush_llm()
 
     # -- tree (removed 2026-09-19): the topic tree was dropped from the GUI --
     # KB blocks remain available through the engine (RAG-as-reference).
