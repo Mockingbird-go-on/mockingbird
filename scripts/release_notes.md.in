@@ -62,6 +62,18 @@ mockingbird
 
 Нужен `libfuse2` (AppImage) и PulseAudio/PipeWire для loopback-режима.
 
+**GPU (NVIDIA) на Linux**: AppImage поддерживает и GPU, и CPU (авто-fallback,
+как Windows-CUDA-сборка). CUDA-библиотеки не входят в бандл — они берутся из
+системы, поэтому для работы на GPU нужны установленные драйвер NVIDIA и
+библиотеки cuDNN/cuBLAS, например на Ubuntu/Debian:
+
+```bash
+sudo apt install libcudnn9 libcublas12        # версии — по вашему CUDA
+```
+
+Без них приложение автоматически работает на CPU (int8) — ничего доустанавливать
+не требуется.
+
 ---
 
 Полная документация и сборка из исходников — в [README](README.md) и [BUILD.md](BUILD.md).
