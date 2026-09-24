@@ -56,11 +56,13 @@ def test_app_routes_cancel_to_dedicated_signal():
     model_load_failed (the latter would pop a misleading retry dialog)."""
     src = _read("app.py")
     assert "model_load_cancelled.emit()" in src
-    # cancellation branch returns before the failure branch
+    # cancellation branch returns before the failure branch (the failure
+    # detector was broadened 2026-09-24: match the is_load_failure block)
     cancel_idx = src.index('if "model" in low and "cancelled" in low:')
-    fail_idx = src.index('if "model" in low and "download" in low:')
+    fail_idx = src.index("is_load_failure = (")
     assert cancel_idx < fail_idx
     assert "return" in src[cancel_idx:fail_idx]
+    assert "model_load_failed.emit" in src
 
 
 def test_main_window_has_cancel_cross_wired():
