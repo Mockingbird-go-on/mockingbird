@@ -308,3 +308,26 @@ def test_kb_pane_holds_during_inflight_answer():
     panel._llm_watchdog.isActive.return_value = False
     panel._render_primary(_V())
     assert panel._answer_llm.browser.called
+
+
+def test_model_dialog_finalized_blocks_late_progress():
+    """After done_ok, late progress events (unpack / in-memory phase) must
+    not resurrect the overlay — the 'stuck at 99%' regression."""
+    from PySide6.QtWidgets import QApplication
+
+    from mockingbird.ui.model_download_dialog import ModelDownloadDialog
+
+    app = QApplication.instance() or QApplication([])
+    dlg = ModelDownloadDialog(parent=None)
+    dlg._finalized = False
+    dlg._download_active = True
+    dlg.set_progress("Скачивание model-pack.zip: 1400 из 1400 МБ", 99.0)
+    assert dlg._download_active is True
+    dlg.done_ok()
+    dlg.set_progress("Распаковка модели…", -1.0)
+    dlg.set_progress("Loading model into memory…", -1.0)
+    assert dlg._download_active is False, "late events resurrected the overlay"
+    assert dlg._finalized is True
+    # And a fresh download cycle re-opens it.
+    dlg.show_above(None)
+    assert dlg._finalized is False and dlg._download_active is True
