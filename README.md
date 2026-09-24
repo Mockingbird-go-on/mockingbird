@@ -1,5 +1,9 @@
 # Mockingbird
 
+<p align="center">
+  <img src="docs/logo.png" alt="Mockingbird" width="180">
+</p>
+
 [![CI](https://github.com/Mockingbird-go-on/mockingbird/actions/workflows/tests.yml/badge.svg)](https://github.com/Mockingbird-go-on/mockingbird/actions/workflows/tests.yml)
 [![Python](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/release/python-3120/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
