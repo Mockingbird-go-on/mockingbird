@@ -820,7 +820,13 @@ class SettingsDialog(QDialog):
             self.config.audio.loopback_device = None
         self.config.stt.backend = "whisper"
         # whisper.device: the STT tab has no device combo anymore — keep the
-        # configured value (auto/cpu/cuda) untouched.
+        # configured value (auto/cpu/cuda) untouched. Exception: a CPU bundle
+        # normalizes cuda/auto to cpu so the saved config never asks for the
+        # GPU that build cannot use.
+        from mockingbird.build import is_cpu_build
+
+        if is_cpu_build() and (self.config.whisper.device or "auto").lower() in ("auto", "cuda"):
+            self.config.whisper.device = "cpu"
         self.config.whisper.model_size = self._model.currentText()
         self.config.whisper.compute_type = self._compute.currentData() or self._compute.currentText()
         beam_raw = self._beam.currentData() or self._beam.currentText()

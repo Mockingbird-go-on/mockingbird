@@ -1386,11 +1386,25 @@ class WhisperEngine:
         self._raise_if_cancelled()
         from faster_whisper import WhisperModel
 
-        device = resolve_device(self._cfg.device, cuda_available=ctranslate2_cuda_available())
+        from mockingbird.build import is_cpu_build
+
+        if is_cpu_build() and (self._cfg.device or "auto").lower() in ("auto", "cuda"):
+            # CPU bundle: the CUDA runtime is not shipped, the probe can
+            # never succeed. Resolve straight to cpu (one INFO line, no
+            # probe delay, no «GPU настроен, но не работает» dialog — the
+            # user deliberately installed the CPU build).
+            log.info(
+                "whisper: CPU build (device=%r requested) — running on CPU",
+                self._cfg.device,
+            )
+            device = "cpu"
+            self._cfg.device = "cpu"
+        else:
+            device = resolve_device(self._cfg.device, cuda_available=ctranslate2_cuda_available())
         self._device = device
         if device == "cuda":
             log.info("whisper: using CUDA (configured %r)", self._cfg.device)
-        elif (self._cfg.device or "auto").lower() == "cuda":
+        elif (self._cfg.device or "auto").lower() == "cuda" and not is_cpu_build():
             log.warning("whisper: CUDA requested but unavailable, falling back to CPU")
         configured = self._cfg.compute_type
         supported_types = _supported_compute_types(device)

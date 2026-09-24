@@ -145,6 +145,15 @@ if _CPU_ONLY:
     # No CUDA runtime in a CPU build. The nvidia-* wheels may still be
     # installed in the build env; keep PyInstaller from following them.
     _excludes += ["nvidia"]
+    # Runtime marker: the app reads it (mockingbird.build.is_cpu_build) to
+    # skip the CUDA probe entirely and hide the GPU-fallback dialog — the
+    # user CHOSE the CPU build, "GPU not working" is not a fallback there.
+    import tempfile
+
+    _marker = os.path.join(tempfile.gettempdir(), "mockingbird_cpu_build.marker")
+    with open(_marker, "w", encoding="utf-8") as f:
+        f.write("cpu")
+    datas = datas + [(_marker, "mockingbird")]
 
 a = Analysis(
     [_ENTRY],

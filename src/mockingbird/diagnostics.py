@@ -77,10 +77,13 @@ def environment_banner(config) -> str:
     llm = getattr(config, "llm", None)
     storage = getattr(config, "storage", None)
     frozen = bool(getattr(sys, "frozen", False))
+    from mockingbird.build import is_cpu_build
+
     lines = [
         "=== mockingbird environment ===",
         f"version: {__version__}",
-        f"app: {'frozen (PyInstaller)' if frozen else 'dev'}",
+        f"app: {'frozen (PyInstaller)' if frozen else 'dev'}"
+        + (" cpu-bundle" if is_cpu_build() else ""),
         f"os: {platform.system()} {platform.release()} ({platform.machine()})",
         f"python: {platform.python_version()}",
     ]
