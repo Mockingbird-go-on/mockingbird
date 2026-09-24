@@ -186,3 +186,89 @@ def test_screenshot_roundtrip(tmp_path):
 def test_b64_payload_is_ascii():
     payload = base64.b64encode(b"\xff\xd8jpegdata").decode("ascii")
     assert payload.isascii()
+
+
+# --------------------------------------------------------------------------- #
+# A-fixes: serial queue routing + stream gating
+# --------------------------------------------------------------------------- #
+
+def test_engine_error_broad_load_failure_detection():
+    """Warm-start failures phrased without 'download' still fire
+    model_load_failed (previously left the overlay stuck forever)."""
+    from unittest.mock import MagicMock
+
+    import sys
+    import types
+
+    # App's module import chain pulls sounddevice (PortAudio) — stub it.
+    if "sounddevice" not in sys.modules:
+        sys.modules["sounddevice"] = types.ModuleType("sounddevice")
+    import mockingbird.app as app_mod
+
+    app = app_mod.App.__new__(app_mod.App)
+    app.signals = MagicMock()
+    app._on_engine_error_signal("whisper model load failed: ConnectionError(...)")
+    assert app.signals.model_load_failed.emit.called
+
+
+def test_engine_error_cancel_still_not_failure():
+    from unittest.mock import MagicMock
+
+    import sys
+    import types
+
+    if "sounddevice" not in sys.modules:
+        sys.modules["sounddevice"] = types.ModuleType("sounddevice")
+    import mockingbird.app as app_mod
+
+    app = app_mod.App.__new__(app_mod.App)
+    app.signals = MagicMock()
+    app._on_engine_error_signal("whisper model load cancelled by user")
+    assert app.signals.model_load_cancelled.emit.called
+    assert not app.signals.model_load_failed.emit.called
+
+
+def test_panel_stream_id_gating():
+    """Deltas from a non-active stream are dropped, not interleaved."""
+    from unittest.mock import MagicMock
+
+    from mockingbird.protocol import LlmAnswer
+    from mockingbird.ui.interview_panel import InterviewPanel
+
+    panel = InterviewPanel.__new__(InterviewPanel)
+    panel._active_stream_id = "shot-1"
+    panel._llm_matches = lambda q: True
+    panel._browsing_history = False
+    panel._llm_timer = MagicMock()
+    panel._llm_watchdog = MagicMock()
+    panel._llm_stream_text = ""
+    # A delta from a DIFFERENT stream: ignored.
+    panel.on_llm_answer(LlmAnswer(query="q", delta="чужой", done=False, stream_id="shot-2"))
+    assert panel._llm_stream_text == ""
+    # A delta from the ACTIVE stream: accepted.
+    panel.on_llm_answer(LlmAnswer(query="q", delta="свой", done=False, stream_id="shot-1"))
+    assert panel._llm_stream_text == "свой"
+
+
+def test_submit_external_answer_routes_through_queue():
+    from mockingbird.kb.interview_engine import InterviewEngine
+
+    eng = InterviewEngine.__new__(InterviewEngine)
+    from mockingbird.kb.question_queue import QuestionQueue
+
+    eng._question_queue = QuestionQueue(name="test-q")
+    ran = []
+    ok = eng.submit_external_answer("  Вопрос  по скриншоту ", lambda: ran.append(1))
+    assert ok is True
+    eng._question_queue.stop(timeout=1)
+    assert ran, "queued external job must run on the queue worker"
+
+
+def test_submit_external_answer_empty_key_rejected():
+    from mockingbird.kb.interview_engine import InterviewEngine
+
+    eng = InterviewEngine.__new__(InterviewEngine)
+    from mockingbird.kb.question_queue import QuestionQueue
+
+    eng._question_queue = QuestionQueue(name="test-q")
+    assert eng.submit_external_answer("   ", lambda: None) is False

@@ -736,6 +736,7 @@ def _download_from_github(
 
     url = _github_model_url()
     root = Path(download_root)
+    log.info("whisper: trying model pack from GitHub release: %s", url)
 
     def _report(message: str, percent: float) -> None:
         if progress_cb is not None:
@@ -781,6 +782,10 @@ def _download_from_github(
             pass
         raise
 
+    log.info(
+        "whisper: GitHub model pack downloaded: %.0f MB (expected %.0f MB)",
+        done / 1e6, total / 1e6,
+    )
     _report("Распаковка модели…", -1.0)
     try:
         with zipfile.ZipFile(zip_path) as zf:
