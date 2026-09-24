@@ -361,14 +361,14 @@ class MainWindow(QMainWindow):
                 self._activity.set_live()
             else:
                 self._activity.set_idle()
-            if self._model_dl is not None and self._model_dl.isVisible():
+            if self._model_dl is not None and not self._model_dl._finalized:
                 self._model_dl.done_ok()
             return
         downloading = percent >= 0 or "download" in message.lower() or "скачиван" in message.lower()
         if not downloading:
             # In-memory load: keep the cancel cross available.
             self._set_cancel_load_visible(True)
-            if self._model_dl is not None and self._model_dl.isVisible():
+            if self._model_dl is not None and not self._model_dl._finalized:
                 self._model_dl.done_ok()
             # No overlay is open for this phase — show the toolbar loader.
             if self._model_dl is None or not self._model_dl.isVisible():
@@ -406,9 +406,7 @@ class MainWindow(QMainWindow):
         """User cancelled the load: reset the affordances without an error."""
         self._set_cancel_load_visible(False)
         if self._model_dl is not None:
-            if self._model_dl.isVisible():
-                self._model_dl.hide()
-            self._model_dl._cancelled_confirmed()
+            self._model_dl._cancelled_confirmed()  # idempotent, also when hidden
         self._activity.set_idle()
 
     def _on_model_load_failed(self, error: str) -> None:
