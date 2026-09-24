@@ -110,3 +110,17 @@ def test_install_crash_capture_idempotent(tmp_path):
     hook = sys.excepthook
     diagnostics.install_crash_capture(tmp_path)
     assert sys.excepthook is hook
+
+
+def test_qt_message_handler_handles_pyside_context(caplog):
+    """The Qt message handler must not crash on PySide6's QMessageLogContext
+    (the PyQt-style bytes .name() API does not exist there)."""
+    from PySide6.QtCore import QMessageLogContext, QtMsgType
+
+    handler = diagnostics.qt_message_handler
+    with caplog.at_level(logging.DEBUG, logger="qt"):
+        handler(QtMsgType.QtWarningMsg, QMessageLogContext("f.cpp", 1, "func", "qpa"), "test message")
+        handler(QtMsgType.QtWarningMsg, None, "no context")
+    assert any("test message" in r.message for r in caplog.records)
+    assert any(r.name == "qt.qpa" for r in caplog.records)
+    assert any(r.name == "qt.default" for r in caplog.records)

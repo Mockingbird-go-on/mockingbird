@@ -164,19 +164,26 @@ def install_crash_capture(log_dir: str | Path) -> None:
     try:
         from PySide6.QtCore import qInstallMessageHandler
 
-        def _qt_msg(mode, category, message):
-            lvl = {
-                0: logging.DEBUG,    # QtDebugMsg
-                1: logging.INFO,     # QtInfoMsg
-                2: logging.WARNING,  # QtWarningMsg
-                4: logging.CRITICAL, # QtFatalMsg
-            }.get(int(mode), logging.WARNING)
-            cat = category.name().decode() if category and category.name() else "default"
-            logging.getLogger(f"qt.{cat}").log(lvl, message)
-
-        qInstallMessageHandler(_qt_msg)
+        qInstallMessageHandler(qt_message_handler)
     except Exception:  # noqa: BLE001 — Qt may be absent in tests
         pass
+
+
+def qt_message_handler(mode, category, message):
+    """Route Qt platform messages into the logging system.
+
+    PySide6: ``QMessageLogContext`` exposes plain str attributes
+    (``.category``); the PyQt-style bytes ``.name()`` API does not exist
+    here and would raise AttributeError on every logged Qt warning.
+    """
+    lvl = {
+        0: logging.DEBUG,    # QtDebugMsg
+        1: logging.INFO,     # QtInfoMsg
+        2: logging.WARNING,  # QtWarningMsg
+        4: logging.CRITICAL, # QtFatalMsg
+    }.get(int(mode), logging.WARNING)
+    cat = category.category if category and category.category else "default"
+    logging.getLogger(f"qt.{cat}").log(lvl, message)
 
 
 def check_crash_marker(log_dir: str | Path) -> str | None:
