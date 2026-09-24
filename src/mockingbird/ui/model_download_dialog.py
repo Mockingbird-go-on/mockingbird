@@ -97,6 +97,9 @@ class ModelDownloadDialog(QWidget):
         # unrelated windows); coming back re-shows it mid-download.
         self._main_window: QWidget | None = None
         self._download_active = False
+        # Once True (done_ok/done_failed/cancel confirmed) no late progress
+        # event may resurrect the overlay.
+        self._finalized = False
         self._active_timer = QTimer(self)
         self._active_timer.setInterval(300)
         self._active_timer.timeout.connect(self._sync_visibility_with_main)
@@ -112,6 +115,11 @@ class ModelDownloadDialog(QWidget):
         percent < 0 means "indeterminate" (cache check / loading into
         memory): show a busy marquee text without moving the bar.
         """
+        if self._finalized:
+            # done_ok/done_failed already fired — late progress events
+            # (the in-memory phase, warm-up etc.) must not resurrect the
+            # overlay ("stuck at 99%" regression).
+            return
         self._download_active = True
         if percent >= 0:
             self._bar.setRange(0, 100)
@@ -126,19 +134,26 @@ class ModelDownloadDialog(QWidget):
         self._sync_visibility_with_main()
 
     def done_ok(self) -> None:
-        """Model loaded — fade the dialog out shortly."""
+        """Download finished (unpack / in-memory load may still run).
+
+        Marks the overlay finalized: progress events can no longer re-show
+        it, and it hides on the fade timer regardless of visibility."""
+        self._finalized = True
         self._download_active = False
         self._active_timer.stop()
+        self._hide_timer.stop()
         self.set_progress("Модель загружена", 100.0)
         self._hide_timer.start(1200)
 
     def done_failed(self, error: str) -> None:
+        self._finalized = True
         self._download_active = False
         self._active_timer.stop()
         self.hide()
 
     def _cancelled_confirmed(self) -> None:
         """Download cancellation was confirmed by the engine."""
+        self._finalized = True
         self._download_active = False
         self._active_timer.stop()
 
@@ -187,5 +202,6 @@ class ModelDownloadDialog(QWidget):
             )
         self.show()
         self.raise_()
+        self._finalized = False
         self._download_active = True
         self._active_timer.start()
