@@ -707,16 +707,23 @@ _RESOLVE_LOCKS_GUARD = threading.Lock()
 
 _MODEL_RELEASE_REPO = "Mockingbird-go-on/mockingbird"
 _MODEL_RELEASE_TAG = "models"
-# asset name pattern produced by scripts/build_model_pack.sh
-_MODEL_RELEASE_ASSET = "Mockingbird-whisper-large-v3-turbo-model.zip"
-# GitHub caps release assets at 2 GiB; the pack zip is ~1.55 GB — fits.
+# Asset names produced by scripts/build_model_pack.sh, one per model size.
+# GitHub caps release assets at 2 GiB: large-v3 (~3.1 GB) cannot ship as a
+# single asset and is deliberately absent — it falls back to HuggingFace.
+_MODEL_RELEASE_ASSETS = {
+    "Systran/faster-whisper-tiny": "Mockingbird-whisper-tiny-model.zip",
+    "Systran/faster-whisper-base": "Mockingbird-whisper-base-model.zip",
+    "Systran/faster-whisper-small": "Mockingbird-whisper-small-model.zip",
+    "Systran/faster-whisper-medium": "Mockingbird-whisper-medium-model.zip",
+    "deepdml/faster-whisper-large-v3-turbo-ct2": "Mockingbird-whisper-large-v3-turbo-model.zip",
+}
 _CHUNK = 1 << 20  # 1 MiB
 
 
-def _github_model_url() -> str:
+def _github_model_url(repo_id: str) -> str:
     return (
         f"https://github.com/{_MODEL_RELEASE_REPO}/"
-        f"releases/download/{_MODEL_RELEASE_TAG}/{_MODEL_RELEASE_ASSET}"
+        f"releases/download/{_MODEL_RELEASE_TAG}/{_MODEL_RELEASE_ASSETS[repo_id]}"
     )
 
 
@@ -734,7 +741,7 @@ def _download_from_github(
     import urllib.request
     import zipfile
 
-    url = _github_model_url()
+    url = _github_model_url(repo_id)
     root = Path(download_root)
     log.info("whisper: trying model pack from GitHub release: %s", url)
 
@@ -908,7 +915,7 @@ def resolve_model_path(cfg: WhisperConfig, progress_cb=None, cancel_event=None) 
     # released by the finally below on every exit path.
     try:
         try:
-            if repo_id == "deepdml/faster-whisper-large-v3-turbo-ct2":
+            if repo_id in _MODEL_RELEASE_ASSETS:
                 gh_path = _download_from_github(
                     cfg, repo_id, download_root,
                     progress_cb=progress_cb, cancel_event=cancel_event,

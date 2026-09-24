@@ -91,8 +91,38 @@ def test_github_download_respects_cancel(tmp_path, monkeypatch):
         we.resolve_model_path(_cfg(tmp_path), cancel_event=ev)
 
 
+def test_all_ui_sizes_use_github_large_v3_and_custom_do_not():
+    """tiny/base/small/medium/turbo have GitHub mirrors; large-v3 (too big
+    for the 2 GiB asset cap) and custom repos go straight to HuggingFace."""
+    from mockingbird.stt.whisper_engine import (
+        _MODEL_RELEASE_ASSETS, _model_repo_id, _normalize_repo_id,
+    )
+
+    for size in ("tiny", "base", "small", "medium", "large-v3-turbo"):
+        repo = _normalize_repo_id(_model_repo_id(size))
+        assert repo in _MODEL_RELEASE_ASSETS, size
+
+    for size in ("large-v3", "someorg/custom-model"):
+        repo = size if "/" in size else _normalize_repo_id(_model_repo_id(size))
+        assert repo not in _MODEL_RELEASE_ASSETS
+
+
+def test_github_download_small_model(tmp_path, monkeypatch):
+    """A non-default size (e.g. tiny) resolves via its GitHub pack asset."""
+    seen_urls = []
+    data = _pack_bytes()
+
+    def fake_urlopen(req, timeout=None):
+        seen_urls.append(req.full_url)
+        return _FakeResp(data)
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    we.resolve_model_path(_cfg(tmp_path, "tiny"))
+    assert any("Mockingbird-whisper-tiny-model.zip" in u for u in seen_urls)
+
+
 def test_custom_repo_skips_github(tmp_path, monkeypatch):
-    """Custom (non-default) model repos have no GitHub mirror."""
+    """Custom (non-mirrored) model repos have no GitHub pack."""
     called = []
     monkeypatch.setattr(
         "urllib.request.urlopen",
@@ -104,11 +134,11 @@ def test_custom_repo_skips_github(tmp_path, monkeypatch):
         calls.append((repo_id, kwargs.get("local_files_only")))
         if kwargs.get("local_files_only"):
             raise FileNotFoundError
-        d = tmp_path / "models--Systran--faster-whisper-tiny" / "snapshots" / ("e" * 40)
+        d = tmp_path / "models--Systran--faster-whisper-large-v3" / "snapshots" / ("e" * 40)
         d.mkdir(parents=True, exist_ok=True)
         (d / "config.json").write_text("{}")
         return str(d)
 
     monkeypatch.setattr("huggingface_hub.snapshot_download", fake_snapshot)
-    we.resolve_model_path(_cfg(tmp_path, "tiny"))
-    assert not called  # GitHub never touched for non-default repos
+    we.resolve_model_path(_cfg(tmp_path, "large-v3"))
+    assert not called  # GitHub never touched for non-mirrored repos
