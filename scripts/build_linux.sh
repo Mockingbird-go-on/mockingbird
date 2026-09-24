@@ -78,6 +78,11 @@ DESKTOP
     for cand in mockingbird.svg app.svg logo.svg; do
         if [[ -f "$ICON_SRC/$cand" ]]; then
             cp "$ICON_SRC/$cand" "$APPDIR/usr/share/icons/hicolor/scalable/apps/mockingbird.svg"
+            # appimagetool also requires the icon at the AppDir TOP LEVEL
+            # (it reads Icon= from the .desktop and looks for
+            # AppDir/<name>.{png,svg,xpm}); without it the tool prints the
+            # hint and silently produces NO AppImage.
+            cp "$ICON_SRC/$cand" "$APPDIR/mockingbird.svg"
             break
         fi
     done
@@ -93,6 +98,14 @@ APPRUN
     # appimagetool shells out to `file` to inspect binaries and to `patchelf`
     # to set rpaths — missing tools fail the build at pack time with cryptic
     # messages («file command is missing but required»). Check upfront.
+    # sounddevice dlopens libportaudio at import time — without the system
+    # package the frozen app crashes at startup and PyInstaller cannot
+    # bundle the .so it cannot find.
+    if ! python3 -c "import ctypes.util; exit(0 if ctypes.util.find_library('portaudio') else 1)"; then
+        echo "ERROR: libportaudio is required for the AppImage but not installed." >&2
+        echo "  sudo apt install libportaudio2" >&2
+        exit 2
+    fi
     for _tool in file patchelf; do
         if ! command -v "$_tool" >/dev/null 2>&1; then
             echo "ERROR: '$_tool' is required for the AppImage build but not installed." >&2

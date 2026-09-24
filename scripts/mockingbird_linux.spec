@@ -30,6 +30,42 @@ def _find_project_root(start: str) -> str:
         d = parent
 
 
+def _sounddevice_libs():
+    """Locate the system libportaudio for the Linux bundle.
+
+    sounddevice dlopens libportaudio at import time; without the .so inside
+    the bundle the frozen app dies at startup («OSError: PortAudio library
+    not found»). Returns [] (with a loud warning) when the system package
+    is missing.
+    """
+    import ctypes.util
+    import subprocess
+
+    found = ctypes.util.find_library("portaudio")
+    if not found:
+        print(
+            "WARNING: libportaudio not found on this system — the AppImage "
+            "will crash at startup (fix: sudo apt install libportaudio2)"
+        )
+        return []
+    resolved = []
+    try:
+        out = subprocess.run(
+            ["/sbin/ldconfig", "-p"], capture_output=True, text=True, timeout=5
+        ).stdout
+        for line in out.splitlines():
+            if found in line:
+                path = line.split("->")[-1].strip()
+                if path:
+                    resolved.append((path, "."))
+                break
+    except Exception:  # noqa: BLE001
+        pass
+    if not resolved:
+        print(f"WARNING: portaudio soname {found!r} not resolvable via ldconfig")
+    return resolved
+
+
 _ROOT = _find_project_root(SPECPATH)
 _ENTRY = os.path.join(_ROOT, "src", "mockingbird", "main.py")
 _SRC = os.path.join(_ROOT, "src")
@@ -55,6 +91,7 @@ binaries = (
     collect_dynamic_libs("ctranslate2")
     + collect_dynamic_libs("onnxruntime")
     + collect_dynamic_libs("sentencepiece")
+    + _sounddevice_libs()
 )
 
 hiddenimports = (
