@@ -55,8 +55,9 @@ def _sounddevice_libs():
         ).stdout
         for line in out.splitlines():
             if found in line:
-                path = line.split("->")[-1].strip()
-                if path:
+                # ldconfig format: "<soname> (arch) => /abs/path.so"
+                path = line.split("=>")[-1].strip()
+                if path and os.path.isfile(path):
                     resolved.append((path, "."))
                 break
     except Exception:  # noqa: BLE001
