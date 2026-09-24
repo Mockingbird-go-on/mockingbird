@@ -23,7 +23,7 @@ def _make_cfg(tmp_path) -> WhisperConfig:
     return cfg
 
 
-def test_retries_three_times_on_persistent_failure(monkeypatch, tmp_path):
+def test_retries_three_times_on_persistent_failure(monkeypatch, tmp_path, no_github_model_mirror):
     """Three download attempts (1 + 2 retries) when every call raises.
 
     The cache probe (local_files_only=True) also calls snapshot_download, so
@@ -73,7 +73,7 @@ def test_cancel_event_aborts_early(monkeypatch, tmp_path):
     assert 1 <= len(attempts) < 3, attempts
 
 
-def test_etag_timeout_and_resume_kwargs(monkeypatch, tmp_path):
+def test_etag_timeout_and_resume_kwargs(monkeypatch, tmp_path, no_github_model_mirror):
     """etag_timeout=10 + resume_download=True are threaded into kwargs."""
     pytest.importorskip("huggingface_hub")
     import huggingface_hub
