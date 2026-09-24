@@ -90,6 +90,16 @@ APPRUN
     chmod +x "$APPDIR/AppRun"
 
     APPIMAGETOOL=build/appimagetool
+    # appimagetool shells out to `file` to inspect binaries and to `patchelf`
+    # to set rpaths — missing tools fail the build at pack time with cryptic
+    # messages («file command is missing but required»). Check upfront.
+    for _tool in file patchelf; do
+        if ! command -v "$_tool" >/dev/null 2>&1; then
+            echo "ERROR: '$_tool' is required for the AppImage build but not installed." >&2
+            echo "  sudo apt install $_tool" >&2
+            exit 2
+        fi
+    done
     if [[ ! -x "$APPIMAGETOOL" ]]; then
         mkdir -p build
         echo "== downloading appimagetool =="
