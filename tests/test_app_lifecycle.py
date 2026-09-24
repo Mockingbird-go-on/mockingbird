@@ -57,11 +57,23 @@ def _install_stubs():
     return fake_engine
 
 
+_STUBBED_MODULES = (
+    "mockingbird.stt.whisper_engine",
+    "mockingbird.audio.capture",
+    "mockingbird.audio.loopback",
+)
+
+
 @pytest.fixture
 def app_instance(monkeypatch, tmp_path):
     monkeypatch.setenv("MOCKINGBIRD_HOME", str(tmp_path))
     for name in ("OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_MODEL"):
         monkeypatch.delenv(name, raising=False)
+    # Keep the real modules: popping sys.modules entries on teardown makes
+    # later imports create a SECOND copy of whisper_engine, and monkeypatches
+    # (e.g. the no_github_model_mirror fixture) then miss the copy the test
+    # functions actually call into.
+    saved_modules = {name: sys.modules.get(name) for name in _STUBBED_MODULES}
     _install_stubs()
     stub_engine_mod = sys.modules.get("mockingbird.stt.whisper_engine")
     from mockingbird.config import load_config
@@ -75,9 +87,12 @@ def app_instance(monkeypatch, tmp_path):
         app.shutdown()
     except Exception:
         pass
-    # cleanup stubs
-    for k in ("mockingbird.stt.whisper_engine", "mockingbird.audio.capture", "mockingbird.audio.loopback"):
-        sys.modules.pop(k, None)
+    # cleanup: restore the REAL modules (not pop) — see the comment above.
+    for name, mod in saved_modules.items():
+        if mod is not None:
+            sys.modules[name] = mod
+        else:
+            sys.modules.pop(name, None)
     import mockingbird.stt as _stt_pkg
     if getattr(_stt_pkg, "whisper_engine", None) is stub_engine_mod:
         delattr(_stt_pkg, "whisper_engine")
