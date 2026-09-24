@@ -272,3 +272,39 @@ def test_submit_external_answer_empty_key_rejected():
 
     eng._question_queue = QuestionQueue(name="test-q")
     assert eng.submit_external_answer("   ", lambda: None) is False
+
+
+def test_kb_pane_holds_during_inflight_answer():
+    """«Ответ ИИ недоступен» must NOT flash while an answer is in flight
+    (watchdog armed, no tokens yet — the TTFB window)."""
+    from unittest.mock import MagicMock
+
+    from mockingbird.protocol import KnowledgeView
+    from mockingbird.ui.interview_panel import InterviewPanel
+
+    panel = InterviewPanel.__new__(InterviewPanel)
+    panel._llm_stream_text = ""
+    panel._llm_watchdog = MagicMock()
+    panel._llm_watchdog.isActive.return_value = True  # answer in flight
+    panel._llm_answer_from_kb = False
+    panel._llm_answer_text = "старый ответ"
+    panel._answer_llm = MagicMock()
+    panel._llm_primary = False   # force the "LLM disabled/preview" tail branch
+    panel._llm_available = False
+
+    class _V:
+        preview = True
+        blocks = []
+        partial = False
+        llm_answered = False
+        llm_answer = ""
+        matched_query = ""
+
+    panel._render_primary(_V())
+    assert not panel._answer_llm.browser.called, "pane must be untouched in flight"
+    assert panel._llm_answer_text == "старый ответ"
+
+    # After the watchdog expired (no in-flight request) the notice is fine.
+    panel._llm_watchdog.isActive.return_value = False
+    panel._render_primary(_V())
+    assert panel._answer_llm.browser.called
