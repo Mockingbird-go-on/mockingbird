@@ -714,12 +714,28 @@ class PhoneticMatcher:
             return None
         if folded in self._indexed_surfaces:
             return None  # exact known term — nothing to fix
-        budget = 1 if len(folded) < 9 else 2
+        # Budget: 1 for short tokens; 2 for ≥ 7 chars. Whisper inserts whole
+        # syllables in unfamiliar terms («Zubix» → «Zabbix», dist 2 at 5
+        # chars) — a strict dist-1 budget let the trailing-latin-nonsense
+        # guard suppress the ENTIRE final question over one such token.
+        # Dist-2 on ≥7-char tokens is safe (random words rarely land within
+        # 2 edits of a 7+ char technical surface); for 5-6 char tokens dist-2
+        # is allowed only when the candidate is LONGER (insertion-type error,
+        # the whisper-typo pattern) — substitutions on short tokens stay at 1.
+        if len(folded) >= 7:
+            budget = 2
+        else:
+            budget = 1
+        insert_only = len(folded) in (5, 6)
+
+        def _candidate_ok(surface: str) -> bool:
+            return not insert_only or len(surface) > len(folded)
         buckets = self._lat_buckets or {}
         best: tuple[str, float] | None = None
 
         def _scan_heads(heads: tuple[str, ...], require_first: bool) -> None:
             nonlocal best
+            scan_budget = 2 if insert_only else budget
             for head in heads:
                 bucket = buckets.get(head)
                 if not bucket:
@@ -727,10 +743,12 @@ class PhoneticMatcher:
                 for surface, term in bucket:
                     if require_first and surface[0] != heads[0]:
                         continue
-                    if abs(len(folded) - len(surface)) > budget:
+                    if insert_only and len(surface) <= len(folded):
+                        continue  # insertion errors make the term LONGER
+                    if abs(len(folded) - len(surface)) > scan_budget:
                         continue
-                    dist = levenshtein_bounded(folded, surface, budget)
-                    if dist <= budget:
+                    dist = levenshtein_bounded(folded, surface, scan_budget)
+                    if dist <= scan_budget:
                         score = 1.0 - dist / max(len(folded), len(surface))
                         if best is None or score > best[1]:
                             best = (term, score)
@@ -752,13 +770,16 @@ class PhoneticMatcher:
                 bucket = tail_buckets.get(head)
                 if not bucket:
                     continue
+                scan_budget = 2 if insert_only else budget
                 for surface, term in bucket:
                     if surface[-1] != last:
                         continue
-                    if abs(len(folded) - len(surface)) > budget:
+                    if insert_only and len(surface) <= len(folded):
+                        continue  # insertion errors make the term LONGER
+                    if abs(len(folded) - len(surface)) > scan_budget:
                         continue
-                    dist = levenshtein_bounded(folded, surface, budget)
-                    if dist <= budget:
+                    dist = levenshtein_bounded(folded, surface, scan_budget)
+                    if dist <= scan_budget:
                         score = 1.0 - dist / max(len(folded), len(surface))
                         if best is None or score > best[1]:
                             best = (term, score)
