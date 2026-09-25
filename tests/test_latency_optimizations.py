@@ -168,3 +168,128 @@ def test_harvest_runs_after_interview_fanout():
     harvest_pos = src.index("self._harvest_answer_terms(msg.text)")
     fanout_pos = src.index("self.interview.on_final(msg)")
     assert harvest_pos > fanout_pos, "harvest must run AFTER interview.on_final"
+
+
+# ── Architectural pass (#1 clean-snapshot reuse, #2 keepalive, #4 batching) ──
+
+def test_clean_snapshot_flag_exists_and_resets_on_resume():
+    src = _read("stt/whisper_engine.py")
+    assert "self._spec_dirty = False" in src
+    # speech_resume marks the snapshot dirty
+    assert 'elif cmd == _CMD_RESUME:' in src
+    assert "self._spec_dirty = True" in src
+
+
+def test_reuse_ignores_delta_when_snapshot_clean():
+    """A clean snapshot (only silence appended) must reuse at ANY delta."""
+    src = _read("stt/whisper_engine.py")
+    assert "(not self._spec_dirty or delta_ok)" in src
+
+
+def test_stop_hint_deferred_while_decoding():
+    src = _read("stt/whisper_engine.py")
+    assert "_stop_hint_pending" in src
+    assert "_refire_pending_stop_hint" in src
+
+
+def test_llm_client_keepalive_expiry():
+    src = _read("llm/client.py")
+    assert "_KEEPALIVE_EXPIRY_S" in src
+    assert "http_client=self._http_client()" in src
+    # Both primary and failover clients get it.
+    assert src.count("http_client=self._http_client()") == 2
+
+
+def test_llm_client_keepalive_value():
+    from mockingbird.llm.client import LlmClient
+
+    assert LlmClient._KEEPALIVE_EXPIRY_S > 60.0
+
+
+def test_delta_coalescing_in_answer_worker():
+    src = _read("kb/interview_engine.py")
+    assert "_flush_emit" in src
+    assert "len(buffer) == 1" in src  # first delta emitted immediately
+
+
+def test_clean_snapshot_reuses_at_any_delta():
+    """Clean snapshot + 10s of silence tail → still reuse (no re-decode)."""
+    import numpy as np
+
+    from tests.test_whisper_finalize_reuse import (
+        _capture, _engine, _monkeypatch_decode,
+    )
+
+    eng = _engine()
+    finals = _capture(eng)
+    calls = _monkeypatch_decode(eng)
+    seg = "seg-clean"
+    eng._segment_id = seg
+    eng._speculative = {
+        "segment_id": seg,
+        "text": "Что такое PVC?",
+        "confidence": 0.9,
+        "duration": 3.0,
+    }
+    eng._spec_dirty = False  # clean: only silence appended since
+    eng._last_partial_text = "Что такое PVC?"
+
+    audio = np.zeros(int(16000 * 13.0), dtype=np.float32)  # 10s delta!
+    eng._finalize(audio, seg)
+
+    assert calls == [], f"clean snapshot must reuse at any delta, got {calls}"
+    assert len(finals) == 1
+    assert finals[0].text == "Что такое PVC?"
+
+
+def test_dirty_snapshot_redecodes_beyond_delta():
+    import numpy as np
+
+    from tests.test_whisper_finalize_reuse import (
+        _capture, _engine, _monkeypatch_decode,
+    )
+
+    eng = _engine()
+    finals = _capture(eng)
+    calls = _monkeypatch_decode(eng, returned=("новый текст", 0.8, 12.0))
+    seg = "seg-dirty"
+    eng._segment_id = seg
+    eng._speculative = {
+        "segment_id": seg,
+        "text": "старый текст",
+        "confidence": 0.8,
+        "duration": 3.0,
+    }
+    eng._spec_dirty = True  # speech resumed — budget applies
+    eng._last_partial_text = "старый текст"
+
+    eng._finalize(np.zeros(int(16000 * 13.0), dtype=np.float32), seg)
+    assert len(calls) == 1
+
+
+def test_stop_hint_deferred_until_decode_finishes():
+    """Hint arriving mid-decode is re-fired after the decode completes."""
+    from tests.test_stt_end_ahead import _collect_finals, _prime_rolling, _stub_transcribe
+
+    from mockingbird.stt import whisper_engine as we
+
+    eng = object.__new__(we.WhisperEngine)
+    # minimal attrs used by the path under test
+    eng._end_ahead = True
+    eng._model = object()
+    eng._decoding = True
+    eng._stop_hint_pending = False
+    eng._spec_dirty = False
+    eng._speculative = None
+
+    fired = []
+    eng._handle_stop_hint = lambda: fired.append(True)
+    # Hint while decoding → deferred, not fired
+    we.WhisperEngine._handle_stop_hint(eng)
+    assert fired == []
+    assert eng._stop_hint_pending is True
+    # Refire after the decode finished
+    eng._decoding = False
+    we.WhisperEngine._refire_pending_stop_hint(eng)
+    assert fired == [True]
+    assert eng._stop_hint_pending is False

@@ -1743,6 +1743,32 @@ class InterviewEngine:
         if self._cfg.answer_stream and streamable:
             buffer: list[str] = []
             _first_marked = False
+            # Delta coalescing: each streamed token otherwise crosses a Qt
+            # queued signal + GUI-thread wakeup (~30-60 per answer). Join
+            # deltas until ~80 ms elapse OR ~120 chars accumulate; the FIRST
+            # delta always goes out immediately (TTFB untouched). Leftovers
+            # flush after the loop.
+            _emit_buf: list[str] = []
+            _last_emit_t = time.monotonic()
+
+            def _flush_emit() -> None:
+                nonlocal _last_emit_t
+                if not _emit_buf or not self.on_llm_answer:
+                    _emit_buf.clear()
+                    _last_emit_t = time.monotonic()
+                    return
+                delta = "".join(_emit_buf)
+                _emit_buf.clear()
+                _last_emit_t = time.monotonic()
+                self.on_llm_answer(
+                    protocol.LlmAnswer(
+                        query=query,
+                        topic=topic,
+                        title=title,
+                        delta=delta,
+                    )
+                )
+
             try:
                 for delta in self._llm.answer_question_stream(
                     query, context, mode=mode, previous_qa=prev_qa,
@@ -1754,21 +1780,19 @@ class InterviewEngine:
                         self._trace.mark(seg_id, "llm_first")
                         _first_marked = True
                     buffer.append(delta)
-                    if self.on_llm_answer:
-                        self.on_llm_answer(
-                            protocol.LlmAnswer(
-                                query=query,
-                                topic=topic,
-                                title=title,
-                                delta=delta,
-                            )
-                        )
+                    _emit_buf.append(delta)
+                    if len(buffer) == 1 or (
+                        time.monotonic() - _last_emit_t >= 0.08
+                        or sum(len(p) for p in _emit_buf) >= 120
+                    ):
+                        _flush_emit()
             except Exception as stream_exc:  # noqa: BLE001
                 log.exception("LLM answer stream failed")
                 buffer = []
                 stream_failed = True
             else:
                 stream_failed = False
+                _flush_emit()  # trailing coalesced deltas (if any)
             answer = "".join(buffer)
             # Retry on a broken stream: DeepSeek occasionally aborts the
             # stream mid-generation (exception), returns nothing at all, or

@@ -73,7 +73,9 @@ def test_finalize_after_audio_growth_redecodes(engine):
     engine._handle_stop_hint()
     assert len(calls) == 1
 
+    # Speech resumed after the snapshot (dirty) — the delta budget applies:
     # 2s speculative + 5s growth = 5s delta > _SPECULATIVE_REUSE_MAX_DELTA_S (4)
+    engine._spec_dirty = True
     engine._finalize(np.zeros((16000 * 7), dtype=np.float32), sid)
     assert len(calls) == 2
     assert calls[1][1] == (16000 * 7)
@@ -115,6 +117,7 @@ def test_final_ok_keeps_final_not_partial(engine):
     finals = _collect_finals(engine)
 
     engine._handle_stop_hint()
+    engine._spec_dirty = True  # speech resumed — force the re-decode path
     engine._finalize(np.zeros((16000 * 7), dtype=np.float32), sid)
     assert finals[0].text == "в чем связь между Agile и DevOps"
 
@@ -132,6 +135,7 @@ def test_finalize_different_text_partial_not_applied(engine):
     finals = _collect_finals(engine)
 
     engine._handle_stop_hint()
+    engine._spec_dirty = True  # speech resumed — force the re-decode path
     engine._finalize(np.zeros((16000 * 7), dtype=np.float32), sid)
     assert finals[0].text == "в чем связь между и"
 

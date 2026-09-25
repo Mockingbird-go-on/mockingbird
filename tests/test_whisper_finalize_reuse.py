@@ -106,6 +106,8 @@ def test_finalize_redecodes_when_buffer_grew_beyond_delta():
         "confidence": 0.8,
         "duration": dur,
     }
+    # Speech resumed after the snapshot (dirty): the delta budget applies.
+    eng._spec_dirty = True
     eng._last_partial_text = "старый текст"
 
     eng._finalize(audio, seg)
