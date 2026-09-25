@@ -1,5 +1,5 @@
 <p>
-  <img src="docs/brand_banner.png?v=9" alt="Mockingbird" width="412" align="top">
+  <img src="docs/brand_banner.png?v=8" alt="Mockingbird" width="412" align="top">
 </p>
 
 [![CI](https://github.com/Mockingbird-go-on/mockingbird/actions/workflows/tests.yml/badge.svg)](https://github.com/Mockingbird-go-on/mockingbird/actions/workflows/tests.yml)
