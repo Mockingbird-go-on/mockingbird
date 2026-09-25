@@ -850,6 +850,31 @@ class LlmClient:
             log.warning("LLM explain failed for %r: %s", term, exc)
             return None
 
+    def probe_connection(self) -> tuple[bool, str]:
+        """Connection check for the onboarding wizard / settings dialog.
+
+        Unlike ``explain_term`` this NEVER swallows the error: the UI shows
+        the actual failure (401, DNS, TLS, timeout) so the user can fix it.
+        Returns (ok, message).
+        """
+        client = self._ensure()
+        if client is None:
+            return False, "URL и ключ не заданы"
+        try:
+            response = client.chat.completions.create(
+                model=self._cfg.model,
+                messages=[{"role": "user", "content": "ping"}],
+                max_tokens=1,
+                timeout=10.0,
+            )
+            # Some providers return an empty completion for 1-token requests
+            # — the HTTP 200 itself proves the endpoint/key/model work.
+            _ = (response.choices[0].message.content or "").strip()
+            return True, "✅ Подключение работает!"
+        except Exception as exc:  # noqa: BLE001
+            log.warning("llm probe failed: %s", exc)
+            return False, f"❌ {exc!s:.100}"
+
     def answer_question(self, question: str, context: str = "", mode: str = "technical", previous_qa: str = "") -> str | None:
         """Ask the LLM to answer a question.
 
