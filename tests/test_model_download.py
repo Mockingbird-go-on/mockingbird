@@ -205,3 +205,42 @@ def test_cancel_event_aborts_before_retry(monkeypatch, tmp_path):
 
     with pytest.raises(RuntimeError, match="cancelled by user"):
         resolve_model_path(_make_cfg(tmp_path), cancel_event=cancel)
+
+
+def test_insufficient_disk_space_raises_friendly_error(tmp_path, monkeypatch):
+    """No free space → RuntimeError with a human message (lands in the
+    model-download overlay via model_load_failed)."""
+    import shutil as _sh
+
+    from mockingbird.stt import whisper_engine as we
+
+    real_usage = _sh.disk_usage
+
+    def fake_usage(path):
+        usage = real_usage(path)
+        return usage._replace(free=100 * 1024 * 1024)  # 100 MB free
+
+    monkeypatch.setattr(_sh, "disk_usage", fake_usage)
+    try:
+        we._ensure_free_space(str(tmp_path), 3.6e9, "загрузки модели распознавания")
+    except RuntimeError as exc:
+        assert "Недостаточно места" in str(exc)
+        assert "ГБ" in str(exc)
+    else:
+        raise AssertionError("expected RuntimeError")
+
+
+def test_ensure_free_space_passes_when_enough(tmp_path):
+    import shutil as _sh
+
+    from mockingbird.stt import whisper_engine as we
+
+    free = _sh.disk_usage(tmp_path).free
+    if free > 1e6:  # skip on bizarre filesystems
+        we._ensure_free_space(str(tmp_path), 1.0, "test")
+
+
+def test_size_hints_cover_release_assets():
+    from mockingbird.stt import whisper_engine as we
+
+    assert set(we._MODEL_SIZE_HINTS) == set(we._MODEL_RELEASE_ASSETS)
