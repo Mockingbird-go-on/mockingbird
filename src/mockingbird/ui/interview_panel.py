@@ -483,6 +483,7 @@ class InterviewPanel(QWidget):
         concept_callback: Callable[[str], None] | None = None,
         llm_primary: bool = True,
         llm_available: bool = False,
+        llm_busy: Callable[[], bool] | None = None,
     ):
         super().__init__()
         self._view: protocol.KnowledgeView | None = None
@@ -492,6 +493,10 @@ class InterviewPanel(QWidget):
         self._concept_callback = concept_callback
         self._llm_primary = llm_primary
         self._llm_available = llm_available
+        # Truth source for "an answer is being generated right now" (engine's
+        # is_streaming/answer-pending state). More reliable than the panel's
+        # own watchdog timer, which is only armed on SOME answer paths.
+        self._llm_busy = llm_busy or (lambda: False)
         self._current_query = ""
         self._pending_llm_query = ""
         self._browsing_history = False
@@ -929,8 +934,18 @@ class InterviewPanel(QWidget):
         # For partial updates of the SAME question (matched_query unchanged) we
         # already have a streaming buffer — do NOT reset it, otherwise the
         # tokens rendered so far would flash to empty until the next delta.
-        if not (view.partial and self._llm_stream_text and
-                view.matched_query == self._pending_llm_query):
+        # The same protection applies while the engine reports an answer in
+        # flight (early-start on a partial, queued answer awaiting the stream):
+        # a final KB view arriving in the TTFB window must not wipe it.
+        _busy = self._llm_busy() if getattr(self, "_llm_busy", None) else False
+        if not (
+            self._llm_stream_text
+            and (_busy or self._llm_watchdog.isActive())
+            and view.matched_query == self._pending_llm_query
+        ) and not (
+            view.partial and self._llm_stream_text
+            and view.matched_query == self._pending_llm_query
+        ):
             self._reset_llm_stream()
         self._question.setText(view.matched_query or view.title or view.topic)
         self._set_question_placeholder(False)
@@ -1008,8 +1023,11 @@ class InterviewPanel(QWidget):
             return
         # An answer request is in flight (placeholder shown, watchdog armed):
         # showing «Ответ ИИ недоступен» here flashed a scary error during the
-        # TTFB window before the first token landed.
-        if self._llm_watchdog.isActive():
+        # TTFB window before the first token landed. The watchdog covers the
+        # paths that arm it; the engine's llm_busy state also covers the
+        # early-start / queued-answer paths that do not.
+        _busy = self._llm_busy() if getattr(self, "_llm_busy", None) else False
+        if self._llm_watchdog.isActive() or _busy:
             return
         self._llm_answer_from_kb = False
         self._llm_answer_text = ""

@@ -93,6 +93,7 @@ class MainWindow(QMainWindow):
             concept_callback=self._app.interview.ask_concept,
             llm_primary=self._app.config.interview.llm_primary,
             llm_available=self._app.llm.available,
+            llm_busy=lambda: bool(getattr(self._app.llm, "is_streaming", False)),
         )
         self._tabs.addTab(self._interview, "Интервью")
         self._modules_panel = ResumePanel(self._app)
