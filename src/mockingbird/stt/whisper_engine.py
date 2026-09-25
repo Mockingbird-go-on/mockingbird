@@ -41,7 +41,7 @@ _MAX_OPEN_SEGMENT_S = 45.0
 # speculative decode before the speculative result is considered stale. The
 # VAD silence tail adds a little silence after the stop-hint fired; anything
 # more means real speech resumed and the speculative text is incomplete.
-_SPECULATIVE_REUSE_MAX_DELTA_S = 3.0
+_SPECULATIVE_REUSE_MAX_DELTA_S = 4.0
 
 # If no byte arrives for this long during a model download, abort with a
 # readable error instead of a forever-0% overlay (blocked CDN transfer,
@@ -1872,8 +1872,14 @@ class WhisperEngine:
         as a parameter — mutating ``self._cfg.initial_prompt`` here used to
         race ``App._rebuild_hotwords`` (which rewrites the prompt from other
         threads), restoring a stale prompt over the fresh one.
+
+        Skips per-chunk ``normalize_text``: the chunk decoder normalizes the
+        MERGED segment text once (see ``_decode_cached``) — normalizing each
+        chunk as well runs the matcher twice over the same words.
         """
-        return self._transcribe(audio, kind=kind, beam_size=beam_size, prompt_override=prompt)
+        return self._transcribe(
+            audio, kind=kind, beam_size=beam_size, prompt_override=prompt, skip_normalize=True
+        )
 
     def _transcribe(
         self,
@@ -1881,6 +1887,7 @@ class WhisperEngine:
         kind: str = "decode",
         beam_size: int = 1,
         prompt_override: str | None = None,
+        skip_normalize: bool = False,
     ):
         # Reuse the language detected on the first decode instead of re-detecting
         # on every partial/final pass (~a second+ each on CPU).
@@ -1934,7 +1941,7 @@ class WhisperEngine:
         # are UI drafts re-decoded moments later, and normalize_text on every
         # 250 ms partial adds pure latency to the decode loop for text the
         # final pass rewrites anyway.
-        if self._text_matcher is not None and kind != "partial":
+        if self._text_matcher is not None and kind != "partial" and not skip_normalize:
             corrected = self._text_matcher.normalize_text(text)
             if corrected != text:
                 self._corrections += 1

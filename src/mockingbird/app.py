@@ -904,15 +904,17 @@ class App:
         msg.session_id = self.session_id
         self.trace.mark(msg.segment_id, "stt_final")
         log.info("app: final seg=%s text=%r", msg.segment_id, msg.text[:120])
-        # Harvest Latin terms from the interviewer's finals into the hot-words
-        # prompt: the NEXT question reuses them and whisper needs the exact
-        # spellings early (same rationale as _harvest_answer_terms).
-        self._harvest_answer_terms(msg.text)
         # Fan out to in-process consumers (explainer/interview/topics) that are
         # safe to call from the worker, then hand the message to the GUI thread
-        # for the SQLite write.
+        # for the SQLite write. The interview engine just queues the final —
+        # fan-out first keeps the question pipeline moving while we harvest.
         self.explainer.on_final(msg)
         self.interview.on_final(msg)
+        # Harvest Latin terms from the interviewer's finals into the hot-words
+        # prompt: the NEXT question reuses them and whisper needs the exact
+        # spellings early. Runs AFTER the fan-out so the hot-words rebuild
+        # (a few ms + prompt rewrite) never sits on the critical path.
+        self._harvest_answer_terms(msg.text)
         self.signals.save_segment_request.emit(msg)
         self.signals.final.emit(msg)
         # LLM post-correction of long finals (>= 60 words): runs in a daemon

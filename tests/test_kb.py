@@ -1039,7 +1039,7 @@ class _FakeStreamLlm:
                 filler = " Полновесный ответ на технический вопрос для порога ретрая. " * 8
                 self.deltas = list(deltas) + [filler]
 
-    def answer_question_stream(self, question, context="", mode="technical", previous_qa=""):
+    def answer_question_stream(self, question, context="", mode="technical", previous_qa="", **kw):
         self.calls.append((question, context))
         for delta in self.deltas:
             yield delta
@@ -1073,7 +1073,7 @@ def test_engine_answer_llm_worker_retries_broken_short_stream():
     class _BrokenThenGood:
         available = True
 
-        def answer_question_stream(self, question, context="", mode="technical", previous_qa=""):
+        def answer_question_stream(self, question, context="", mode="technical", previous_qa="", **kw):
             calls["n"] += 1
             if calls["n"] == 1:
                 yield "ко"

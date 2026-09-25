@@ -879,7 +879,8 @@ class LlmClient:
             return None
 
     def answer_question_stream(
-        self, question: str, context: str = "", mode: str = "technical", previous_qa: str = ""
+        self, question: str, context: str = "", mode: str = "technical", previous_qa: str = "",
+        cancel_event=None,
     ) -> Iterator[str]:
         """Stream an answer to ``question`` token by token.
 
@@ -917,6 +918,12 @@ class LlmClient:
         self._enter_stream()
         try:
             for delta in self._hedged_answer_stream(system, user_content, gen):
+                if cancel_event is not None and cancel_event.is_set():
+                    log.info(
+                        "llm-stream: cancelled by request after %.2fs (mode=%s)",
+                        time.monotonic() - _t0, mode,
+                    )
+                    return
                 if not _first_yield_logged and delta:
                     log.info(
                         "llm-stream: first token after %.2fs (mode=%s)",

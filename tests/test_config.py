@@ -9,7 +9,7 @@ def test_defaults():
     assert c.audio.loopback_device is None
     assert c.stt.backend == "whisper"
     assert c.stt.end_ahead is True
-    assert c.vad.min_silence_ms == 700
+    assert c.vad.min_silence_ms == 500
     assert c.vad.stop_hint_delay_ms == 180
     assert c.terms.llm_primary is True
     assert c.terms.context_segments == 8

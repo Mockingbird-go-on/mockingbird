@@ -131,7 +131,7 @@ class VadStateMachine:
     def __init__(
         self,
         threshold: float = 0.5,
-        min_silence_samples: int = int(0.7 * 16000),
+        min_silence_samples: int = int(0.5 * 16000),
         stop_hint_delay_samples: int = int(0.18 * 16000),
     ):
         self._threshold = threshold
@@ -217,7 +217,7 @@ class SileroVAD:
         model_path: str,
         threshold: float = 0.5,
         min_speech_ms: int = 250,
-        min_silence_ms: int = 700,
+        min_silence_ms: int = 500,
         stop_hint_delay_ms: int = 180,
         sample_rate: int = 16000,
     ):
