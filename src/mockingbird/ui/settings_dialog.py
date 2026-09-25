@@ -125,6 +125,11 @@ _HELP = {
     "(база знаний — запасной вариант).",
     "interview.answer_stream": "Показывать ответ LLM с эффектом печати по мере генерации.",
     "interview.answer_cache": "Кэшировать повторные ответы, чтобы мгновенно показывать их при повторе вопроса.",
+    "interview.speculative_answers": (
+        "Отвечать сразу на неясную реплику, не дожидаясь проверки «вопрос ли это». "
+        "Быстрее на развёрнутых вопросах без явных вопросительных слов; тратит "
+        "токены, если реплика окажется не вопросом (ответ скрывается)."
+    ),
     "terms.glossary_path": "Путь к YAML-глоссарию терминов для STT-коррекции.",
 }
 
@@ -256,6 +261,10 @@ class SettingsDialog(QDialog):
         self._interview_answer_stream.setChecked(config.interview.answer_stream)
         self._interview_answer_cache = ToggleSwitch("LLM: кэшировать повторные ответы")
         self._interview_answer_cache.setChecked(config.interview.answer_cache)
+        self._interview_speculative = ToggleSwitch(
+            "LLM: спекулятивные ответы (эксперимент: ответ до подтверждения вопроса)"
+        )
+        self._interview_speculative.setChecked(config.interview.speculative_answers)
 
         form = QFormLayout()
         form.addRow(self._section("Аудио"))
@@ -304,6 +313,7 @@ class SettingsDialog(QDialog):
         form.addRow("", self._row(self._interview_llm_primary, _HELP["interview.llm_primary"]))
         form.addRow("", self._row(self._interview_answer_stream, _HELP["interview.answer_stream"]))
         form.addRow("", self._row(self._interview_answer_cache, _HELP["interview.answer_cache"]))
+        form.addRow("", self._row(self._interview_speculative, _HELP["interview.speculative_answers"]))
 
         # Specialization profile (persona prompts + glossary hint)
         from mockingbird.profiles.loader import load_profiles
@@ -375,6 +385,7 @@ class SettingsDialog(QDialog):
         interview_form.addRow("", self._row(self._interview_llm_primary, _HELP["interview.llm_primary"]))
         interview_form.addRow("", self._row(self._interview_answer_stream, _HELP["interview.answer_stream"]))
         interview_form.addRow("", self._row(self._interview_answer_cache, _HELP["interview.answer_cache"]))
+        interview_form.addRow("", self._row(self._interview_speculative, _HELP["interview.speculative_answers"]))
         tabs.addTab(self._wrap_scroll(interview_form), "Интервью")
 
         # --- Tab 5: Внешний вид ---
@@ -853,6 +864,7 @@ class SettingsDialog(QDialog):
         self.config.interview.llm_primary = self._interview_llm_primary.isChecked()
         self.config.interview.answer_stream = self._interview_answer_stream.isChecked()
         self.config.interview.answer_cache = self._interview_answer_cache.isChecked()
+        self.config.interview.speculative_answers = self._interview_speculative.isChecked()
         pid = self._profile_combo.currentData()
         if pid:
             self.config.profile_id = pid

@@ -36,7 +36,7 @@ class AudioConfig(BaseModel):
 class VadConfig(BaseModel):
     threshold: float = 0.5
     min_speech_ms: int = 250
-    min_silence_ms: int = 700
+    min_silence_ms: int = 500
     stop_hint_delay_ms: int = 180  # sustained silence before the "speech_stop" hint fires
     model_path: str | None = None
 
@@ -120,6 +120,12 @@ class InterviewConfig(BaseModel):
     answer_stream: bool = True
     answer_cache: bool = True
     answer_restart_min_similarity: float = 0.7
+    # Speculative answers: on marker-miss utterances with a topical signal,
+    # start streaming an answer on the raw text IMMEDIATELY while the Tier-3
+    # LLM rescue classifies in parallel. If the rescue says "not a question",
+    # the in-flight stream is cancelled. Costs tokens on statements; OFF by
+    # default (experimental latency knob).
+    speculative_answers: bool = False
 
 
 class WindowConfig(BaseModel):
@@ -207,6 +213,7 @@ ENV_OVERRIDES: dict[str, tuple[str, str]] = {
     "MOCKINGBIRD_INTERVIEW_PARTIAL_STABILITY_ROUNDS": ("interview", "partial_stability_rounds"),
     "MOCKINGBIRD_INTERVIEW_HIGHLIGHT": ("interview", "highlight"),
     "MOCKINGBIRD_INTERVIEW_QUESTION_ISOLATION": ("interview", "question_isolation"),
+    "MOCKINGBIRD_INTERVIEW_SPECULATIVE_ANSWERS": ("interview", "speculative_answers"),
     "MOCKINGBIRD_INTERVIEW_CONTEXT_WINDOW": ("interview", "context_window"),
     "MOCKINGBIRD_INTERVIEW_CONTEXT_BOOST": ("interview", "context_boost"),
     "MOCKINGBIRD_INTERVIEW_SUBJECT_LLM": ("interview", "subject_llm"),
@@ -273,6 +280,7 @@ _PERSISTED_SETTINGS: dict[str, tuple[str, str, bool]] = {
     "interview.llm_primary": ("interview", "llm_primary", False),
     "interview.answer_stream": ("interview", "answer_stream", False),
     "interview.answer_cache": ("interview", "answer_cache", False),
+    "interview.speculative_answers": ("interview", "speculative_answers", False),
     "kgen.books_dir": ("kgen", "books_dir", True),
     "kgen.out_dir": ("kgen", "out_dir", True),
     "window.hide_from_capture": ("window", "hide_from_capture", False),

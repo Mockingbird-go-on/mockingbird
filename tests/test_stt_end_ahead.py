@@ -64,7 +64,7 @@ def test_finalize_reuses_speculative_when_buffer_unchanged(engine):
 
 
 def test_finalize_after_audio_growth_redecodes(engine):
-    """Audio grew >3s past the speculative duration → full re-decode (the
+    """Audio grew past the speculative reuse budget → full re-decode (the
     speculative text would miss the newly spoken tail)."""
     calls = _stub_transcribe(engine)
     sid = _prime_rolling(engine, seconds=2.0)
@@ -73,10 +73,10 @@ def test_finalize_after_audio_growth_redecodes(engine):
     engine._handle_stop_hint()
     assert len(calls) == 1
 
-    # 2s speculative + 4s growth = 4s delta > _SPECULATIVE_REUSE_MAX_DELTA_S
-    engine._finalize(np.zeros((16000 * 6), dtype=np.float32), sid)
+    # 2s speculative + 5s growth = 5s delta > _SPECULATIVE_REUSE_MAX_DELTA_S (4)
+    engine._finalize(np.zeros((16000 * 7), dtype=np.float32), sid)
     assert len(calls) == 2
-    assert calls[1][1] == (16000 * 6)
+    assert calls[1][1] == (16000 * 7)
     assert len(finals) == 1
     assert finals[0].segment_id == sid
 
@@ -97,7 +97,7 @@ def test_final_shorter_than_partial_uses_partial(engine):
     finals = _collect_finals(engine)
 
     engine._handle_stop_hint()  # partial: full text with Agile
-    engine._finalize(np.zeros((16000 * 6), dtype=np.float32), sid)
+    engine._finalize(np.zeros((16000 * 7), dtype=np.float32), sid)
     assert len(finals) == 1
     assert "Agile" in finals[0].text
 
@@ -115,7 +115,7 @@ def test_final_ok_keeps_final_not_partial(engine):
     finals = _collect_finals(engine)
 
     engine._handle_stop_hint()
-    engine._finalize(np.zeros((16000 * 6), dtype=np.float32), sid)
+    engine._finalize(np.zeros((16000 * 7), dtype=np.float32), sid)
     assert finals[0].text == "в чем связь между Agile и DevOps"
 
 
@@ -132,7 +132,7 @@ def test_finalize_different_text_partial_not_applied(engine):
     finals = _collect_finals(engine)
 
     engine._handle_stop_hint()
-    engine._finalize(np.zeros((16000 * 6), dtype=np.float32), sid)
+    engine._finalize(np.zeros((16000 * 7), dtype=np.float32), sid)
     assert finals[0].text == "в чем связь между и"
 
 

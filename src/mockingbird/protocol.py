@@ -178,6 +178,10 @@ class LlmAnswer(BaseMessage):
     # "retry" after a broken/empty stream — the UI shows a visible
     # placeholder instead of silent waiting. Not set on done=True.
     status: str = ""
+    # Speculative-answer cancellation (done=True, answer=""): the Tier-3
+    # rescue classified the utterance as NOT a question while a speculative
+    # stream was already painting — the UI resets the pane to idle.
+    cancelled: bool = False
     # KB fallback shown in the primary pane when the LLM returned an empty
     # answer (failure/timeout) but the KB matched a topic. Populated only on
     # the final (done=True) message; empty when no KB blocks are available.

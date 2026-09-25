@@ -23,7 +23,7 @@ log = logging.getLogger(__name__)
 # VAD end event waiting for the continuation. Long enough to bridge a
 # thinking pause, short enough to close on a genuinely finished remark that
 # whisper simply did not punctuate.
-_HOLD_OPEN_MAX_S = 2.5
+_HOLD_OPEN_MAX_S = 2.0
 
 
 class SpeechChunker:

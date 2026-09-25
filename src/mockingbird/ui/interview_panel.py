@@ -754,6 +754,18 @@ class InterviewPanel(QWidget):
         if not self._active_stream_id and sid:
             self._active_stream_id = sid
         if msg.done:
+            if getattr(msg, "cancelled", False):
+                # Speculative answer cancelled (rescue said "not a question"):
+                # stop painting and reset the pane to idle.
+                self._llm_timer.stop()
+                self._llm_watchdog.stop()
+                self._reset_llm_stream()
+                if not self._browsing_history and not self._llm_answer_text:
+                    self._answer_llm.browser().setHtml(_themed_html(
+                        f"<p style='color:{theme.TEXT_SECONDARY};'>"
+                        "Скажите вопрос — ответ появится здесь.</p>"
+                    ))
+                return
             self._llm_timer.stop()
             self._llm_watchdog.stop()
             self._llm_stream_text = ""

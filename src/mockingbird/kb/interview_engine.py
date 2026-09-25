@@ -54,6 +54,9 @@ _ANSWER_CONTEXT_LIMIT_WIDE = 4200
 # speaker pauses briefly mid-question («расскажи про k8s» [0.9s] «как ты его
 # использовал?»).
 _ACCUM_WINDOW_S = 0.2
+# Fast path: halved window when the pending final is already a confident
+# question or a partial-based answer is streaming (see _pending_fast_flush).
+_ACCUM_FAST_WINDOW_S = 0.1
 _ACCUM_MAX_GAP_S = 1.5
 # A trailing connective/question word means the utterance is mid-question
 # and the next segment completes it («…инфраструктура как код какие» +
@@ -295,6 +298,11 @@ class InterviewEngine:
         self._generation = 0
         self._current_answer_mode: str = "technical"
         self._mode_lock = threading.Lock()
+        # Speculative answers (B2): cancellation event for the in-flight
+        # speculative stream started on the raw utterance while the Tier-3
+        # rescue classifies. Set when the rescue says "not a question".
+        self._spec_cancel: threading.Event | None = None
+        self._spec_query: str = ""
         self._subject_cache: dict[str, list[str]] = {}
         self._tracker = context_tracker or ContextTracker(
             matcher,
@@ -363,7 +371,13 @@ class InterviewEngine:
 
     def _run(self) -> None:
         while True:
-            timeout = _ACCUM_WINDOW_S if self._pending_segment is not None else None
+            if self._pending_segment is not None:
+                timeout = (
+                    _ACCUM_FAST_WINDOW_S if self._pending_fast_flush(self._pending_segment)
+                    else _ACCUM_WINDOW_S
+                )
+            else:
+                timeout = None
             try:
                 item = self._queue.get(timeout=timeout)
             except queue.Empty:
@@ -378,6 +392,25 @@ class InterviewEngine:
                     self._process(item)
             except Exception:  # noqa: BLE001
                 log.exception("interview processing failed")
+
+    def _pending_fast_flush(self, seg) -> bool:
+        """Halve the accumulation window when waiting buys nothing.
+
+        The window exists to merge fragments that continue the same question
+        («расскажи про … [pause] k8s»). It buys nothing when the final is
+        already a confident question (detector matches markers) — or when a
+        partial-based early answer is already streaming (its restart logic
+        covers wording changes). In both cases the extra 0.1 s is dead time
+        on the answer critical path.
+        """
+        try:
+            if detector.is_question(seg.text):
+                return True
+        except Exception:  # noqa: BLE001
+            return False
+        return bool(
+            getattr(self._llm, "is_streaming", False) or self._provisional_query
+        )
 
     def _flush_pending(self) -> None:
         """Process the deferred segment after the accumulation window expires.
@@ -557,6 +590,14 @@ class InterviewEngine:
                 and self._question_rescue_available()
                 and has_topical_signal(text)
             ):
+                # Speculative answers (B2, opt-in): start streaming an answer
+                # on the raw utterance NOW — the Tier-3 rescue classifies in
+                # parallel; if it says "not a question", the stream is
+                # cancelled (see _rescue_question_worker).
+                if self._cfg.speculative_answers and not getattr(
+                    self._llm, "is_streaming", False
+                ):
+                    self._start_speculative_answer(text, msg)
                 gen = self._generation
                 threading.Thread(
                     target=self._rescue_question_worker,
@@ -1333,8 +1374,12 @@ class InterviewEngine:
         ignored so a missing/busy LLM never falsely re-processes a statement.
         """
         if generation != self._generation:
+            self._cancel_speculative("generation")
             return
-        if getattr(self._llm, "is_streaming", False):
+        # Guard: an answer stream is running. Under speculative answers the
+        # running stream IS ours (started before this worker) — continue so
+        # we can cancel/promote it; without the flag keep the old behaviour.
+        if getattr(self._llm, "is_streaming", False) and not self._spec_cancel:
             return
         try:
             resolved = self._dialog.resolve(text)
@@ -1342,11 +1387,15 @@ class InterviewEngine:
             log.exception("question rescue: dialog resolve failed")
             return
         if generation != self._generation:
+            self._cancel_speculative("generation")
             return
         if resolved.get("source") != "llm":
+            # Unknown/busy classification: a speculative stream (if any) is
+            # left to finish — better a possibly-unneeded answer than none.
             return
         rtype = resolved.get("type", "")
         if rtype not in {"question", "topic_shift"}:
+            self._cancel_speculative(rtype or "other")
             return
         rq = (resolved.get("resolved_query") or "").strip()
         if not rq:
@@ -1360,8 +1409,47 @@ class InterviewEngine:
             current_mode = self._current_answer_mode
         view = self._build_best_view(rq, current_mode)
         if view is None:
+            self._cancel_speculative("no-view")
             return
+        self._spec_cancel = None
+        self._spec_query = ""
         self._emit_view(view, rq, rq, msg)
+
+    def _start_speculative_answer(self, text: str, msg: protocol.FinalTranscript) -> None:
+        """B2: stream an answer on the raw marker-miss utterance immediately.
+
+        The Tier-3 rescue runs in parallel; on a "not a question" verdict it
+        cancels this stream via the cancellation event (checked between
+        streamed deltas in LlmClient.answer_question_stream). On a positive
+        verdict the normal _emit_view path takes over (its restart logic
+        replaces this stream if the resolved query differs).
+        """
+        view = self._build_best_view(text, "technical")
+        if view is None or not view.topic:
+            return
+        cancel = threading.Event()
+        self._spec_cancel = cancel
+        self._spec_query = text
+        log.info(
+            "speculative-answer: streaming on raw utterance while rescue classifies (%r)",
+            text[:80],
+        )
+        self._maybe_answer_llm(view, text, force=True, utterance=text, _spec_cancel=cancel)
+
+    def _cancel_speculative(self, reason: str) -> None:
+        """Cancel the in-flight speculative stream and reset the pane."""
+        cancel = self._spec_cancel
+        self._spec_cancel = None
+        query = self._spec_query
+        self._spec_query = ""
+        if cancel is None or not query:
+            return
+        log.info("speculative-answer: cancelled (reason=%s)", reason)
+        cancel.set()
+        if self.on_llm_answer:
+            self.on_llm_answer(
+                protocol.LlmAnswer(query=query, done=True, cancelled=True)
+            )
 
     def _nearest_topic(self, query: str):
         terms = self._matcher._index.significant_terms(query)
@@ -1408,7 +1496,7 @@ class InterviewEngine:
 
     def _maybe_answer_llm(
         self, view: protocol.KnowledgeView, query: str, force: bool = False, mode: str = "technical",
-        utterance: str = "",
+        utterance: str = "", _spec_cancel: threading.Event | None = None,
     ) -> None:
         """Schedule an LLM answer in parallel with the KB view.
 
@@ -1476,6 +1564,7 @@ class InterviewEngine:
                     seg_id=seg_id,
                     utterance=utterance,
                     kb_fallback=kb_fallback,
+                    spec_cancel=_spec_cancel,
                 )
             finally:
                 if unreserve is not None:
@@ -1572,6 +1661,7 @@ class InterviewEngine:
         skip_prev_qa: bool = False,
         utterance: str = "",
         kb_fallback: str = "",
+        spec_cancel: threading.Event | None = None,
     ) -> None:
         """Stream the LLM answer to the cockpit in real time.
 
@@ -1655,7 +1745,8 @@ class InterviewEngine:
             _first_marked = False
             try:
                 for delta in self._llm.answer_question_stream(
-                    query, context, mode=mode, previous_qa=prev_qa
+                    query, context, mode=mode, previous_qa=prev_qa,
+                    cancel_event=spec_cancel,
                 ):
                     if not delta:
                         continue
@@ -1687,6 +1778,11 @@ class InterviewEngine:
             needs_retry = (
                 not answer or stream_failed or len(answer) < _LLM_MIN_ANSWER_CHARS
             )
+            if spec_cancel is not None and spec_cancel.is_set():
+                # Cancelled speculative stream — do NOT retry or paint a
+                # failure notice; the cancel message already reset the pane.
+                needs_retry = False
+                answer = ""
             if needs_retry:
                 log.warning(
                     "llm: broken stream (len=%d, failed=%s) — retrying once",
@@ -1729,14 +1825,15 @@ class InterviewEngine:
                     query[:80], mode, context[-300:],
                     "yes" if prev_qa else "no",
                 )
-            if self._cfg.answer_cache:
+            cancelled = spec_cancel is not None and spec_cancel.is_set()
+            if self._cfg.answer_cache and not cancelled:
                 self._answer_cache.put(key, answer)
-            if answer:
+            if answer and not cancelled:
                 self._last_answer_q = query
                 self._last_answer_a = answer
                 self._last_answer_ts = time.monotonic()
                 self._feed_answer_to_context(query, answer)
-            if not answer:
+            if not answer and not cancelled:
                 self._ledger.warn(
                     "empty_answer", C_EMPTY_ANSWER, id=seg_id,
                     mode=mode, query=(query[:80] or ""),
@@ -1747,7 +1844,10 @@ class InterviewEngine:
             )
             if self._trace is not None and seg_id:
                 self._trace.mark(seg_id, "llm_done")
-            if self.on_llm_answer:
+            if self.on_llm_answer and not cancelled:
+                # A cancelled speculative stream emits nothing here — the
+                # cancel message (done=True, cancelled=True) already reset
+                # the pane from _cancel_speculative.
                 self.on_llm_answer(
                     protocol.LlmAnswer(
                         query=query,
