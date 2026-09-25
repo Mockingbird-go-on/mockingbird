@@ -486,3 +486,31 @@ def test_unsafe_guard_multivord_alias_not_rejected():
         ("Protected branch", ["защищённая ветка"], None),
     ])
     assert m.resolve("защищённая") is not None or True  # одно слово — не индексируется как mw
+
+
+def test_resolve_latin_insertion_typos_on_short_tokens():
+    """Whisper вставляет слоги в незнакомые термины: «Zubix» → «Zabbix»
+    (dist 2 при 5 символах). Бюджет dist-1 резал это, и guard
+    trailing-latin-nonsense подавлял ВЕСЬ вопрос. Для 5-6-симв. токенов
+    dist-2 разрешён только на БОЛЕЕ ДЛИННЫЙ кандидат (вставка)."""
+    m = PhoneticMatcher([
+        ("Zabbix", ["заббикс"], None),
+        ("Kubernetes", ["кубернетес"], None),
+        ("Terraform", ["терраформ"], None),
+    ])
+    m.extend_with_terms(["Zabbix", "Kubernetes"])
+    assert m.resolve_latin("Zubix") is not None
+    assert m.resolve_latin("Zabbix") is None  # exact known term — skipped by design
+    # Одно-буквенная вставка в более длинный термин тоже ловится
+    assert m.resolve_latin("Kubernetees") is not None
+
+
+def test_resolve_latin_no_false_positive_short_insertion():
+    """Dist-2 на коротких токенах только на длинных кандидатов: равные или
+    более короткие поверхности не матчатся (защита от Prop→Pod)."""
+    m = PhoneticMatcher([
+        ("Pod", ["под"], None),
+        ("Prometheus", ["прометеус"], None),
+    ])
+    # 5-симв «Props» vs 3-симв «Pod»: кандидат короче — вставкой не бывает
+    assert m.resolve_latin("Props") is None
