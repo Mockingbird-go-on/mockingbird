@@ -662,11 +662,8 @@ class SettingsDialog(QDialog):
                     from mockingbird.config import LlmConfig
 
                     client = LlmClient(LlmConfig(base_url=url, api_key=key, model=model))
-                    result = client.explain_term("docker")
-                    if result:
-                        self_.done.emit("✅ Подключение работает!", True)
-                    else:
-                        self_.done.emit("⚠ Нет ответа (проверьте URL/ключ)", False)
+                    ok, message = client.probe_connection()
+                    self_.done.emit(message, ok)
                 except Exception as exc:
                     self_.done.emit(f"❌ {exc!s:.80}", False)
 

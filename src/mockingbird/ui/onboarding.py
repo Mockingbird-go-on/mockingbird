@@ -177,15 +177,19 @@ class OnboardingWizard(QDialog):
 
             def run(self_):
                 try:
+                    import logging
+                    import time as _t
+
                     from mockingbird.llm.client import LlmClient
                     from mockingbird.config import LlmConfig
 
                     client = LlmClient(LlmConfig(base_url=url, api_key=key, model=model))
-                    result = client.explain_term("docker")
-                    if result:
-                        self_.done.emit("✅ Подключение работает!", True)
-                    else:
-                        self_.done.emit("⚠ Нет ответа (проверьте URL/ключ)", False)
+                    t0 = _t.monotonic()
+                    ok, message = client.probe_connection()
+                    logging.getLogger("mockingbird.onboarding").info(
+                        "llm connection check: %.2fs ok=%s", _t.monotonic() - t0, ok
+                    )
+                    self_.done.emit(message, ok)
                 except Exception as exc:
                     self_.done.emit(f"❌ Ошибка: {exc!s:.60}", False)
 
@@ -203,6 +207,26 @@ class OnboardingWizard(QDialog):
 
         self._test_worker.done.connect(_on_done)
         self._test_worker.start()
+        # Safety net: the probe has a 20 s HTTP timeout, but a wedged
+        # connection (proxy/DNS) inside httpx can outlive it — the wizard
+        # must never stay on "Проверка..." forever. 30 s hard deadline.
+        from PySide6.QtCore import QTimer
+
+        old_timer = getattr(self, "_test_deadline", None)
+        if old_timer is not None:
+            old_timer.stop()
+        deadline = QTimer(self)
+        deadline.setSingleShot(True)
+
+        def _on_deadline():
+            if not self._test_btn.isEnabled():
+                self._test_result.setText("❌ Превышено время ожидания (30 с)")
+                self._test_result.setStyleSheet("color: #FF5148;")
+                self._test_btn.setEnabled(True)
+
+        deadline.timeout.connect(_on_deadline)
+        deadline.start(30000)
+        self._test_deadline = deadline
 
     # -- Step 2: Audio -----------------------------------------------------
 

@@ -284,3 +284,37 @@ def test_yield_to_answer_stream_waits_and_returns_when_stream_clears():
     t.join(timeout=1.0)
     assert cleared is True
     assert waited >= 0.05
+
+
+def test_probe_connection_reports_real_error():
+    """The UI connection check must surface the actual failure, not a
+    generic 'no answer' (the swallowed exception left the onboarding
+    wizard stuck on 'Проверка...' with no diagnostics)."""
+    from unittest.mock import MagicMock, patch
+
+    from mockingbird.config import LlmConfig
+    from mockingbird.llm.client import LlmClient
+
+    client = LlmClient(LlmConfig(base_url="http://x", api_key="k", model="m"))
+    fake = MagicMock()
+    fake.chat.completions.create.side_effect = RuntimeError("boom 401")
+    client._client = fake
+    ok, message = client.probe_connection()
+    assert ok is False
+    assert "boom 401" in message
+
+
+def test_probe_connection_success():
+    from unittest.mock import MagicMock
+
+    from mockingbird.config import LlmConfig
+    from mockingbird.llm.client import LlmClient
+
+    client = LlmClient(LlmConfig(base_url="http://x", api_key="k", model="m"))
+    fake = MagicMock()
+    fake.chat.completions.create.return_value = MagicMock(
+        choices=[MagicMock(message=MagicMock(content="ok"))]
+    )
+    client._client = fake
+    ok, message = client.probe_connection()
+    assert ok is True
