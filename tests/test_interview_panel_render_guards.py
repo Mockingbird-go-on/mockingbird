@@ -48,7 +48,7 @@ def test_render_view_preserves_stream_for_partial_same_query():
 def test_render_view_resets_stream_when_query_changes():
     """Different query OR no active stream → reset must still happen."""
     _assert_guard_present(
-        r"if not \(view\.partial.*\):\s+self\._reset_llm_stream",
+        r"and view\.matched_query == self\._pending_llm_query.*?self\._reset_llm_stream",
         where="_render_view",
     )
 
@@ -72,3 +72,28 @@ def test_render_primary_preserves_active_stream_for_preview():
 def test_render_primary_still_writes_unavailable_when_no_stream():
     """The «Ответ ИИ недоступен» message itself must still exist for true misses."""
     assert "Ответ ИИ недоступен." in _SRC
+
+
+def test_render_primary_holds_placeholder_while_llm_busy():
+    """LLM busy (engine-side truth) must suppress «Ответ ИИ недоступен» the
+    same way the watchdog does — the early-start/queued-answer paths never
+    arm the panel watchdog, so the TTFB window used to flash the error."""
+    _assert_guard_present(
+        r"if self\._llm_watchdog\.isActive\(\) or _busy:",
+        where="_render_primary",
+    )
+
+
+def test_render_view_preserves_stream_while_llm_busy_same_query():
+    """A final KB view for the SAME question arriving while the answer is
+    still streaming must not reset the stream buffer."""
+    _assert_guard_present(
+        r"self\._llm_stream_text\s*\n?\s*and \(_busy or self\._llm_watchdog\.isActive\(\)\)",
+        where="_render_view",
+    )
+
+
+def test_panel_accepts_llm_busy_callback():
+    src = _read_source()
+    assert "llm_busy: Callable[[bool]] | None = None" in src or \
+           "llm_busy: Callable[[], bool] | None = None" in src
