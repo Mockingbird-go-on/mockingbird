@@ -852,8 +852,23 @@ def _download_from_github(
         for entry in pack_cache.iterdir():
             target = root / entry.name
             if target.exists():
-                continue
-            entry.rename(target)
+                # A leftover (possibly locked/partial) directory from a
+                # previous corrupt-cache cleanup must not silently swallow
+                # the freshly unpacked pack: rmtree(ignore_errors) can leave
+                # locked files behind on Windows (AV scan), and the old
+                # "skip if exists" logic then dropped refs/main in cache/ →
+                # "unexpected layout" after a full 1.5 GB download.
+                shutil.rmtree(target, ignore_errors=True)
+                if target.exists():
+                    log.error(
+                        "whisper: cannot replace stale model dir %s "
+                        "(locked?) — try deleting it manually", target,
+                    )
+                    continue
+            try:
+                entry.rename(target)
+            except OSError:
+                log.exception("whisper: model pack move failed for %s", entry)
         try:
             pack_cache.rmdir()
         except OSError:
@@ -863,7 +878,19 @@ def _download_from_github(
     refs = root / slug / "refs" / "main"
     snaps = root / slug / "snapshots"
     if not (refs.is_file() and snaps.is_dir()):
-        log.error("whisper: GitHub model pack has unexpected layout under %s", root)
+        # Diagnostics: what actually landed under the root (the silent
+        # "skip if exists" move bug left refs/ stranded under cache/).
+        try:
+            listing = [p.name for p in root.iterdir()]
+            cache_listing = (
+                [p.name for p in (root / "cache").iterdir()] if (root / "cache").is_dir() else None
+            )
+        except OSError:
+            listing = cache_listing = None
+        log.error(
+            "whisper: GitHub model pack has unexpected layout under %s "
+            "(root=%s, cache=%s)", root, listing, cache_listing,
+        )
         return None
     commit = refs.read_text(encoding="utf-8").strip()
     snapshot = snaps / commit
