@@ -1119,6 +1119,14 @@ class WhisperEngine:
         self._decoding = False
         self._detected_language: str | None = None
         self._speculative: dict | None = None
+        # Clean-snapshot flag: True while NO speech arrived after the current
+        # speculative snapshot (only silence tail). Reuse is then bit-safe at
+        # ANY delta — the tail is known-silent, a re-decode would decode the
+        # exact same speech. Reset on speech_resume and new snapshots.
+        self._spec_dirty = False
+        # Deferred stop-hint: the hint arrived while a decode was in flight;
+        # re-fired once the decode finishes (see _handle_stop_hint/_maybe_decode).
+        self._stop_hint_pending = False
         self._spec_partial_emitted = False
         # Incremental chunk decode cache (stable prefix of the current
         # segment; grid: window 20 s, step 18 s — see _decode_cached).
@@ -1362,6 +1370,10 @@ class WhisperEngine:
             elif cmd == _CMD_RESUME:
                 self._speculative = None
                 self._spec_partial_emitted = False
+                # Speech resumed after the snapshot: any speculative taken
+                # later would cover NEW speech — reuse must fall back to the
+                # conservative delta budget until proven clean again.
+                self._spec_dirty = True
             elif cmd == _CMD_FLUSH:
                 with self._lock:
                     audio = self._rolling.copy()
@@ -1537,6 +1549,18 @@ class WhisperEngine:
             log.warning("partial decode failed: %s", exc)
         finally:
             self._decoding = False
+            self._refire_pending_stop_hint()
+
+    def _refire_pending_stop_hint(self) -> None:
+        """Run a stop-hint that arrived while a decode was in flight.
+
+        Must be called on the worker thread with ``_decoding`` already False
+        (end of a decode's finally block). Clears the pending flag first so
+        a recursive defer cannot loop.
+        """
+        if self._stop_hint_pending:
+            self._stop_hint_pending = False
+            self._handle_stop_hint()
 
     def _handle_stop_hint(self) -> None:
         """Decode the full rolling segment while the VAD silence tail runs.
@@ -1555,7 +1579,16 @@ class WhisperEngine:
           decoded (speculative quality on the head adds nothing — the chunk
           cache already holds it and the final pass re-decodes anyway).
         """
-        if not self._end_ahead or self._model is None or self._decoding:
+        if not self._end_ahead or self._model is None:
+            return
+        if self._decoding:
+            # A decode (partial/speculative) is still running. Dropping the
+            # hint here used to cost a full final re-decode: silence already
+            # started, so the speculative pass is exactly what we want once
+            # the in-flight decode finishes. Re-fire once.
+            if not self._stop_hint_pending:
+                self._stop_hint_pending = True
+                log.debug("whisper: stop_hint deferred — decode in flight")
             return
         with self._lock:
             if len(self._rolling) == 0:
@@ -1591,6 +1624,7 @@ class WhisperEngine:
                         "confidence": confidence,
                         "duration": len(audio) / self._sr,
                     }
+                    self._spec_dirty = False
                     self._spec_partial_emitted = True
                     self._last_partial_text = text
                     msg = protocol.PartialTranscript(
@@ -1605,6 +1639,7 @@ class WhisperEngine:
                 log.warning("speculative tail decode failed: %s", exc)
             finally:
                 self._decoding = False
+                self._refire_pending_stop_hint()
             return
         self._decoding = True
         try:
@@ -1624,6 +1659,7 @@ class WhisperEngine:
                     "confidence": confidence,
                     "duration": duration,
                 }
+                self._spec_dirty = False
                 self._spec_partial_emitted = True
                 self._last_partial_text = text
                 msg = protocol.PartialTranscript(
@@ -1638,11 +1674,13 @@ class WhisperEngine:
             log.warning("speculative decode failed: %s", exc)
         finally:
             self._decoding = False
+            self._refire_pending_stop_hint()
 
     def _cleanup_segment(self) -> None:
         """Reset per-segment decode state (all finalize paths share this)."""
         with self._lock:
             self._speculative = None
+            self._spec_dirty = False
             self._spec_partial_emitted = False
             self._chunk_texts = []
             self._last_partial_text = ""
@@ -1695,12 +1733,21 @@ class WhisperEngine:
             last_partial = self._last_partial_text if segment_id == self._segment_id else ""
             spec = self._speculative
             self._speculative = None
+        # Reuse rules: a CLEAN snapshot (no speech_resume since it was taken —
+        # only the VAD silence tail was appended) is reusable at ANY delta:
+        # the extra audio is confirmed silence, a re-decode would decode the
+        # identical speech. A DIRTY snapshot (speech resumed at some point,
+        # a newer snapshot may be pending) falls back to the conservative
+        # delta budget: beyond it the tail may hide un-decoded speech.
+        delta_ok = spec is not None and (
+            len(audio) - spec.get("duration", 0.0) * self._sr
+            <= _SPECULATIVE_REUSE_MAX_DELTA_S * self._sr
+        )
         reusable = (
             spec is not None
             and spec.get("segment_id") == segment_id
             and spec.get("text")
-            and len(audio) - spec.get("duration", 0.0) * self._sr
-            <= _SPECULATIVE_REUSE_MAX_DELTA_S * self._sr
+            and (not self._spec_dirty or delta_ok)
         )
         self._decoding = True
         if reusable:

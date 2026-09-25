@@ -604,6 +604,19 @@ class LlmClient:
             )
         return not self.is_streaming
 
+    # Keepalive: httpx defaults to 5 s — interview question gaps are 10-60 s,
+    # so every question re-paid TCP+TLS (~150-500 ms TTFB). Hold connections
+    # for 10 minutes instead; the pool ping in warmup() keeps them fresh.
+    _KEEPALIVE_EXPIRY_S = 600.0
+
+    def _http_client(self):
+        import httpx
+
+        return httpx.Client(
+            keepalive_expiry=self._KEEPALIVE_EXPIRY_S,
+            timeout=self._cfg.timeout_s,
+        )
+
     def _ensure(self):
         if self._client is None and self.available:
             from openai import OpenAI
@@ -612,6 +625,7 @@ class LlmClient:
                 base_url=self._cfg.base_url,
                 api_key=self._cfg.api_key,
                 timeout=self._cfg.timeout_s,
+                http_client=self._http_client(),
             )
         return self._client
 
@@ -654,6 +668,7 @@ class LlmClient:
                 base_url=self._cfg.failover_base_url,
                 api_key=self._cfg.failover_api_key,
                 timeout=self._cfg.timeout_s,
+                http_client=self._http_client(),
             )
         return self._failover_client
 
