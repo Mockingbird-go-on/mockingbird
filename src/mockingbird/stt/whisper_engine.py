@@ -719,6 +719,39 @@ _MODEL_RELEASE_ASSETS = {
 }
 _CHUNK = 1 << 20  # 1 MiB
 
+# Approximate unpacked model sizes (bytes) used for the pre-download disk
+# space check when the exact size is not yet known (HuggingFace path).
+# Roughly 2x the zip: the pack is kept alongside the unpacked snapshot
+# during installation.
+_MODEL_SIZE_HINTS = {
+    "Systran/faster-whisper-tiny": 150 * 1024 * 1024,
+    "Systran/faster-whisper-base": 290 * 1024 * 1024,
+    "Systran/faster-whisper-small": 1000 * 1024 * 1024,
+    "Systran/faster-whisper-medium": 3200 * 1024 * 1024,
+    "deepdml/faster-whisper-large-v3-turbo-ct2": 3600 * 1024 * 1024,
+}
+
+
+def _ensure_free_space(path: str, needed_bytes: float, what: str) -> None:
+    """Raise a friendly RuntimeError when the disk cannot hold the download.
+
+    ``path`` may not exist yet — the closest EXISTING ancestor is probed.
+    The error text lands in the model-download overlay / retry dialog via
+    the regular model_load_failed path.
+    """
+    import shutil
+
+    probe = Path(path)
+    while not probe.exists():
+        probe = probe.parent
+    free = shutil.disk_usage(probe).free
+    if free < needed_bytes:
+        raise RuntimeError(
+            f"Недостаточно места на диске для {what}: требуется "
+            f"~{needed_bytes / 1e9:.1f} ГБ, свободно {free / 1e9:.1f} ГБ "
+            f"({probe}). Освободите место и нажмите «Повторить»."
+        )
+
 
 def _github_model_url(repo_id: str) -> str:
     return (
@@ -763,6 +796,9 @@ def _download_from_github(
     total = float(resp.headers.get("Content-Length") or 0)
     zip_path = root / ".github-model-pack.zip"
     root.mkdir(parents=True, exist_ok=True)
+    if total > 0:
+        # zip + unpacked snapshot coexist during installation → ~2x needed.
+        _ensure_free_space(str(root), total * 2.0, "загрузки модели распознавания")
     done = 0.0
     try:
         with open(zip_path, "wb") as f:
@@ -934,6 +970,10 @@ def resolve_model_path(cfg: WhisperConfig, progress_cb=None, cancel_event=None) 
             # A user cancel must propagate; anything else degrades to HF.
             if cancel_event is not None and cancel_event.is_set():
                 raise
+            # Out-of-disk is NOT transient — retrying via HF would fail the
+            # same way after another round of HEAD requests. Surface it.
+            if "Недостаточно места" in str(exc):
+                raise
             log.warning("whisper: GitHub model download failed (%s) — trying HuggingFace", exc)
 
         kwargs: dict = {
@@ -946,6 +986,14 @@ def resolve_model_path(cfg: WhisperConfig, progress_cb=None, cancel_event=None) 
             # the 1.6 GB model.bin from scratch on every attempt.
             "resume_download": True,
         }
+        hint = _MODEL_SIZE_HINTS.get(repo_id)
+        if hint is not None:
+            try:
+                _ensure_free_space(download_root, float(hint), "загрузки модели распознавания")
+            except RuntimeError:
+                raise
+            except Exception:  # noqa: BLE001
+                pass  # space probe itself failed — do not block the download
         reporter = None
         if progress_cb is not None:
             progress_cb("Downloading whisper model…", 0.0)
