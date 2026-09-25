@@ -279,6 +279,7 @@ class App:
         # emit the one-line trace summary for this segment.
         self.signals.llm_answer.connect(self._on_llm_answer_trace)
         self.signals._start_watchdog.connect(self._start_watchdog_gui)
+        self.signals._stop_watchdog.connect(self._stop_watchdog_gui)
         self.explainer.on_term = self._on_term
         self.interview.on_question = self.signals.question.emit
         self.interview.on_answer = self.signals.answer.emit
@@ -717,7 +718,10 @@ class App:
         with slow("stop_session", threshold_s=3.0):
             try:
                 if self._audio_watchdog is not None:
-                    self._audio_watchdog.stop()
+                    # QTimer.stop() from a non-GUI thread is UB in Qt and
+                    # caused sporadic access violations on Windows — marshal
+                    # the stop to the GUI thread via the signal bridge.
+                    self.signals._stop_watchdog.emit()
                     self._audio_watchdog = None
                 self.capture.stop()
                 self.engine.flush()
@@ -834,6 +838,17 @@ class App:
             self._audio_watchdog.timeout.connect(self._check_audio_alive)
             self._audio_watchdog.start()
             log.info("audio watchdog started")
+
+    def _stop_watchdog_gui(self) -> None:
+        """GUI-thread slot: stop and drop the audio watchdog QTimer.
+
+        Called via signal from the session-stop daemon thread. Stopping a
+        QTimer from another thread is undefined behaviour in Qt (sporadic
+        native crashes); the signal marshals the call onto the GUI thread.
+        """
+        if self._audio_watchdog is not None:
+            self._audio_watchdog.stop()
+            self._audio_watchdog = None
 
     def _check_audio_alive(self) -> None:
         """Watchdog: restart capture if the audio callback stalled.
