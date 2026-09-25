@@ -613,7 +613,7 @@ class LlmClient:
         import httpx
 
         return httpx.Client(
-            keepalive_expiry=self._KEEPALIVE_EXPIRY_S,
+            limits=httpx.Limits(keepalive_expiry=self._KEEPALIVE_EXPIRY_S),
             timeout=self._cfg.timeout_s,
         )
 

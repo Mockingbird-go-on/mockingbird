@@ -293,3 +293,16 @@ def test_stop_hint_deferred_until_decode_finishes():
     we.WhisperEngine._refire_pending_stop_hint(eng)
     assert fired == [True]
     assert eng._stop_hint_pending is False
+
+
+def test_http_client_constructs_with_keepalive():
+    """Regression: keepalive_expiry belongs to httpx.Limits, not Client —
+    passing it to Client() raised TypeError on every connection check
+    (onboarding 'Проверка...' hang, settings connect-test error)."""
+    from mockingbird.config import LlmConfig
+    from mockingbird.llm.client import LlmClient
+
+    client = LlmClient(LlmConfig(base_url="http://x", api_key="k", model="m"))
+    http = client._http_client()
+    assert http is not None
+    assert http._transport._pool._keepalive_expiry == LlmClient._KEEPALIVE_EXPIRY_S
