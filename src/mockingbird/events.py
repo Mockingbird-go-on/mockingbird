@@ -51,3 +51,7 @@ class AppSignals(QObject):
     # Bridge: audio callback thread → GUI thread to start the audio watchdog.
     # QTimer must be created on the GUI thread, so the callback signals it.
     _start_watchdog = Signal()
+    # Bridge: session-stop daemon thread → GUI thread to stop the watchdog
+    # QTimer. Calling QTimer.stop() from a non-GUI thread is undefined
+    # behaviour in Qt (sporadic access violations on Windows).
+    _stop_watchdog = Signal()
