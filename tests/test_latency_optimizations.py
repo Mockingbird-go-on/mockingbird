@@ -306,3 +306,59 @@ def test_http_client_constructs_with_keepalive():
     http = client._http_client()
     assert http is not None
     assert http._transport._pool._keepalive_expiry == LlmClient._KEEPALIVE_EXPIRY_S
+
+
+# ── Cache replay vs cooldown (2026-09-26 stuck-answer fix) ──────────
+
+class _CacheFake:
+    """Minimal answer-cache double."""
+    def __init__(self):
+        self.store = {}
+
+    def get(self, key):
+        return self.store.get(key)
+
+    def put(self, key, value):
+        self.store[key] = value
+
+
+def test_cached_answer_replayed_before_cooldown_gate():
+    """A cached answer must be re-emitted even inside the cooldown window.
+
+    Wild regression (2026-09-26 log): an early-started (partial-based)
+    answer stream finished BEFORE the final transcript reached the panel
+    (on_question), so the panel dropped the done-message and never painted
+    it. The final-path _maybe_answer_llm call then hit the 7 s cooldown
+    gate — which ran BEFORE the cache lookup — and returned early, leaving
+    the pane on the watchdog's «Ответ ИИ задерживается» notice forever.
+    """
+    import time as _time
+
+    from mockingbird.kb import interview_engine as ie
+
+    eng = object.__new__(ie.InterviewEngine)
+    eng._llm = _FakeLlm()
+    eng._cfg = type("C", (), {
+        "llm_primary": True, "answer_cache": True, "answer_cooldown_s": 7.0,
+    })()
+    eng._llm_answer_available = lambda: True
+    eng._answer_cache = _CacheFake()
+    eng._context_summary = lambda: ""
+    eng._last_answer_ts = _time.monotonic() - 3.0  # inside cooldown
+    eng._question_queue = None
+    eng._trace = None
+
+    view = type("V", (), {"topic": "general", "title": "A"})()
+    query = "Что ты знаешь в Zabbix?"
+    key = ie._query_key(query)
+    eng._answer_cache.store[key] = "Кэшированный ответ."
+
+    emitted = []
+    eng.on_llm_answer = lambda m: emitted.append(m)
+    # force=False is the final-transcript path after an equivalent wording
+    # (no restart): the cooldown gate would return early without the fix.
+    ie.InterviewEngine._maybe_answer_llm(eng, view, query, force=False)
+    assert any(
+        getattr(m, "done", False) and m.answer == "Кэшированный ответ."
+        for m in emitted
+    ), "cached answer must replay even while the cooldown gate is active"
