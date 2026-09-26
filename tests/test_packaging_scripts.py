@@ -757,11 +757,13 @@ def test_spec_post_analysis_slim_filter():
         assert dropped.lower() not in kept_names, f"{dropped} must be dropped"
     datas = [
         (r"PySide6\translations\qtbase_ru.qm", r"C:\site-packages\PySide6\translations\qtbase_ru.qm", "DATA"),
+        (r"PySide6\translations\qt_ru.qm", r"C:\site-packages\PySide6\translations\qt_ru.qm", "DATA"),
         (r"PySide6\translations\qtdeclarative_ru.qm", r"C:\site-packages\PySide6\translations\qtdeclarative_ru.qm", "DATA"),
         (r"mockingbird\assets\kb\docker.yaml", r"E:\mockingbird\src\mockingbird\assets\kb\docker.yaml", "DATA"),
     ]
     kept_datas = {e[0].lower() for e in slim(datas, "datas")}
     assert r"pyside6\translations\qtbase_ru.qm".lower() in kept_datas
+    assert r"pyside6\translations\qt_ru.qm".lower() in kept_datas  # RU dialogs
     assert r"pyside6\translations\qtdeclarative_ru.qm".lower() not in kept_datas
     assert r"mockingbird\assets\kb\docker.yaml".lower() in kept_datas
 
