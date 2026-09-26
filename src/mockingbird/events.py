@@ -55,3 +55,7 @@ class AppSignals(QObject):
     # QTimer. Calling QTimer.stop() from a non-GUI thread is undefined
     # behaviour in Qt (sporadic access violations on Windows).
     _stop_watchdog = Signal()
+    # Bridge: STT worker → GUI thread for the ready sound. QMediaPlayer must
+    # be created and played on the GUI thread (object affinity); the engine
+    # worker used to construct it directly, which crashes/never plays.
+    _play_ready_sound = Signal()
