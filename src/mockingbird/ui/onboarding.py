@@ -5,7 +5,7 @@ Triggered from main.py when llm.base_url or llm.api_key is not configured.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -170,8 +170,6 @@ class OnboardingWizard(QDialog):
         # Never run the network call on the GUI thread — with a slow/dead
         # endpoint the wizard would freeze for the whole LLM timeout (~20 s).
         # Same QThread pattern as the settings dialog's connection check.
-        from PySide6.QtCore import Signal
-
         class _TestWorker(QThread):
             done = Signal(str, bool)
 
@@ -210,8 +208,6 @@ class OnboardingWizard(QDialog):
         # Safety net: the probe has a 20 s HTTP timeout, but a wedged
         # connection (proxy/DNS) inside httpx can outlive it — the wizard
         # must never stay on "Проверка..." forever. 30 s hard deadline.
-        from PySide6.QtCore import QTimer
-
         old_timer = getattr(self, "_test_deadline", None)
         if old_timer is not None:
             old_timer.stop()
