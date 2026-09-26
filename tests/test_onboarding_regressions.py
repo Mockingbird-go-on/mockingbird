@@ -101,6 +101,55 @@ def test_groupbox_style_reserves_title_space_onboarding():
         )
 
 
+def test_groupbox_stylesheet_parses_cleanly():
+    """Qt must parse the group-box stylesheets without warnings.
+
+    Regression (2026-09-26): the f-string closed with '}}' (escaped brace +
+    literal brace) producing 'margin-top: 12px; }}' — Qt logged
+    «Could not parse stylesheet of object QGroupBox(...)» on every polish
+    and silently IGNORED the whole sheet (including the accent border).
+    Catch Qt warnings programmatically."""
+    _qapp()
+    import warnings as _w
+
+    from PySide6.QtCore import qWarning  # noqa: F401
+    from PySide6.QtWidgets import QGroupBox
+
+    src = (ROOT / "src" / "mockingbird" / "ui" / "onboarding.py").read_text(
+        encoding="utf-8"
+    )
+    acc = "#ff2a1a"
+    from PySide6.QtCore import qInstallMessageHandler
+
+    for title in ("Настройки Whisper", "Тема"):
+        raw = _extract_group_style(src, title)
+        # The call body is an implicit-concat f-string with {self._ACCENT};
+        # evaluate it with a stub self exactly as the wizard does.
+        body = raw[raw.index("(") + 1:]
+        style = eval(  # noqa: S307
+            "(" + body + ")",
+            {"__builtins__": {}},
+            {"self": type("S", (), {"_ACCENT": acc})()},
+        )
+        assert isinstance(style, str) and style
+        box = QGroupBox(title)
+        captured: list[str] = []
+
+        def _handler(message, category=None, context=None):
+            captured.append(message)
+
+        _old = qInstallMessageHandler(_handler)
+        try:
+            box.setStyleSheet(style)
+            box.ensurePolished()
+        finally:
+            qInstallMessageHandler(_old)
+        assert not any("Could not parse stylesheet" in m for m in captured), (
+            f"{title}: Qt rejected the stylesheet: {style!r}"
+        )
+        assert "}}" not in style, f"{title}: double closing brace in {style!r}"
+
+
 def test_groupbox_title_does_not_overlap_first_row():
     """Behavioral geometry check: with the margin-top style, the first child
     widget must start BELOW the title bottom; with the old bare-border style
