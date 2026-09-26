@@ -102,7 +102,7 @@ class QuestionQueue:
             self._thread = None
 
     # -- API --
-    def submit(self, key: str, segment_id: str, run) -> bool:
+    def submit(self, key: str, segment_id: str, run, force: bool = False) -> bool:
         """Enqueue (or replace) a job.
 
         ``key`` is the normalized query used for dedup: if an equivalent job
@@ -112,6 +112,11 @@ class QuestionQueue:
         the answer for this question is already streaming and a second stream
         would duplicate it. Jobs already running are never interrupted
         (serial, wait-for-completion policy).
+
+        ``force=True`` bypasses the fuzzy dedup entirely (exact-key dedup
+        still applies): used by the engine after it verified with its own,
+        stricter equivalence that a queue-dedup drop was a false positive —
+        the fuzzy Jaccard conflates different questions sharing a frame.
 
         Returns True when the job was enqueued (or replaced a pending one),
         False when it was dropped as a duplicate of the running answer.
@@ -132,7 +137,10 @@ class QuestionQueue:
                 running_key = self._jobs[0].key
             if running_key is not None and (
                 running_key == key
-                or _jaccard(_tokens(running_key), new_tokens) >= _DEDUP_JACCARD
+                or (
+                    not force
+                    and _jaccard(_tokens(running_key), new_tokens) >= _DEDUP_JACCARD
+                )
             ):
                 log.info(
                     "question-queue: skip duplicate of running answer (key=%r)", key[:60]
@@ -140,7 +148,9 @@ class QuestionQueue:
                 return False
             kept: list[QuestionJob] = []
             for j in self._jobs:
-                if j.key == key or _jaccard(_tokens(j.key), new_tokens) >= _DEDUP_JACCARD:
+                if j.key == key or (
+                    not force and _jaccard(_tokens(j.key), new_tokens) >= _DEDUP_JACCARD
+                ):
                     continue  # replaced by this submission
                 kept.append(j)
             self._jobs = kept
@@ -159,6 +169,19 @@ class QuestionQueue:
     def pending(self) -> int:
         with self._cond:
             return len(self._jobs)
+
+    @property
+    def running_key(self) -> str | None:
+        """The key the worker is (or is about to be) serving.
+
+        Mirrors the dedup target used by ``submit`` — the engine checks it
+        when a submission is dropped to decide whether the drop was a true
+        duplicate or a fuzzy false positive (audit 2026-09-26).
+        """
+        with self._cond:
+            if self._running_key is not None:
+                return self._running_key
+            return self._jobs[0].key if self._jobs else None
 
     # -- worker --
     def _run(self) -> None:
