@@ -1511,17 +1511,18 @@ class InterviewEngine:
         if not (self._cfg.llm_primary and self._llm_answer_available()):
             return
         now = time.monotonic()
-        if not force and now - self._last_answer_ts < self._cfg.answer_cooldown_s:
-            return
-        # The LLM is always the primary answerer — it answers from its own
-        # expertise. Technical KB context is NOT injected (the topic tree in
-        # the UI serves as a manual reference sidebar). For personal/mixed
-        # modes the candidate's resume blocks are still passed as context.
         if not view or not view.topic:
             return
-        self._last_answer_ts = now
+        # Cache replay BEFORE the cooldown throttle: the throttle exists to
+        # spare the provider, but a cached answer is free. Without this the
+        # final-transcript replay of an early-started (partial-based) answer
+        # is dropped — the stream's done-message arrived before on_question
+        # latched the panel's pending query, so the UI never painted it, and
+        # the cooldown suppressed the final-path re-emit for `cooldown_s`
+        # seconds, leaving the pane on the watchdog's "задерживается" notice.
         key = _query_key(query)
         if self._cfg.answer_cache and (cached := self._answer_cache.get(key)) is not None:
+            self._last_answer_ts = now
             if self.on_llm_answer:
                 self.on_llm_answer(
                     protocol.LlmAnswer(
@@ -1534,6 +1535,16 @@ class InterviewEngine:
                     )
                 )
             return
+        now = time.monotonic()
+        if not force and now - self._last_answer_ts < self._cfg.answer_cooldown_s:
+            return
+        # The LLM is always the primary answerer — it answers from its own
+        # expertise. Technical KB context is NOT injected (the topic tree in
+        # the UI serves as a manual reference sidebar). For personal/mixed
+        # modes the candidate's resume blocks are still passed as context.
+        if not view or not view.topic:
+            return
+        self._last_answer_ts = now
         if mode == "personal":
             context = self._llm_answer_context_personal(view, query)
         elif mode == "mixed":
