@@ -727,6 +727,12 @@ def test_spec_post_analysis_slim_filter():
         (r"av\__init__.pyd", r"C:\site-packages\av\__init__.pyd", "BINARY"),
         (r"av\audio.pyd", r"C:\site-packages\av\audio.pyd", "BINARY"),
         (r"av.libs\libavcodec-61.dll", r"C:\site-packages\av.libs\libavcodec-61.dll", "BINARY"),
+        # Qt PLUGINS must survive: qwindows.dll is the platform plugin
+        # (without it: "no Qt platform plugin could be initialized") and
+        # the multimedia backend plays the ready-sound.
+        (r"PySide6\plugins\platforms\qwindows.dll", r"C:\site-packages\PySide6\plugins\platforms\qwindows.dll", "BINARY"),
+        (r"PySide6\plugins\imageformats\qsvg.dll", r"C:\site-packages\PySide6\plugins\imageformats\qsvg.dll", "BINARY"),
+        (r"PySide6\plugins\multimedia\ffmpegmediaplugin.dll", r"C:\site-packages\PySide6\plugins\multimedia\ffmpegmediaplugin.dll", "BINARY"),
     ]
     kept = slim(binaries, "binaries")
     kept_names = {e[0].lower() for e in kept}
@@ -737,8 +743,11 @@ def test_spec_post_analysis_slim_filter():
         r"av\__init__.pyd",
         r"av\audio.pyd",
         r"av.libs\libavcodec-61.dll",
+        r"PySide6\plugins\platforms\qwindows.dll",
+        r"PySide6\plugins\imageformats\qsvg.dll",
+        r"PySide6\plugins\multimedia\ffmpegmediaplugin.dll",
     ):
-        assert survivor.lower() in kept_names, f"{survivor} must survive (PyAV!)"
+        assert survivor.lower() in kept_names, f"{survivor} must survive"
     for dropped in (
         r"nvidia\cublas\bin\cublas64_12.dll",
         r"nvidia\cudnn\bin\cudnn_graph64_9.dll",
