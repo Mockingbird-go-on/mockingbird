@@ -181,6 +181,13 @@ class ModelDownloadDialog(QWidget):
         """Show the overlay only while the main window is the active window."""
         if not self._download_active:
             return
+        # A modal NotificationBus dialog owns the screen — do not fight it
+        # for stacking (was: raise_() on every timer tick over modal boxes).
+        from .notify import bus as notify_bus
+
+        if notify_bus.modal_active:
+            self.hide()
+            return
         main_active = QApplication.activeWindow() is not None
         if main_active:
             if not self.isVisible():

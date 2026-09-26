@@ -423,6 +423,44 @@ def main() -> int:
         settings.setValue("ui/theme", theme_name)
         apply_theme(app, theme_name)
 
+    # Startup notifications (crash report, system warnings) go through the
+    # NotificationBus FIFO and are flushed BEFORE the main window is shown
+    # and BEFORE warm_start kicks off the model download overlay — no more
+    # overlapping windows at launch (2026-09-26).
+    from mockingbird.ui.notify import bus as notify_bus
+
+    if prev_crash:
+        diagnostics.clear_crash_marker(config.storage.log_dir)
+
+        def _collect_and_report() -> None:
+            try:
+                zip_path = diagnostics.collect_diagnostics(config)
+                notify_bus.info("Готово", f"Архив создан:\n{zip_path}")
+            except Exception:
+                log.exception("diagnostics collection failed")
+                notify_bus.error(
+                    "Ошибка",
+                    "Не удалось собрать архив диагностики "
+                    "(подробности в файле лога).",
+                )
+
+        notify_bus.push(
+            "Аварийное завершение",
+            "Предыдущий запуск Mockingbird завершился аварийно.\n"
+            "Собрать архив с логами для диагностики?",
+            severity="warning",
+            scope="startup",
+            buttons=(("Да", _collect_and_report), ("Нет", None)),
+        )
+    if sys_warnings:
+        notify_bus.push(
+            "Проверка системы",
+            "\n\n".join(f"• {w.title}\n{w.message}" for w in sys_warnings),
+            severity="warning",
+            scope="startup",
+        )
+    notify_bus.flush_startup()
+
     # Kick the STT model load off as early as possible: the worker thread
     # loads the weights while the window is still being shown / system
     # checks run. By the time the user reaches the UI, the model is already
@@ -436,37 +474,6 @@ def main() -> int:
 
     # Connect the global-hotkey bridge signal.
     context.signals.toggle_capture_request.connect(window._on_toggle_capture_via_signal)
-
-    if sys_warnings:
-        _show_system_warnings(window, sys_warnings)
-
-    # Previous run crashed (excepthook marker): offer a diagnostics bundle
-    # while the process is alive and the logs are still on disk.
-    if prev_crash:
-        diagnostics.clear_crash_marker(config.storage.log_dir)
-        from PySide6.QtWidgets import QMessageBox
-
-        answer = QMessageBox.question(
-            window,
-            "Аварийное завершение",
-            "Предыдущий запуск Mockingbird завершился аварийно.\n"
-            "Собрать архив с логами для диагностики?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        )
-        if answer == QMessageBox.StandardButton.Yes:
-            try:
-                zip_path = diagnostics.collect_diagnostics(config)
-                QMessageBox.information(
-                    window, "Готово",
-                    f"Архив создан:\n{zip_path}",
-                )
-            except Exception:
-                log.exception("diagnostics collection failed")
-                QMessageBox.critical(
-                    window, "Ошибка",
-                    "Не удалось собрать архив диагностики "
-                    "(подробности в файле лога).",
-                )
 
     # Global hotkey Ctrl+Alt+H (Windows only; no-op elsewhere).
     from mockingbird.ui.global_hotkey import MOD_CONTROL, MOD_SHIFT, GlobalHotkey, VK_S
