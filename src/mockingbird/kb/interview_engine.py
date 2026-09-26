@@ -1556,7 +1556,28 @@ class InterviewEngine:
             return
         now = time.monotonic()
         if not force and now - self._last_answer_ts < self._cfg.answer_cooldown_s:
-            return
+            # The cooldown exists to spare the provider from REPEAT emission
+            # of the same question (partial re-renders, duplicate finals).
+            # A NEW question inside the cooldown window MUST be answered —
+            # silently returning here dropped real questions (2026-09-26
+            # field report: «Расскажи, что такое Zabix» asked 5 s after the
+            # previous one never reached the LLM at all; the UI watchdog
+            # expired and the pane declared «Ответ ИИ недоступен»).
+            repeat = bool(self._last_answer_q) and _questions_equivalent(
+                query, self._last_answer_q, self._cfg.answer_restart_min_similarity
+            )
+            if repeat:
+                log.info(
+                    "llm-answer: suppressed by cooldown (repeat of recently "
+                    "answered query=%r, %.1fs ago)",
+                    query[:60], now - self._last_answer_ts,
+                )
+                return
+            log.info(
+                "llm-answer: cooldown bypassed for a new question "
+                "(query=%r, last answered %.1fs ago)",
+                query[:60], now - self._last_answer_ts,
+            )
         # The LLM is always the primary answerer — it answers from its own
         # expertise. Technical KB context is NOT injected (the topic tree in
         # the UI serves as a manual reference sidebar). For personal/mixed
