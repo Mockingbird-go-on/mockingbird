@@ -418,6 +418,13 @@ def main() -> int:
             return 0
         # Persist onboarding choices
         context.save_settings()
+        # The checks ran BEFORE the wizard (with the LLM still unconfigured);
+        # re-run them now that onboarding has filled in base_url/api_key —
+        # otherwise the stale «LLM не настроен» warning greets a user who
+        # JUST configured (and connection-tested) the LLM in the wizard.
+        from mockingbird.ui.system_check import run_system_checks as _rsc
+
+        sys_warnings = _rsc(config)
         # Apply theme from onboarding
         theme_name = wizard._theme_choice  # noqa: SLF001
         settings.setValue("ui/theme", theme_name)
