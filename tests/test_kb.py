@@ -1365,3 +1365,40 @@ def test_llm_answer_defaults_done_false():
     assert msg.done is False
     assert msg.delta == ""
 
+
+
+# -- early-start question latch (2026-09-26 race fixes) -------------------------
+
+
+def test_engine_partial_early_start_emits_question_before_answer():
+    """The early-start stream must not race the panel's query latch.
+
+    The done-message of an early-started (partial-based) answer can arrive
+    before the final transcript; the panel drops any LlmAnswer whose query
+    does not match _pending_llm_query (latched only by on_question). The
+    early-start path therefore emits QuestionDetected BEFORE starting the
+    stream, so deltas paint live and done never misses.
+    """
+    llm = _FakeStreamLlm(["Ответ ", "по партиалу"])
+    engine = _partial_engine(llm)
+    questions = []
+    engine.on_question = questions.append
+    query = "в чём отличие entrypoint от cmd"
+    engine._process_partial(_partial(query))
+    engine._process_partial(_partial(query))
+    # The question was emitted BEFORE the queue started streaming: the
+    # on_question callback fired synchronously in _process_partial.
+    assert any(q.text == query for q in questions)
+    engine._question_queue.stop(timeout=2)
+    assert llm.calls  # stream still ran
+
+
+def test_engine_partial_no_duplicate_question_on_repeated_partials():
+    llm = _FakeStreamLlm(["a"])
+    engine = _partial_engine(llm)
+    questions = []
+    engine.on_question = questions.append
+    query = "в чём отличие entrypoint от cmd"
+    for _ in range(4):
+        engine._process_partial(_partial(query))
+    assert len([q for q in questions if q.text == query]) == 1

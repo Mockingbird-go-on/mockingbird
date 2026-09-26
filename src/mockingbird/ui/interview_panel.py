@@ -623,6 +623,23 @@ class InterviewPanel(QWidget):
         self._question.setProperty("placeholder", on)
 
     def on_question(self, detected: protocol.QuestionDetected) -> None:
+        # Idempotent re-latch: the early-start path (stable partial) already
+        # emitted this question before the stream began, and the final
+        # transcript re-emits the same (equivalent) wording afterwards.
+        # Without this guard the re-latch would wipe the answer that is
+        # already streaming/painted and flash the placeholder back on screen.
+        def _norm(v: str) -> str:
+            return " ".join((v or "").strip().lower().split())
+
+        if (
+            _norm(detected.text) == _norm(self._pending_llm_query)
+            and (self._llm_stream_text or self._llm_answer_text)
+        ):
+            self._current_query = detected.text
+            self._browsing_history = False
+            self._question.setText(detected.text)
+            self._set_question_placeholder(False)
+            return
         self._current_query = detected.text
         self._pending_llm_query = detected.text
         self._answer_llm.set_current_query(detected.text)

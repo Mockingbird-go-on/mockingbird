@@ -291,6 +291,7 @@ class InterviewEngine:
         self._partial_text = ""
         self._partial_stable = 0
         self._provisional_query = ""
+        self._emitted_question = ""
         self._pending_segment: protocol.FinalTranscript | None = None
         self._last_final_text = ""
         self._last_final_ts = 0.0
@@ -345,6 +346,7 @@ class InterviewEngine:
         self._partial_text = ""
         self._partial_stable = 0
         self._provisional_query = ""
+        self._emitted_question = ""
         self._last_final_text = ""
         self._last_final_ts = 0.0
         self._answer_cache.clear()
@@ -863,6 +865,23 @@ class InterviewEngine:
             view.partial = True
             self._cache_view(query, view)
             self._emit_answer(view)
+        # Latch the panel's pending query BEFORE the stream starts: the
+        # early-started answer can finish (done-message) before the final
+        # transcript triggers _emit_question — without this emit the panel
+        # drops every delta and the done-message by _llm_matches (2026-09-26
+        # stuck-answer class of races). Emitting here also starts the panel's
+        # watchdog and paints the placeholder + live "typing" deltas.
+        if self._emitted_question != query:
+            self._emitted_question = query
+            self._emit_question(
+                query,
+                protocol.FinalTranscript(
+                    segment_id=getattr(msg, "segment_id", ""),
+                    session_id=getattr(msg, "session_id", ""),
+                    text=text,
+                    ts=getattr(msg, "ts", 0.0),
+                ),
+            )
         with self._mode_lock:
             current_mode = self._current_answer_mode
         self._maybe_answer_llm(view, query, force=True, mode=current_mode)
