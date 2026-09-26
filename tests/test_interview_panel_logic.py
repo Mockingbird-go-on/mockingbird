@@ -131,3 +131,36 @@ def test_linkify_terms_on_render_markdown_output():
     result = _linkify_terms(md, resolve)
     assert 'href="term:Docker"' in result
     assert "<b>rocks</b>" in result
+
+
+def test_on_question_is_idempotent_when_answer_already_painted():
+    """Source guard (no Qt in this env): on_question must not wipe a
+    streaming/painted answer when re-latching the SAME question.
+
+    Race fixed 2026-09-26: the early-start path emits QuestionDetected
+    before the stream; the final transcript re-emits the equivalent
+    wording afterwards. The old unconditional reset flashed the
+    placeholder over the live stream.
+    """
+    import ast
+    import inspect
+
+    import mockingbird.ui.interview_panel as ip
+
+    src = inspect.getsource(ip.InterviewPanel.on_question)
+    import textwrap
+    src = textwrap.dedent(src)
+    tree = ast.parse(src)
+    # The guard must compare normalized text against the pending query and
+    # early-return before the unconditional reset below it.
+    src_norm = " ".join(src.split())
+    assert "_pending_llm_query" in src
+    assert "_llm_stream_text or self._llm_answer_text" in src_norm or (
+        "_llm_stream_text" in src and "_llm_answer_text" in src
+    )
+    # The early return must come before _reset_llm_stream / clearing the text.
+    guard_pos = src.index("_pending_llm_query")
+    reset_pos = src.index("_reset_llm_stream")
+    assert guard_pos < reset_pos
+    tree = ast.parse(src)
+    assert any(isinstance(n, ast.Return) for n in ast.walk(tree))
