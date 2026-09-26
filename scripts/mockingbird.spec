@@ -132,8 +132,9 @@ _excludes = [
     "sentencepiece",  # faster-whisper needs it only for M2M100/NLLB; whisper-ct2
                       # tokenizes via `tokenizers`. Nothing in mockingbird
                       # imports it (2026-09-26 audit).
-    "av",  # GigaAM-era leftover in the user site-packages (2026-09-26 audit);
-           # its DLLs are also dropped by the post-Analysis _slim_toc filter.
+    # "av" MUST NOT be excluded: faster_whisper.audio imports PyAV at module
+    # level (audio decoding) — excluding it crashed model loading with
+    # ModuleNotFoundError: No module named 'av' (field report 2026-09-26).
     "sympy",  # dragged in via user site-packages, unused.
     # GigaAM leftovers in the build env (installed as user packages):
     # nothing in mockingbird imports them anymore, but PyInstaller still
@@ -224,9 +225,12 @@ a = Analysis(
 #     ctranslate2.dll's CUDA deps from user site. The loader never sees them
 #     there (only the FLAT copy in _internal/ctranslate2/ works - see
 #     _flat_nvidia_libs), so this is a pure duplicate.
-#   - the `av` package + av.libs (~66 MB): not a dependency of mockingbird.
 #   - extra Qt DLLs (Qml/Quick/Pdf/VirtualKeyboard/...) and all non-base
 #     translations.
+# NOTE: the `av` package + av.libs MUST be kept: faster_whisper.audio
+# imports PyAV at module level. Only the PySide6-side ffmpeg DLLs listed
+# in _QT_DLL_KEEP are whitelisted (av.* DLLs from av.libs land flat under
+# _internal\ and are found via the av package's own loader hooks).
 _QT_DLL_KEEP = {
     # Used directly: Core/Gui/Widgets/Svg + Multimedia (ready-sound).
     "qt6core.dll", "qt6gui.dll", "qt6widgets.dll", "qt6svg.dll",
@@ -256,8 +260,6 @@ def _slim_toc(toc, kind):
         drop = False
         if top == "nvidia":
             drop = True  # flat copy in ctranslate2/ is the working one
-        elif top in ("av", "av.libs"):
-            drop = True  # not a mockingbird dependency
         elif top == "pyside6" and kind == "binaries":
             if base.endswith(".dll") and base not in _QT_DLL_KEEP:
                 drop = True
