@@ -1033,9 +1033,18 @@ class InterviewEngine:
                         # LLM round-trip never blocks the interview worker.
                         self._schedule_subject_rescue(query, display)
                     else:
-                        subjects = self._llm.extract_subject_keywords(
-                            query, context=self._context_summary()
-                        )
+                        try:
+                            subjects = self._llm.extract_subject_keywords(
+                                query, context=self._context_summary()
+                            )
+                        except Exception:  # noqa: BLE001
+                            # Advisory enrichment must never kill the view
+                            # build — the worker's except would silently
+                            # drop the whole question.
+                            log.exception(
+                                "subject-rescue keywords failed (query=%r)", query[:60]
+                            )
+                            subjects = []
                         if subjects:
                             alt_query = " ".join(subjects)
                             alt = self._matcher.match(
@@ -1397,9 +1406,34 @@ class InterviewEngine:
             return
         # Guard: an answer stream is running. Under speculative answers the
         # running stream IS ours (started before this worker) — continue so
-        # we can cancel/promote it; without the flag keep the old behaviour.
+        # we can cancel/promote it; without the flag the stream belongs to a
+        # PREVIOUS question. Dropping the rescue there silently lost this
+        # question forever (audit 2026-09-26, risk: «rescue during a foreign
+        # stream») — instead we WAIT (bounded) for that stream to finish and
+        # classify afterwards: the question queue is serial anyway, so the
+        # answer for THIS question could not have started earlier.
         if getattr(self._llm, "is_streaming", False) and not self._spec_cancel:
-            return
+            deadline = time.monotonic() + 60.0
+            while (
+                getattr(self._llm, "is_streaming", False)
+                and not self._spec_cancel
+                and generation == self._generation
+                and time.monotonic() < deadline
+            ):
+                time.sleep(0.25)
+            if generation != self._generation:
+                self._cancel_speculative("generation")
+                return
+            if getattr(self._llm, "is_streaming", False) and not self._spec_cancel:
+                log.info(
+                    "question-rescue: gave up after 60s of foreign answer stream "
+                    "(query=%r)", text[:60],
+                )
+                return
+            log.info(
+                "question-rescue: foreign answer stream finished — classifying now "
+                "(query=%r)", text[:60],
+            )
         try:
             resolved = self._dialog.resolve(text)
         except Exception:  # noqa: BLE001
@@ -1426,6 +1460,17 @@ class InterviewEngine:
         with self._mode_lock:
             self._current_answer_mode = resolved.get("answer_mode", "technical")
             current_mode = self._current_answer_mode
+        # Emit the question so the panel latches the pending query, paints
+        # the question header and arms its 15 s watchdog — without this the
+        # rescue path only sent a KnowledgeView and the panel could discard
+        # the answer stream on a query mismatch (audit 2026-09-26).
+        if self._emitted_question != rq:
+            self._emitted_question = rq
+            self._emit_question(rq, msg)
+            self._ledger.record(
+                "final", id=msg.segment_id, utter_len=len(text.split()),
+                qlen=len(rq.split()), mode=current_mode, rescued=True,
+            )
         view = self._build_best_view(rq, current_mode)
         if view is None:
             self._cancel_speculative("no-view")
@@ -1617,6 +1662,26 @@ class InterviewEngine:
                     kb_fallback=kb_fallback,
                     spec_cancel=_spec_cancel,
                 )
+            except Exception:  # noqa: BLE001
+                # A crash BEFORE the worker's own try-block (advisory
+                # building, cache access) used to vanish into the queue's
+                # log-only handler: the pane stayed on «Формирую ответ…»
+                # with no done message and only the watchdog to expire.
+                # Emit an honest empty done so the panel shows the KB
+                # fallback / failure notice immediately.
+                log.exception("LLM answer job crashed before streaming")
+                if self.on_llm_answer:
+                    self.on_llm_answer(
+                        protocol.LlmAnswer(
+                            query=query,
+                            topic=view.topic,
+                            title=view.title,
+                            answer="",
+                            done=True,
+                            segment_id=seg_id,
+                            kb_fallback=kb_fallback,
+                        )
+                    )
             finally:
                 if unreserve is not None:
                     unreserve()
@@ -1630,8 +1695,14 @@ class InterviewEngine:
             segment_id=seg_id,
             run=_run_and_release,
         )
-        if not accepted and unreserve is not None:
-            unreserve()
+        if not accepted:
+            log.info(
+                "llm-answer: submit dropped as duplicate of the running answer "
+                "(query=%r) — its done-message must repaint the pane",
+                query[:60],
+            )
+            if unreserve is not None:
+                unreserve()
         pending = self._question_queue.pending
         if pending:
             log.info("question-queue: enqueued %r (pending=%d)", query[:60], pending)
