@@ -270,10 +270,13 @@ def _slim_toc(toc, kind):
             if "/plugins/" not in norm and base.endswith(".dll") and base not in _QT_DLL_KEEP:
                 drop = True
         elif top == "pyside6" and kind == "datas" and "/translations/" in norm:
-            # Keep only the qtbase/qtmultimedia translations (RU UI + sounds).
+            # Keep qtbase/qtmultimedia translations (RU UI + sounds) and
+            # the combined qt_ru.qm (standard dialogs/buttons in Russian).
             leaf = norm.rsplit("/", 1)[-1]
             drop = not (
-                leaf.startswith("qtbase_") or leaf.startswith("qtmultimedia_")
+                leaf.startswith("qtbase_")
+                or leaf.startswith("qtmultimedia_")
+                or leaf == "qt_ru.qm"
             )
         if drop:
             dropped.append(name)
