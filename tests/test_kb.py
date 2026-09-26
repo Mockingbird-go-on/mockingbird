@@ -948,8 +948,12 @@ def test_engine_maybe_answer_llm_cooldown_gate():
     engine._maybe_answer_llm(_answer_view(), "первый вопрос", force=True)
     ts1 = engine._last_answer_ts
     assert ts1 > 0.0
-    engine._maybe_answer_llm(_answer_view(), "второй вопрос")
+    # A REPEAT of the just-answered question is throttled (cooldown still
+    # protects the provider from duplicate emission).
+    engine._last_answer_q = "первый вопрос"
+    engine._maybe_answer_llm(_answer_view(), "первый вопрос")
     assert engine._last_answer_ts == ts1
+    assert all(q == "первый вопрос" for q, _ in llm.calls[:1])
 
 
 def test_engine_answer_llm_worker_emits():

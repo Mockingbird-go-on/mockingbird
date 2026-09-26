@@ -1046,6 +1046,13 @@ class InterviewPanel(QWidget):
         _busy = self._llm_busy() if getattr(self, "_llm_busy", None) else False
         if self._llm_watchdog.isActive() or _busy:
             return
+        # A PREVIEW view never means the answer failed — it is a
+        # context-tracker topic peek that can land well after the question
+        # pane went idle (e.g. after an expired watchdog). Painting
+        # «Ответ ИИ недоступен» from it declared a failure that never
+        # happened (2026-09-26 field report). Leave the pane untouched.
+        if view.preview:
+            return
         self._llm_answer_from_kb = False
         self._llm_answer_text = ""
         if view.blocks:
