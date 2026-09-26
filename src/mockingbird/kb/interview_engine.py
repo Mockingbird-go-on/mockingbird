@@ -171,6 +171,17 @@ def _query_terms(text: str) -> set[str]:
     }
 
 
+def _content_terms(text: str) -> set[str]:
+    """Content-bearing terms only: long enough to carry topic meaning.
+
+    Used as the strict second opinion when the queue's fuzzy dedup drops a
+    submission: if the content terms differ, the questions are DIFFERENT no
+    matter how similar their frames are («…отличается deployment от pod» vs
+    «…от service» share every frame word).
+    """
+    return {t for t in _query_terms(text) if len(t) >= 4}
+
+
 def _questions_equivalent(a: str, b: str, threshold: float) -> bool:
     """Whether the final wording is a cosmetic variation of the hypothesis.
 
@@ -1596,6 +1607,11 @@ class InterviewEngine:
                         answer=cached,
                         context_summary=self._context_summary(),
                         done=True,
+                        stream_id=(
+                            f"seg-{getattr(view, 'segment_id', '')}"
+                            if getattr(view, "segment_id", "")
+                            else f"q-{hash(key) & 0xFFFFFF:x}"
+                        ),
                     )
                 )
             return
@@ -1680,6 +1696,10 @@ class InterviewEngine:
                             done=True,
                             segment_id=seg_id,
                             kb_fallback=kb_fallback,
+                            stream_id=(
+                                f"seg-{seg_id}" if seg_id
+                                else f"q-{hash(key) & 0xFFFFFF:x}"
+                            ),
                         )
                     )
             finally:
@@ -1696,13 +1716,50 @@ class InterviewEngine:
             run=_run_and_release,
         )
         if not accepted:
-            log.info(
-                "llm-answer: submit dropped as duplicate of the running answer "
-                "(query=%r) — its done-message must repaint the pane",
-                query[:60],
+            # Dedup said this is a duplicate of the RUNNING answer. The
+            # queue's fuzzy Jaccard (>= 0.7) can conflate genuinely
+            # different questions sharing a question frame («расскажи чем
+            # отличается X от Y при Z»); dropping those silently lost the
+            # question forever (audit 2026-09-26). If the engine's own,
+            # stricter equivalence says they are NOT the same question,
+            # resubmit under a segment-scoped key — the queue key is only
+            # a dedup tool, uniqueness by segment id is safe (the queue is
+            # serial; the answer for this segment cannot run twice).
+            running = self._question_queue.running_key
+            same_question = (
+                running == key
+                or (
+                    bool(running)
+                    and _questions_equivalent(
+                        running, key, self._cfg.answer_restart_min_similarity
+                    )
+                    # Stricter second opinion: even when the word-set
+                    # overlap is high, DIFFERENT content terms mean a
+                    # different question («…от pod» vs «…от service» —
+                    # the frame words carry all the Jaccard mass).
+                    and _content_terms(running) == _content_terms(key)
+                )
             )
-            if unreserve is not None:
-                unreserve()
+            if same_question:
+                log.info(
+                    "llm-answer: submit dropped — answer for this question is "
+                    "already running (query=%r)", query[:60],
+                )
+                if unreserve is not None:
+                    unreserve()
+            else:
+                log.info(
+                    "llm-answer: queue dedup conflated a NEW question with the "
+                    "running one (running=%r new=%r) — resubmitting under a "
+                    "segment-scoped key",
+                    (running or "")[:60], query[:60],
+                )
+                self._question_queue.submit(
+                    key=f"{key}#{seg_id or id(view)}",
+                    segment_id=seg_id,
+                    run=_run_and_release,
+                    force=True,
+                )
         pending = self._question_queue.pending
         if pending:
             log.info("question-queue: enqueued %r (pending=%d)", query[:60], pending)
@@ -1799,6 +1856,12 @@ class InterviewEngine:
         short tail fragment (detector.last_question), the utterance is
         prepended to the context so the model sees the whole question.
         """
+        # Per-stream identity (P2, audit 2026-09-26): every message of ONE
+        # answer stream carries the same stream_id, so the panel can route
+        # concurrent streams (voice vs screenshot) per stream instead of by
+        # query-string equality — a voice answer arriving while a screenshot
+        # answer owns the pane used to be discarded wholesale, done included.
+        sid = f"seg-{seg_id}" if seg_id else f"q-{hash(key or query) & 0xFFFFFF:x}"
         # Utterance-first: the full final transcript is the primary material.
         # detector.last_question may clip a compound question to its last
         # clause («что такое IaC какие инструменты использовали» → «какие
@@ -1888,6 +1951,7 @@ class InterviewEngine:
                         topic=topic,
                         title=title,
                         delta=delta,
+                        stream_id=sid,
                     )
                 )
 
@@ -1941,7 +2005,7 @@ class InterviewEngine:
                     self.on_llm_answer(
                         protocol.LlmAnswer(
                             query=query, topic=topic, title=title,
-                            status="retry",
+                            status="retry", stream_id=sid,
                         )
                     )
                 retry_buffer: list[str] = []
@@ -2004,6 +2068,7 @@ class InterviewEngine:
                         done=True,
                         segment_id=seg_id,
                         kb_fallback=kb_fallback if not answer else "",
+                        stream_id=sid,
                     )
                 )
             return
@@ -2047,6 +2112,7 @@ class InterviewEngine:
                     done=True,
                     segment_id=seg_id,
                     kb_fallback=kb_fallback if not answer else "",
+                    stream_id=sid,
                 )
             )
 

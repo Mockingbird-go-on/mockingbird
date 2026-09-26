@@ -764,6 +764,16 @@ class InterviewPanel(QWidget):
         is still cached but the pane is NOT repainted — the live question's
         answer will be shown when the user returns to live mode.
         """
+        # Cache the final answer BEFORE any matching guard (P1, audit
+        # 2026-09-26): a done-message arriving while the pane serves
+        # another question (screenshot vs voice interleaving) used to be
+        # discarded wholesale — the answer existed in the engine cache but
+        # was unreachable from the UI. Now it is always recorded here, so
+        # history clicks and _on_history_click previews can surface it.
+        if msg.done and (answer := (msg.answer or "").strip()):
+            key = " ".join((msg.query or "").strip().lower().split())
+            if key:
+                self._llm_answer_cache[key] = answer
         if not self._llm_matches(msg.query):
             return
         # Single-stream guard: once a stream is active, only its deltas may
@@ -793,9 +803,6 @@ class InterviewPanel(QWidget):
             self._llm_stream_text = ""
             answer = (msg.answer or "").strip()
             if answer:
-                key = " ".join((self._pending_llm_query or "").strip().lower().split())
-                if key:
-                    self._llm_answer_cache[key] = answer
                 if not self._browsing_history:
                     self._llm_answer_from_kb = False
                     self._llm_answer_text = answer
