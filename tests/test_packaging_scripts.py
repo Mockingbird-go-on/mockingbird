@@ -7,6 +7,7 @@ freeze (that happens on the target machines).
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -684,7 +685,13 @@ def test_spec_post_analysis_slim_filter():
     assert 'a.datas = _slim_toc(a.datas, "datas")' in spec
     # nvidia/ nested tree and av must be dropped by dest prefix...
     assert 'top == "nvidia"' in spec
-    assert 'top in ("av", "av.libs")' in spec
+    # `av`/PyAV must NOT be dropped anywhere (faster_whisper.audio imports
+    # it at module level) — only the nested nvidia tree is.
+    assert 'top == "nvidia"' in spec
+    assert 'top in ("av"' not in spec
+    excludes_block = spec.split("_excludes = [")[1].split("]")[0]
+    exclude_items = re.findall(r'^\s*"([^"]+)"', excludes_block, re.M)
+    assert "av" not in exclude_items, exclude_items
     # ...but the flat CUDA copy in ctranslate2/ must NOT be touched.
     assert '"ctranslate2"' in spec  # _flat_nvidia_libs dest stays
     # Qt DLL whitelist must keep the modules the app actually uses.
@@ -708,25 +715,33 @@ def test_spec_post_analysis_slim_filter():
         # Real-world shapes from Analysis-00.toc of the broken build:
         (r"nvidia\cublas\bin\cublas64_12.dll", r"C:\site-packages\nvidia\cublas\bin\cublas64_12.dll", "BINARY"),
         (r"nvidia\cudnn\bin\cudnn_graph64_9.dll", r"C:\site-packages\nvidia\cudnn\bin\cudnn_graph64_9.dll", "BINARY"),
-        (r"av\__init__.pyd", r"C:\site-packages\av\__init__.pyd", "BINARY"),
-        (r"av.libs\libavcodec-61.dll", r"C:\site-packages\av.libs\libavcodec-61.dll", "BINARY"),
         (r"PySide6\Qt6Qml.dll", r"C:\site-packages\PySide6\Qt6Qml.dll", "BINARY"),
         (r"PySide6\Qt6Pdf.dll", r"C:\site-packages\PySide6\Qt6Pdf.dll", "BINARY"),
         # Must SURVIVE:
         (r"ctranslate2\cublas64_12.dll", r"C:\site-packages\ctranslate2\cublas64_12.dll", "BINARY"),
         (r"PySide6\Qt6Core.dll", r"C:\site-packages\PySide6\Qt6Core.dll", "BINARY"),
         (r"PySide6\avcodec-61.dll", r"C:\site-packages\PySide6\avcodec-61.dll", "BINARY"),
+        # `av` (PyAV) MUST survive everywhere: faster_whisper.audio imports
+        # it at module level — dropping it crashed model loading with
+        # ModuleNotFoundError: No module named 'av' (field report 2026-09-26).
+        (r"av\__init__.pyd", r"C:\site-packages\av\__init__.pyd", "BINARY"),
+        (r"av\audio.pyd", r"C:\site-packages\av\audio.pyd", "BINARY"),
+        (r"av.libs\libavcodec-61.dll", r"C:\site-packages\av.libs\libavcodec-61.dll", "BINARY"),
     ]
     kept = slim(binaries, "binaries")
     kept_names = {e[0].lower() for e in kept}
     assert r"ctranslate2\cublas64_12.dll".lower() in kept_names
     assert r"pyside6\qt6core.dll".lower() in kept_names
     assert r"pyside6\avcodec-61.dll".lower() in kept_names
+    for survivor in (
+        r"av\__init__.pyd",
+        r"av\audio.pyd",
+        r"av.libs\libavcodec-61.dll",
+    ):
+        assert survivor.lower() in kept_names, f"{survivor} must survive (PyAV!)"
     for dropped in (
         r"nvidia\cublas\bin\cublas64_12.dll",
         r"nvidia\cudnn\bin\cudnn_graph64_9.dll",
-        r"av\__init__.pyd",
-        r"av.libs\libavcodec-61.dll",
         r"PySide6\Qt6Qml.dll",
         r"PySide6\Qt6Pdf.dll",
     ):
@@ -744,11 +759,13 @@ def test_spec_post_analysis_slim_filter():
 
 def test_build_windows_sweeps_stale_bundle_trees():
     """PyInstaller incremental COLLECT never deletes files dropped from the
-    TOC - a stale nvidia/av/av.libs tree from an older bundle survives in
-    dist and the installer ships it. build_windows.ps1 must sweep the trees
-    explicitly after PyInstaller (ASCII-only, after the flatten step)."""
+    TOC - a stale nvidia/ tree from an older bundle survives in
+    dist and the installer ships it. build_windows.ps1 must sweep the tree
+    explicitly after PyInstaller (ASCII-only, after the flatten step).
+    "av"/"av.libs" MUST NOT be swept (faster_whisper imports PyAV)."""
     ps1 = (Path(ROOT) / "scripts" / "build_windows.ps1").read_text(encoding="utf-8-sig")
-    assert 'foreach ($junk in @("nvidia", "av", "av.libs"))' in ps1
+    assert 'foreach ($junk in @("nvidia"))' in ps1
+    assert '@("nvidia", "av"' not in ps1 and '@("nvidia", ' not in ps1
     assert ps1.index("flattened") < ps1.index("_internal\\$junk"), (
         "sweep must run after the flatten step"
     )
