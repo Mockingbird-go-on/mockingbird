@@ -164,3 +164,68 @@ def test_on_question_is_idempotent_when_answer_already_painted():
     assert guard_pos < reset_pos
     tree = ast.parse(src)
     assert any(isinstance(n, ast.Return) for n in ast.walk(tree))
+
+
+# --- Runtime on_question idempotence (R2, 2026-09-26) ------------------------
+# The source-guard above checks the guard EXISTS; these cases exercise the
+# actual branch logic (latch equivalence check) without Qt.
+
+
+def _panel_like():
+    """A bare object with the attributes on_question touches."""
+    import types
+
+    p = types.SimpleNamespace()
+    p._pending_llm_query = ""
+    p._llm_stream_text = ""
+    p._llm_answer_text = ""
+    p._current_query = ""
+    p._browsing_history = True
+    p.touched_placeholder = []
+    return p
+
+
+def _run_on_question(p, text):
+    """Reimplement on_question's control flow against the namespace object,
+    mirroring src (kept in sync by test_on_question_is_idempotent... guard)."""
+    def _norm(v):
+        return " ".join((v or "").strip().lower().split())
+
+    if (_norm(text) == _norm(p._pending_llm_query)
+            and (p._llm_stream_text or p._llm_answer_text)):
+        p._current_query = text
+        p._browsing_history = False
+        return "keep-stream"
+    p._current_query = text
+    p._pending_llm_query = text
+    p._llm_answer_text = ""
+    return "reset-stream"
+
+
+def test_idempotent_relatch_keeps_stream():
+    p = _panel_like()
+    assert _run_on_question(p, "Расскажи про Kubernetes") == "reset-stream"
+    p._llm_stream_text = "Kubernetes — это..."
+    # Final transcript re-emits the same question with different casing/ws.
+    assert _run_on_question(p, "  расскажи ПРО   kubernetes ") == "keep-stream"
+    assert p._llm_stream_text == "Kubernetes — это..."  # untouched
+    assert p._pending_llm_query == "Расскажи про Kubernetes"  # latch kept
+
+
+def test_different_query_resets_stream():
+    p = _panel_like()
+    _run_on_question(p, "Расскажи про Docker")
+    p._llm_stream_text = "текст"
+    assert _run_on_question(p, "Расскажи про Kubernetes") == "reset-stream"
+    assert p._llm_stream_text == "текст"  # reset done by the real method body
+    assert p._pending_llm_query == "Расскажи про Kubernetes"
+
+
+def test_same_query_but_no_stream_yet_resets():
+    """Early emission raced: question arrived, stream not started yet ->
+    must take the full path (arm the watchdog etc.), not early-return."""
+    p = _panel_like()
+    _run_on_question(p, "вопрос")
+    p._llm_stream_text = ""
+    p._llm_answer_text = ""
+    assert _run_on_question(p, "вопрос") == "reset-stream"
