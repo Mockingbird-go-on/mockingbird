@@ -345,7 +345,14 @@ class OnboardingWizard(QDialog):
         # Whisper options
         self._whisper_group = QGroupBox("Настройки Whisper")
         self._whisper_group.setStyleSheet(
-            f"QGroupBox {{ border: 1px solid {self._ACCENT}; }}"
+            f"QGroupBox {{ border: 1px solid {self._ACCENT};"
+            " margin-top: 12px; }"
+            "QGroupBox::title {"
+            " subcontrol-origin: margin;"
+            " subcontrol-position: top left;"
+            " left: 8px;"
+            " padding: 0 3px;"
+            "}"
         )
         wf = QFormLayout(self._whisper_group)
         self._whisper_model = QComboBox()
@@ -398,7 +405,14 @@ class OnboardingWizard(QDialog):
 
         theme_box = QGroupBox("Тема")
         theme_box.setStyleSheet(
-            f"QGroupBox {{ border: 1px solid {self._ACCENT}; }}"
+            f"QGroupBox {{ border: 1px solid {self._ACCENT};"
+            " margin-top: 12px; }"
+            "QGroupBox::title {"
+            " subcontrol-origin: margin;"
+            " subcontrol-position: top left;"
+            " left: 8px;"
+            " padding: 0 3px;"
+            "}"
         )
         tl = QVBoxLayout(theme_box)
         self._theme_dark = QRadioButton("Тёмная (рекомендуется)")
