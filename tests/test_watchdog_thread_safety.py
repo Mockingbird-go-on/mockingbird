@@ -110,6 +110,12 @@ def test_stop_session_on_worker_thread_never_calls_timer_stop(app_instance):
 
     assert calls == [], f"QTimer.stop() was called from a worker thread: {calls}"
     assert app_instance.session_id is None
-    # The attribute is cleared immediately (the timer itself is stopped later
-    # by the GUI thread when it processes the queued signal).
+    # The stop thread must NOT null the attribute either: it races the queued
+    # GUI slot (_stop_watchdog_gui clears it on the GUI thread). Nulling from
+    # the worker orphaned a live running QTimer (double timer on next start).
+    assert app_instance._audio_watchdog is not None
+    # The GUI slot then performs stop()+clear (on the GUI/Main thread — that
+    # is exactly where the stub records the call from).
+    app_instance._stop_watchdog_gui()
     assert app_instance._audio_watchdog is None
+    assert calls == ["stop@MainThread"]

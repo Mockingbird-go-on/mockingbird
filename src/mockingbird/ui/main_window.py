@@ -570,10 +570,10 @@ class MainWindow(QMainWindow):
         # Tear the session down BEFORE spawning the new process: the old
         # instance holds the SQLite DB and GPU memory, and a fresh copy
         # starting concurrently risks "database is locked" and VRAM conflicts.
-        try:
-            self._app.stop_session()
-        except Exception:  # noqa: BLE001
-            log.exception("stop before restart failed")
+        # shutdown() (aboutToQuit) performs the full synchronous teardown —
+        # here we only kick it off asynchronously to avoid freezing the GUI
+        # on an engine join for up to ~8 s.
+        self._app.stop_session_async()
         # Flush QSettings so window geometry survives the restart.
         self._settings.sync()
         try:

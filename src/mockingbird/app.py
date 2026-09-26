@@ -142,6 +142,8 @@ class App:
         self.muted = False
         self._vad: SileroVAD | None = None
         self._chunker: SpeechChunker | None = None
+        self._vad_lock = threading.Lock()
+        self._vad_prefetching: bool = False
         self._last_rms_log = 0.0
         self._last_audio_ts: float = 0.0
         self._watchdog_started: bool = False
@@ -280,6 +282,7 @@ class App:
         self.signals.llm_answer.connect(self._on_llm_answer_trace)
         self.signals._start_watchdog.connect(self._start_watchdog_gui)
         self.signals._stop_watchdog.connect(self._stop_watchdog_gui)
+        self.signals._play_ready_sound.connect(self._play_ready_sound)
         self.explainer.on_term = self._on_term
         self.interview.on_question = self.signals.question.emit
         self.interview.on_answer = self.signals.answer.emit
@@ -472,7 +475,9 @@ class App:
             return
         self.signals.status.emit("running", name)
         self.signals.device.emit(self.engine.device)
-        self._play_ready_sound()
+        # Marshalled to the GUI thread: the QMediaPlayer fallback must never
+        # be constructed on the engine worker thread (Qt object affinity).
+        self.signals._play_ready_sound.emit()
 
     def _play_ready_sound(self) -> None:
         """Play a short notification sound when the audio pipeline is ready.
@@ -593,13 +598,20 @@ class App:
         self._ensure_vad_async()
 
     def _ensure_vad_async(self) -> None:
-        """Download/load the VAD in a daemon thread (warm start only)."""
+        """Download AND construct the VAD in a daemon thread (warm start).
+
+        Building SileroVAD means loading the ONNX session (0.5-3 s on cold
+        disk) — doing it here keeps the first "Старт" click free of that cost.
+        """
+        self._vad_prefetching = True
 
         def _worker() -> None:
             try:
-                ensure_vad_model(self.config.vad.model_path)
+                self._ensure_vad()
             except Exception:  # noqa: BLE001
                 log.warning("warm start: VAD pre-fetch failed (will retry on session start)", exc_info=True)
+            finally:
+                self._vad_prefetching = False
 
         threading.Thread(target=_worker, name="vad-prefetch", daemon=True).start()
 
@@ -641,7 +653,19 @@ class App:
         self.dialog_context.reset_session()
         self.interview.reset_session()
         self.interview.start()
-        self.engine.start()
+        try:
+            self.engine.start()
+        except Exception:
+            # A previous stop is still draining (stuck decode) — engine.start
+            # raised. Roll the half-open session back and surface the error;
+            # otherwise Start stays disabled with a live session_id.
+            log.exception("engine.start failed — rolling back session")
+            try:
+                self.store.end_session(self.session_id, ended_at=time.time())
+            except Exception:
+                log.exception("rollback end_session failed")
+            self.session_id = None
+            raise
         # Warm the LLM HTTP client so the first answer does not pay the
         # TLS-handshake/connection latency (~1.5-2 s). Best-effort, async.
         warmup = getattr(self.llm, "warmup", None)
@@ -652,8 +676,11 @@ class App:
             self._ensure_vad()
         except Exception:
             # Roll the half-open session back so the UI returns to idle
-            # instead of a session that can never receive audio.
-            self.stop_session()
+            # instead of a session that can never receive audio. A
+            # synchronous stop_session() here would freeze the GUI thread for
+            # up to ~8 s (engine.join) inside an error path — rollback runs
+            # off-thread instead.
+            self._rollback_half_open_session()
             raise
         if self.engine.is_ready:
             self._on_engine_ready(self.engine.model_name)
@@ -669,6 +696,23 @@ class App:
         self._last_audio_ts = 0.0
         log.info("session started: %s", self.session_id)
 
+    def _rollback_half_open_session(self) -> None:
+        """Tear down a half-open session from an error path, off the GUI thread.
+
+        Never blocks the caller: a synchronous stop_session() here would
+        freeze the window for up to ~8 s (engine join) inside an already-bad
+        user experience (failed start).
+        """
+        self.signals.status.emit("loading", "stopping")
+
+        def _worker() -> None:
+            try:
+                self.stop_session()
+            except Exception:  # noqa: BLE001
+                log.exception("rollback stop_session failed")
+
+        threading.Thread(target=_worker, name="session-rollback", daemon=True).start()
+
     def stop_session_async(self, on_done=None) -> None:
         """Stop the session off the GUI thread.
 
@@ -681,6 +725,12 @@ class App:
         if self.session_id is None:
             if on_done is not None:
                 on_done()
+            return
+        if self._stop_worker is not None and self._stop_worker.is_alive():
+            # A stop is already in flight — never run two concurrent
+            # stop_session() calls (duplicate engine.flush → duplicated final
+            # segment, double store.end_session on the same row).
+            log.info("stop already in progress — ignoring second stop request")
             return
 
         self.signals.status.emit("loading", "stopping")
@@ -720,9 +770,11 @@ class App:
                 if self._audio_watchdog is not None:
                     # QTimer.stop() from a non-GUI thread is UB in Qt and
                     # caused sporadic access violations on Windows — marshal
-                    # the stop to the GUI thread via the signal bridge.
+                    # the stop to the GUI thread via the signal bridge. The
+                    # attribute itself is cleared in _stop_watchdog_gui (GUI
+                    # thread): nulling it here raced the queued slot and could
+                    # orphan a running QTimer.
                     self.signals._stop_watchdog.emit()
-                    self._audio_watchdog = None
                 self.capture.stop()
                 self.engine.flush()
                 self.store.end_session(self.session_id, ended_at=time.time())
@@ -735,9 +787,13 @@ class App:
                 return
             if self._vad is not None:
                 self._vad.reset()
-            self.signals.status.emit("idle", "")
-            log.info("session stopped: %s", self.session_id)
+            # Clear session_id BEFORE emitting "idle": a GUI slot reacting to
+            # "idle" with an immediate start_session() would otherwise see a
+            # stale non-None id and silently swallow the click.
+            sid = self.session_id
             self.session_id = None
+            self.signals.status.emit("idle", "")
+            log.info("session stopped: %s", sid)
 
     def toggle_mute(self) -> None:
         self.muted = not self.muted
@@ -761,35 +817,38 @@ class App:
     def _ensure_vad(self) -> None:
         if self._vad is not None:
             return
-        try:
-            model_path = ensure_vad_model(self.config.vad.model_path)
-        except FileNotFoundError as exc:
-            # Explicit path misconfigured — surface a clear error instead of
-            # silently falling back to the bundled download.
-            self.signals.error.emit(f"VAD: {exc}")
-            raise
-        except (OSError, TimeoutError) as exc:
-            # First run, no cache and no/slow network: never block the GUI
-            # thread on a long download — the warm start pre-fetch usually
-            # has the model by now; if not, ask the user to retry.
-            self.signals.error.emit(
-                "Не удалось скачать модель детекции речи (VAD). "
-                "Проверьте интернет и нажмите «Старт» ещё раз."
+        with self._vad_lock:
+            if self._vad is not None:
+                return
+            try:
+                model_path = ensure_vad_model(self.config.vad.model_path)
+            except FileNotFoundError as exc:
+                # Explicit path misconfigured — surface a clear error instead
+                # of silently falling back to the bundled download.
+                self.signals.error.emit(f"VAD: {exc}")
+                raise
+            except (OSError, TimeoutError) as exc:
+                # First run, no cache and no/slow network: never block the GUI
+                # thread on a long download — the warm start pre-fetch usually
+                # has the model by now; if not, ask the user to retry.
+                self.signals.error.emit(
+                    "Не удалось скачать модель детекции речи (VAD). "
+                    "Проверьте интернет и нажмите «Старт» ещё раз."
+                )
+                raise RuntimeError(f"VAD model download failed: {exc}") from exc
+            self._vad = SileroVAD(
+                model_path,
+                threshold=self.config.vad.threshold,
+                min_speech_ms=self.config.vad.min_speech_ms,
+                min_silence_ms=self.config.vad.min_silence_ms,
+                stop_hint_delay_ms=self.config.vad.stop_hint_delay_ms,
+                sample_rate=self.config.audio.sample_rate,
             )
-            raise RuntimeError(f"VAD model download failed: {exc}") from exc
-        self._vad = SileroVAD(
-            model_path,
-            threshold=self.config.vad.threshold,
-            min_speech_ms=self.config.vad.min_speech_ms,
-            min_silence_ms=self.config.vad.min_silence_ms,
-            stop_hint_delay_ms=self.config.vad.stop_hint_delay_ms,
-            sample_rate=self.config.audio.sample_rate,
-        )
-        self._chunker = SpeechChunker(
-            self._vad, self.engine,
-            on_speech=self._on_speech,
-            on_segment_event=lambda seg_id, evt: self.trace.mark(seg_id, evt),
-        )
+            self._chunker = SpeechChunker(
+                self._vad, self.engine,
+                on_speech=self._on_speech,
+                on_segment_event=lambda seg_id, evt: self.trace.mark(seg_id, evt),
+            )
 
     def _on_speech(self, started: bool) -> None:
         self.signals.speech.emit(started)
@@ -860,7 +919,13 @@ class App:
         """
         if self.session_id is None:
             return
-
+        if self._stop_worker is not None and self._stop_worker.is_alive():
+            # Teardown is in flight: a capture restart here would race the
+            # stop thread's capture.stop() and can leave a LIVE stream after
+            # the session is gone (device held, WASAPI crash risk on the
+            # next session).
+            log.info("watchdog: stop in progress — skipping capture restart")
+            return
         gap = time.monotonic() - self._last_audio_ts
         if gap > 3.0:
             log.warning("audio callback stalled for %.1fs — restarting capture", gap)

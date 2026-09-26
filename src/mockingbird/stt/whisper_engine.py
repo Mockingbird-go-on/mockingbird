@@ -1295,10 +1295,13 @@ class WhisperEngine:
     # -- lifecycle --
     def start(self) -> None:
         if self._thread is not None:
-            # A previous stop() timed out mid-decode: wait for the old worker
-            # to drain its queue instead of racing it with a second consumer.
+            # A previous stop() timed out mid-decode: wait briefly for the old
+            # worker to drain its queue instead of racing it with a second
+            # consumer. A long join here would freeze the GUI thread for the
+            # full 30 s timeout — fail fast instead; the worker finishes in
+            # the background and a later "Старт" succeeds.
             if self._stopping:
-                if not self._wait_for_stopped_worker():
+                if not self._wait_for_stopped_worker(timeout=2.0):
                     raise RuntimeError(
                         "Распознавание ещё завершает предыдущую сессию "
                         "(долгий финальный декод). Подождите пару секунд "
@@ -1310,6 +1313,15 @@ class WhisperEngine:
                 # consumer of the same queue (duplicated/lost finals).
                 return
         self._stopping = False
+        # Drain stale commands from a previous (failed/dead) session — e.g.
+        # audio and _CMD_FLUSH queued before a model-load failure. A new
+        # worker must never inherit them: a stale flush corrupts segment
+        # state of the fresh session.
+        try:
+            while True:
+                self._queue.get_nowait()
+        except queue.Empty:
+            pass
         self._thread = threading.Thread(target=self._run, name="whisper-engine", daemon=True)
         self._thread.start()
 
