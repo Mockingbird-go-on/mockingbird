@@ -50,14 +50,26 @@ if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
 
 python -c "import sys; assert sys.platform.startswith('win'), 'You are not running a Windows Python. Use the Windows interpreter, not WSL/UNC paths.'"
 
-python -m pip install --upgrade pip
-if ($LASTEXITCODE -ne 0) {
-    throw "pip upgrade failed with exit code $LASTEXITCODE."
+# Baseline install. The editable install + dep resolution is the single most
+# expensive pip step; skip it (and the pip self-upgrade) when pyproject.toml
+# has not changed since the last successful install (mtime marker in %TEMP%).
+$depMarker = Join-Path $env:TEMP "mockingbird_pip_deps_ok.marker"
+$depsFresh = (Test-Path $depMarker) -and ((Get-Item $depMarker).LastWriteTime -gt (Get-Item "pyproject.toml").LastWriteTime)
+if ($depsFresh) {
+    Write-Host "(pip deps unchanged since last build - skipping 'pip install -e .[dev]')"
+    # Still make sure PyInstaller is present (cheap no-op when installed).
+    Invoke-Pip -Arguments @("install", "pyinstaller")
+} else {
+    # Upgrade pip only in the full-install path (it is a network round-trip
+    # that is useless on incremental builds).
+    Invoke-Pip -Arguments @("install", "--upgrade", "pip")
+    Invoke-Pip -Arguments @("install", "-e", ".[dev]")
+    Invoke-Pip -Arguments @("install", "pyinstaller")
+    Set-Content -Path $depMarker -Value "ok" -Encoding ascii
+    # Nudge the marker 1s past pyproject's mtime so the -gt comparison stays
+    # robust on filesystems with coarse timestamps.
+    (Get-Item $depMarker).LastWriteTime = (Get-Item "pyproject.toml").LastWriteTime.AddSeconds(1)
 }
-
-# Baseline install.
-Invoke-Pip -Arguments @("install", "-e", ".[dev]")
-Invoke-Pip -Arguments @("install", "pyinstaller")
 
 # Reset leftover packages before the pinned install: pip does not downgrade
 # on plain `install` if a newer version is already present, and the GigaAM-era
@@ -68,26 +80,53 @@ $prevEAP = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
 # The GigaAM-era torch stack is no longer a dependency; leaving it installed
 # slows the PyInstaller graph analysis (its hooks still run) for zero
-# benefit. Best-effort removal - failures (not installed / locked) are fine.
-python -m pip uninstall -y torch torchaudio torchvision 2>$null | Out-Null
+# benefit. Only pay the pip-uninstall startup cost when something is actually
+# installed (fast import probe instead of 3 pip processes).
+$torchProbe = 'import importlib.util as u
+print("yes" if any(u.find_spec(m) for m in ("torch", "torchaudio", "torchvision")) else "no")'
+$torchInstalled = python -c $torchProbe 2>$null
+if ("$torchInstalled" -match 'yes') {
+    python -m pip uninstall -y torch torchaudio torchvision 2>$null | Out-Null
+}
 if (-not $Cpu) {
-    # Only touch the nvidia stack on GPU builds: on -Cpu we neither install
-    # nor remove it (the spec excludes it via MOCKINGBIRD_CPU).
-    python -m pip uninstall -y nvidia-cudnn-cu12 nvidia-cublas-cu12 nvidia-cuda-nvrtc-cu12 nvidia-cuda-runtime-cu12 nvidia-cufft-cu12 nvidia-curand-cu12 2>$null | Out-Null
+    # Only reset the nvidia stack when the pinned versions are NOT already
+    # installed: a full uninstall+reinstall re-downloads ~1.5 GB of wheels
+    # when the pip cache is cold - minutes per build for nothing.
+    $nvProbe = 'import importlib.metadata as md
+want = {
+    "nvidia-cudnn-cu12": "9.1.0.70",
+    "nvidia-cublas-cu12": "12.4.5.8",
+    "nvidia-cuda-nvrtc-cu12": "12.4.127",
+    "nvidia-cuda-runtime-cu12": "12.4.127",
+    "nvidia-cufft-cu12": "11.2.1.3",
+    "nvidia-curand-cu12": "10.3.5.147",
+}
+ok = True
+for name, ver in want.items():
+    try:
+        ok = ok and md.version(name) == ver
+    except md.PackageNotFoundError:
+        ok = False
+print("ok" if ok else "mismatch")'
+    $nvStatus = python -c $nvProbe 2>$null
+    if ("$nvStatus" -notmatch 'ok') {
+        python -m pip uninstall -y nvidia-cudnn-cu12 nvidia-cublas-cu12 nvidia-cuda-nvrtc-cu12 nvidia-cuda-runtime-cu12 nvidia-cufft-cu12 nvidia-curand-cu12 2>$null | Out-Null
+    } else {
+        Write-Host "(pinned nvidia 12.4 stack already installed - skipping reset)"
+    }
 }
 $ErrorActionPreference = $prevEAP
 
 if ($Cpu) {
     Write-Host "(CPU-only build: skipping the nvidia CUDA stack)"
 } else {
-    Write-Host "(nvidia packages reset - reinstalling the pinned 12.4 line)"
-
     # cuDNN 9 + the CUDA runtime DLLs ctranslate2 needs for float16/int8 on GPU.
     # IMPORTANT: pin the nvidia-* stack to CUDA 12.4 - without torch in the env
     # (removed with GigaAM) pip resolves nvidia-cuda-nvrtc-cu12 to the NEWEST
     # release (12.9), whose DLLs require driver >= 575. On a 550-era driver the
     # DLL loads but fails to initialize (WinError 5) and ctranslate2 dies with
     # "CUDA unavailable". Same 12.4 line the old torch cu124 install enforced.
+    # With the stack already pinned (probe above) this is a fast no-op install.
     Invoke-Pip -Arguments @(
         "install",
         "nvidia-cudnn-cu12==9.1.0.70",

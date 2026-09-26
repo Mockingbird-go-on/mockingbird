@@ -625,3 +625,48 @@ def test_uninstall_closes_app_first_and_sweeps_remnants():
         "attrib strip must run BEFORE the ping-then-rmdir sweep "
         "(read-only files survive rmdir otherwise)"
     )
+
+
+# --- Build slimming (2026-09-26) --------------------------------------------
+
+def test_spec_drops_sentencepiece():
+    """sentencepiece is only needed by faster-whisper for M2M100/NLLB
+    models; whisper-ct2 tokenizes via `tokenizers`. Nothing in src/
+    imports it — it must not be collected NOR shipped as a hidden import."""
+    spec = (Path(ROOT) / "scripts" / "mockingbird.spec").read_text(encoding="utf-8")
+    assert "collect_submodules(\"sentencepiece\")" not in spec
+    assert "collect_dynamic_libs(\"sentencepiece\")" not in spec
+    assert '"sentencepiece"' in spec  # must be in excludes
+
+
+def test_spec_excludes_unused_qt_modules():
+    spec = (Path(ROOT) / "scripts" / "mockingbird.spec").read_text(encoding="utf-8")
+    for mod in ("PySide6.QtNetwork", "PySide6.QtQml", "PySide6.QtQuick",
+                "PySide6.QtWebEngineCore", "PySide6.Qt3DCore", "PySide6.QtSql"):
+        assert f'"{mod}"' in spec, f"{mod} must stay in excludes"
+    # The modules we DO use must never land in excludes.
+    for used in ("PySide6.QtSvg", "PySide6.QtMultimedia", "PySide6.QtCore",
+                 "PySide6.QtGui", "PySide6.QtWidgets"):
+        name = used.split(".", 1)[1]
+        bare = f'"{used}"'
+        assert bare not in spec.split("_excludes")[1], (
+            f"{used} is used by the app and must not be excluded"
+        )
+        assert name in spec  # referenced somewhere (hiddenimports/_qt_used)
+
+
+def test_ps1_conditional_pip_and_nvidia_reset():
+    """The nvidia reset must be gated on a version probe (a cold uninstall
+    + reinstall re-downloads ~1.5 GB of wheels), and the editable install
+    must be skipped when pyproject.toml is unchanged (mtime marker)."""
+    ps1 = (Path(ROOT) / "scripts" / "build_windows.ps1").read_text(encoding="utf-8")
+    assert "mockingbird_pip_deps_ok.marker" in ps1
+    assert "importlib.metadata" in ps1
+    assert "nvidia-cudnn-cu12" in ps1
+    # Probe must run BEFORE the uninstall (order in file).
+    assert ps1.index("importlib.metadata") < ps1.index(
+        "uninstall -y nvidia-cudnn-cu12"
+    )
+    # torch uninstall must be gated on a find_spec probe, not unconditional.
+    assert "find_spec" in ps1
+    assert ps1.index("find_spec") < ps1.index("uninstall -y torch")

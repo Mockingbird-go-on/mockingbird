@@ -46,7 +46,6 @@ datas = (
         os.path.join("mockingbird", "assets", "models"))]
     + collect_data_files("faster_whisper")
     + collect_data_files("ctranslate2")
-    + collect_data_files("tokenizers")
 )
 
 def _flat_nvidia_libs(collected):
@@ -97,7 +96,6 @@ def _flat_nvidia_libs(collected):
 _base_binaries = (
     collect_dynamic_libs("ctranslate2")
     + collect_dynamic_libs("onnxruntime")
-    + collect_dynamic_libs("sentencepiece")
 )
 
 # CUDA: cuDNN/cuBLAS/cuFFT/cuRAND sub-DLLs (cudnn_engines_*, cudnn_graph*,
@@ -121,11 +119,19 @@ hiddenimports = (
     + collect_submodules("pyaudiowpatch")
     + collect_submodules("openai")
     + collect_submodules("tokenizers")
-    + collect_submodules("sentencepiece")
+    + collect_submodules("tokenizers")
     + ["PySide6.QtSvg", "PySide6.QtMultimedia"]
 )
 
+# Qt modules actually used by mockingbird: QtCore, QtGui, QtWidgets, QtSvg
+# (ui/icons.py), QtMultimedia (app.py ready-sound). Everything else the
+# PyInstaller PySide6 hooks would drag in (QtNetwork, QtQml, QtQuick,
+# QtWebEngine, Qt3D, ...) is dead weight - tens of MB per build.
+_qt_used = {"QtCore", "QtGui", "QtWidgets", "QtSvg", "QtMultimedia"}
 _excludes = [
+    "sentencepiece",  # faster-whisper needs it only for M2M100/NLLB; whisper-ct2
+                      # tokenizes via `tokenizers`. Nothing in mockingbird
+                      # imports it (2026-09-26 audit).
     # GigaAM leftovers in the build env (installed as user packages):
     # nothing in mockingbird imports them anymore, but PyInstaller still
     # follows them through transitive deps and ships ~2 GB of torch.
@@ -140,6 +146,45 @@ _excludes = [
     "matplotlib",
     "tkinter",
     "IPython",
+    # Unused Qt modules (keep in sync with _qt_used above):
+    "PySide6.QtNetwork",
+    "PySide6.QtQml",
+    "PySide6.QtQuick",
+    "PySide6.QtQuickWidgets",
+    "PySide6.QtQuickControls2",
+    "PySide6.QtWebEngineCore",
+    "PySide6.QtWebEngineWidgets",
+    "PySide6.QtWebChannel",
+    "PySide6.QtWebSockets",
+    "PySide6.QtPositioning",
+    "PySide6.QtLocation",
+    "PySide6.QtBluetooth",
+    "PySide6.QtNfc",
+    "PySide6.QtSerialPort",
+    "PySide6.QtRemoteObjects",
+    "PySide6.QtScxml",
+    "PySide6.QtSensors",
+    "PySide6.QtTextToSpeech",
+    "PySide6.QtCharts",
+    "PySide6.QtDataVisualization",
+    "PySide6.Qt3DCore",
+    "PySide6.Qt3DRender",
+    "PySide6.Qt3DInput",
+    "PySide6.Qt3DLogic",
+    "PySide6.Qt3DAnimation",
+    "PySide6.Qt3DExtras",
+    "PySide6.QtPdf",
+    "PySide6.QtPdfWidgets",
+    "PySide6.QtDesigner",
+    "PySide6.QtHelp",
+    "PySide6.QtUiTools",
+    "PySide6.QtTest",
+    "PySide6.QtDBus",
+    "PySide6.QtOpenGL",
+    "PySide6.QtOpenGLWidgets",
+    "PySide6.QtSql",
+    "PySide6.QtStateMachine",
+    "PySide6.QtXml",
 ]
 if _CPU_ONLY:
     # No CUDA runtime in a CPU build. The nvidia-* wheels may still be
