@@ -261,7 +261,13 @@ def _slim_toc(toc, kind):
         if top == "nvidia":
             drop = True  # flat copy in ctranslate2/ is the working one
         elif top == "pyside6" and kind == "binaries":
-            if base.endswith(".dll") and base not in _QT_DLL_KEEP:
+            # Only prune DLLs at the PySide6 ROOT. Everything under
+            # plugins/ is load-bearing runtime machinery — the platform
+            # plugin (qwindows.dll, without which Qt cannot initialize:
+            # "no Qt platform plugin could be initialized", field report
+            # 2026-09-26), image formats, icon engines, multimedia
+            # backends. Dropping them wholesale bricked the GUI.
+            if "/plugins/" not in norm and base.endswith(".dll") and base not in _QT_DLL_KEEP:
                 drop = True
         elif top == "pyside6" and kind == "datas" and "/translations/" in norm:
             # Keep only the qtbase/qtmultimedia translations (RU UI + sounds).
