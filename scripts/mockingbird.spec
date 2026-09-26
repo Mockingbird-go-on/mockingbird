@@ -132,6 +132,9 @@ _excludes = [
     "sentencepiece",  # faster-whisper needs it only for M2M100/NLLB; whisper-ct2
                       # tokenizes via `tokenizers`. Nothing in mockingbird
                       # imports it (2026-09-26 audit).
+    "av",  # GigaAM-era leftover in the user site-packages (2026-09-26 audit);
+           # its DLLs are also dropped by the post-Analysis _slim_toc filter.
+    "sympy",  # dragged in via user site-packages, unused.
     # GigaAM leftovers in the build env (installed as user packages):
     # nothing in mockingbird imports them anymore, but PyInstaller still
     # follows them through transitive deps and ships ~2 GB of torch.
@@ -211,6 +214,65 @@ a = Analysis(
     excludes=_excludes,
     noarchive=False,
 )
+
+
+# --- Post-Analysis slimming -------------------------------------------------
+# The Windows build env is the global user site-packages (GigaAM-era leftovers
+# live there). PyInstaller's binary-dependency scan drags in things `excludes`
+# cannot stop (they are DLL dependencies, not Python modules):
+#   - a nested nvidia/<lib>/bin/ tree (~930 MB): bindepend resolves
+#     ctranslate2.dll's CUDA deps from user site. The loader never sees them
+#     there (only the FLAT copy in _internal/ctranslate2/ works - see
+#     _flat_nvidia_libs), so this is a pure duplicate.
+#   - the `av` package + av.libs (~66 MB): not a dependency of mockingbird.
+#   - extra Qt DLLs (Qml/Quick/Pdf/VirtualKeyboard/...) and all non-base
+#     translations.
+_QT_DLL_KEEP = {
+    # Used directly: Core/Gui/Widgets/Svg + Multimedia (ready-sound).
+    "qt6core.dll", "qt6gui.dll", "qt6widgets.dll", "qt6svg.dll",
+    "qt6multimedia.dll", "qt6multimediawidgets.dll",
+    # Pulled as hard deps of the kept set (small, do not risk removal):
+    "qt6network.dll", "qt6opengl.dll",
+    # PySide6 runtime + its bundled ffmpeg (QtMultimedia backend, ready-sound):
+    "pyside6.abi3.dll", "opengl32sw.dll",
+    "avcodec-61.dll", "avformat-61.dll", "avutil-59.dll",
+    "swresample-5.dll", "swscale-8.dll",
+}
+
+
+def _slim_toc(toc, kind):
+    kept, dropped = [], []
+    for entry in toc:
+        name, _src, dest = entry[0], entry[1], entry[2]
+        norm = (dest or "").replace("\\", "/").strip("/")
+        top = norm.split("/", 1)[0].lower()
+        base = name.rsplit("/", 1)[-1].rsplit("\\", 1)[-1].lower()
+        drop = False
+        if top == "nvidia":
+            drop = True  # flat copy in ctranslate2/ is the working one
+        elif top in ("av", "av.libs"):
+            drop = True  # not a mockingbird dependency
+        elif top == "pyside6" and kind == "binaries":
+            if base.endswith(".dll") and base not in _QT_DLL_KEEP:
+                drop = True
+        elif top == "pyside6" and kind == "datas" and "/translations/" in norm:
+            # Keep only the qtbase/qtmultimedia translations (RU UI + sounds).
+            leaf = norm.rsplit("/", 1)[-1]
+            drop = not (
+                leaf.startswith("qtbase_") or leaf.startswith("qtmultimedia_")
+            )
+        if drop:
+            dropped.append(name)
+        else:
+            kept.append(entry)
+    if dropped:
+        print(f"slim({kind}): dropped {len(dropped)} entries, "
+              f"e.g. {dropped[:5]}")
+    return kept
+
+
+a.binaries = _slim_toc(a.binaries, "binaries")
+a.datas = _slim_toc(a.datas, "datas")
 
 
 pyz = PYZ(a.pure)

@@ -670,3 +670,26 @@ def test_ps1_conditional_pip_and_nvidia_reset():
     # torch uninstall must be gated on a find_spec probe, not unconditional.
     assert "find_spec" in ps1
     assert ps1.index("find_spec") < ps1.index("uninstall -y torch")
+
+
+def test_spec_post_analysis_slim_filter():
+    """The build env is the global user site-packages (GigaAM leftovers):
+    bindepend drags in a nested nvidia/ tree (~930 MB, invisible to the
+    Windows loader - only the FLAT copy in ctranslate2/ works), the `av`
+    package (~66 MB) and unused Qt DLLs. excludes[] cannot stop DLL
+    dependencies, so the spec must filter a.binaries/a.datas post-Analysis."""
+    spec = (Path(ROOT) / "scripts" / "mockingbird.spec").read_text(encoding="utf-8")
+    assert "_slim_toc" in spec, "post-Analysis filter missing"
+    assert 'a.binaries = _slim_toc(a.binaries, "binaries")' in spec
+    assert 'a.datas = _slim_toc(a.datas, "datas")' in spec
+    # nvidia/ nested tree and av must be dropped by dest prefix...
+    assert 'top == "nvidia"' in spec
+    assert 'top in ("av", "av.libs")' in spec
+    # ...but the flat CUDA copy in ctranslate2/ must NOT be touched.
+    assert '"ctranslate2"' in spec  # _flat_nvidia_libs dest stays
+    # Qt DLL whitelist must keep the modules the app actually uses.
+    for dll in ("qt6svg.dll", "qt6multimedia.dll", "qt6widgets.dll",
+                "avcodec-61.dll"):  # ffmpeg backend for the ready-sound
+        assert f'"{dll}"' in spec, f"{dll} must stay in _QT_DLL_KEEP"
+    # Non-base translations are trimmed, qtbase/qtmultimedia survive.
+    assert 'leaf.startswith("qtbase_")' in spec
