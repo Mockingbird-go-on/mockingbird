@@ -42,6 +42,42 @@ class OnboardingWizard(QDialog):
         self.setWindowTitle("Добро пожаловать в Mockingbird")
         self.resize(620, 500)
         self._build_ui()
+        # Accent frame (brand red) — the wizard must read as the focal point
+        # of the screen (2026-09-26 design pass).
+        from PySide6.QtWidgets import QGraphicsDropShadowEffect
+
+        effect = QGraphicsDropShadowEffect(self)
+        effect.setBlurRadius(24)
+        effect.setOffset(0, 2)
+        self.setGraphicsEffect(effect)
+        self.setStyleSheet(
+            "OnboardingWizard { border: 2px solid #ff2a1a; }"
+        )
+
+    # -- Accent helpers ------------------------------------------------------
+
+    _ACCENT = "#ff2a1a"
+
+    def _mark_invalid(self, edit: QLineEdit) -> None:
+        """Red outline for a required field that is empty / failed a check."""
+        edit.setStyleSheet(
+            f"QLineEdit {{ border: 1px solid {self._ACCENT}; }}"
+            f"QLineEdit:focus {{ border: 2px solid {self._ACCENT}; }}"
+        )
+
+    def _mark_valid(self, edit: QLineEdit) -> None:
+        edit.setStyleSheet("")
+
+    def _refresh_llm_marks(self) -> None:
+        """Keep the LLM required-field outlines in sync with the input."""
+        if not self._llm_url.text().strip():
+            self._mark_invalid(self._llm_url)
+        else:
+            self._mark_valid(self._llm_url)
+        if not self._llm_key.text().strip():
+            self._mark_invalid(self._llm_key)
+        else:
+            self._mark_valid(self._llm_key)
 
     # -- UI construction ---------------------------------------------------
 
@@ -81,9 +117,18 @@ class OnboardingWizard(QDialog):
         nav.addWidget(self._next_btn)
         layout.addLayout(nav)
 
-        # Re-validate nav when LLM fields change
+        # Re-validate nav when LLM fields change + live red outlines on the
+        # required fields.
         self._llm_url.textChanged.connect(self._on_llm_changed)
         self._llm_key.textChanged.connect(self._on_llm_changed)
+        self._llm_url.textChanged.connect(lambda *_: self._refresh_llm_marks())
+        self._llm_key.textChanged.connect(lambda *_: self._refresh_llm_marks())
+        self._refresh_llm_marks()
+        # Accent styling for the primary nav button.
+        self._next_btn.setStyleSheet(
+            f"QPushButton {{ border: 2px solid {self._ACCENT}; }}"
+            f"QPushButton:hover {{ background: {self._ACCENT}; color: white; }}"
+        )
 
         self._step = 0
         self._update_nav()
@@ -299,6 +344,9 @@ class OnboardingWizard(QDialog):
 
         # Whisper options
         self._whisper_group = QGroupBox("Настройки Whisper")
+        self._whisper_group.setStyleSheet(
+            f"QGroupBox {{ border: 1px solid {self._ACCENT}; }}"
+        )
         wf = QFormLayout(self._whisper_group)
         self._whisper_model = QComboBox()
         self._whisper_model.addItems(self._WHISPER_MODELS)
@@ -349,6 +397,9 @@ class OnboardingWizard(QDialog):
         layout.addSpacing(12)
 
         theme_box = QGroupBox("Тема")
+        theme_box.setStyleSheet(
+            f"QGroupBox {{ border: 1px solid {self._ACCENT}; }}"
+        )
         tl = QVBoxLayout(theme_box)
         self._theme_dark = QRadioButton("Тёмная (рекомендуется)")
         self._theme_light = QRadioButton("Светлая")

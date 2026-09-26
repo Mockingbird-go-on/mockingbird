@@ -412,13 +412,15 @@ class MainWindow(QMainWindow):
 
     def _on_model_load_failed(self, error: str) -> None:
         """All download attempts failed (or cancelled): close the overlay and
-        offer retry / offline hint."""
+        offer retry / offline hint. Goes through the NotificationBus FIFO —
+        never a bare QMessageBox (overlap chaos, 2026-09-26)."""
         if self._model_dl is not None:
             self._model_dl.done_failed(error)
         self._on_model_load_cancelled()
-        from PySide6.QtWidgets import QMessageBox
 
         low = error.lower()
+        if "cancelled" in low:
+            return  # user cancelled deliberately — no nagging
         if "certificate" in low:
             text = (
                 "Не удалось скачать модель: соединение блокируется "
@@ -428,19 +430,16 @@ class MainWindow(QMainWindow):
                 "• Перенести папку модели с другой машины в\n"
                 f"  {self._app.config.whisper.model_dir or '~/.mockingbird/models'}"
             )
-        elif "cancelled" in low:
-            return  # user cancelled deliberately — no nagging
         else:
             text = f"Не удалось скачать модель распознавания:\n{error}\n\nПроверьте интернет-соединение."
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Icon.Warning)
-        box.setWindowTitle("Загрузка модели")
-        box.setText(text)
-        retry = box.addButton("Повторить", QMessageBox.ButtonRole.AcceptRole)
-        box.addButton("Закрыть", QMessageBox.ButtonRole.RejectRole)
-        box.exec()
-        if box.clickedButton() is retry:
-            self._app.retry_model_download()
+        from mockingbird.ui.notify import bus as notify_bus
+
+        notify_bus.error(
+            "Загрузка модели",
+            text,
+            buttons=(("Повторить", self._app.retry_model_download), ("Закрыть", None)),
+            dedup_key="model-load-failed",
+        )
 
     def _on_model_dl_cancel(self) -> None:
         self._app.cancel_model_download()
