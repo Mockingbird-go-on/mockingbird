@@ -190,6 +190,20 @@ if (Test-Path $ct2dir) {
     if ($badDirs) { throw "ctranslate2 still contains .dll directories after flattening" }
 }
 
+# Sweep duplicate trees the slim filter removed from the TOC. PyInstaller's
+# incremental COLLECT never deletes files that a previous build left behind,
+# so a stale nested nvidia/ (~930 MB), av/ or av.libs/ tree from an older
+# bundle survives in dist and the Inno installer happily ships it. The
+# Windows loader only sees the FLAT CUDA copy in _internal\ctranslate2\ -
+# these trees are pure dead weight.
+foreach ($junk in @("nvidia", "av", "av.libs")) {
+    $junkDir = "dist\mockingbird\_internal\$junk"
+    if (Test-Path $junkDir) {
+        Remove-Item -Recurse -Force $junkDir
+        Write-Host "swept stale bundle tree: _internal\$junk"
+    }
+}
+
 Write-Host ""
 Write-Host "Build complete: dist\mockingbird\"
 Write-Host "Run: dist\mockingbird\mockingbird.exe"

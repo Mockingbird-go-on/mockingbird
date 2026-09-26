@@ -693,3 +693,63 @@ def test_spec_post_analysis_slim_filter():
         assert f'"{dll}"' in spec, f"{dll} must stay in _QT_DLL_KEEP"
     # Non-base translations are trimmed, qtbase/qtmultimedia survive.
     assert 'leaf.startswith("qtbase_")' in spec
+    # --- BEHAVIORAL: the filter must actually drop entries in the REAL
+    # PyInstaller TOC format (dest_name, src_path, typecode). The original
+    # source-guard missed that the filter parsed entry[2] (the typecode
+    # "BINARY") as the destination and therefore dropped NOTHING - the
+    # cuda dist stayed ~3.1 GB with the nested nvidia/ tree intact
+    # (field report 2026-09-26).
+    ns: dict = {}
+    start = spec.index("_QT_DLL_KEEP = {")
+    end = spec.index("a.binaries = _slim_toc")
+    exec(compile(spec[start:end], "mockingbird.spec", "exec"), ns)  # noqa: S102
+    slim = ns["_slim_toc"]
+    binaries = [
+        # Real-world shapes from Analysis-00.toc of the broken build:
+        (r"nvidia\cublas\bin\cublas64_12.dll", r"C:\site-packages\nvidia\cublas\bin\cublas64_12.dll", "BINARY"),
+        (r"nvidia\cudnn\bin\cudnn_graph64_9.dll", r"C:\site-packages\nvidia\cudnn\bin\cudnn_graph64_9.dll", "BINARY"),
+        (r"av\__init__.pyd", r"C:\site-packages\av\__init__.pyd", "BINARY"),
+        (r"av.libs\libavcodec-61.dll", r"C:\site-packages\av.libs\libavcodec-61.dll", "BINARY"),
+        (r"PySide6\Qt6Qml.dll", r"C:\site-packages\PySide6\Qt6Qml.dll", "BINARY"),
+        (r"PySide6\Qt6Pdf.dll", r"C:\site-packages\PySide6\Qt6Pdf.dll", "BINARY"),
+        # Must SURVIVE:
+        (r"ctranslate2\cublas64_12.dll", r"C:\site-packages\ctranslate2\cublas64_12.dll", "BINARY"),
+        (r"PySide6\Qt6Core.dll", r"C:\site-packages\PySide6\Qt6Core.dll", "BINARY"),
+        (r"PySide6\avcodec-61.dll", r"C:\site-packages\PySide6\avcodec-61.dll", "BINARY"),
+    ]
+    kept = slim(binaries, "binaries")
+    kept_names = {e[0].lower() for e in kept}
+    assert r"ctranslate2\cublas64_12.dll".lower() in kept_names
+    assert r"pyside6\qt6core.dll".lower() in kept_names
+    assert r"pyside6\avcodec-61.dll".lower() in kept_names
+    for dropped in (
+        r"nvidia\cublas\bin\cublas64_12.dll",
+        r"nvidia\cudnn\bin\cudnn_graph64_9.dll",
+        r"av\__init__.pyd",
+        r"av.libs\libavcodec-61.dll",
+        r"PySide6\Qt6Qml.dll",
+        r"PySide6\Qt6Pdf.dll",
+    ):
+        assert dropped.lower() not in kept_names, f"{dropped} must be dropped"
+    datas = [
+        (r"PySide6\translations\qtbase_ru.qm", r"C:\site-packages\PySide6\translations\qtbase_ru.qm", "DATA"),
+        (r"PySide6\translations\qtdeclarative_ru.qm", r"C:\site-packages\PySide6\translations\qtdeclarative_ru.qm", "DATA"),
+        (r"mockingbird\assets\kb\docker.yaml", r"E:\mockingbird\src\mockingbird\assets\kb\docker.yaml", "DATA"),
+    ]
+    kept_datas = {e[0].lower() for e in slim(datas, "datas")}
+    assert r"pyside6\translations\qtbase_ru.qm".lower() in kept_datas
+    assert r"pyside6\translations\qtdeclarative_ru.qm".lower() not in kept_datas
+    assert r"mockingbird\assets\kb\docker.yaml".lower() in kept_datas
+
+
+def test_build_windows_sweeps_stale_bundle_trees():
+    """PyInstaller incremental COLLECT never deletes files dropped from the
+    TOC - a stale nvidia/av/av.libs tree from an older bundle survives in
+    dist and the installer ships it. build_windows.ps1 must sweep the trees
+    explicitly after PyInstaller (ASCII-only, after the flatten step)."""
+    ps1 = (Path(ROOT) / "scripts" / "build_windows.ps1").read_text(encoding="utf-8-sig")
+    assert 'foreach ($junk in @("nvidia", "av", "av.libs"))' in ps1
+    assert ps1.index("flattened") < ps1.index("_internal\\$junk"), (
+        "sweep must run after the flatten step"
+    )
+    ps1.encode("ascii")  # ps1 must stay ASCII-only (PowerShell 5.1 parser)

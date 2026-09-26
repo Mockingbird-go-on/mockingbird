@@ -243,8 +243,14 @@ _QT_DLL_KEEP = {
 def _slim_toc(toc, kind):
     kept, dropped = [], []
     for entry in toc:
-        name, _src, dest = entry[0], entry[1], entry[2]
-        norm = (dest or "").replace("\\", "/").strip("/")
+        # PyInstaller TOC entries are (dest_name, src_path, typecode) — the
+        # bundle-relative destination is entry[0], NOT entry[2] (which is
+        # the typecode string "BINARY"/"DATA"). Parsing entry[2] as the dest
+        # matched nothing and the slim filter silently dropped ZERO entries
+        # (regression found in the field: cuda dist stayed ~3.1 GB with the
+        # nested nvidia/ duplicate tree intact).
+        name = entry[0]
+        norm = (name or "").replace("\\", "/").strip("/")
         top = norm.split("/", 1)[0].lower()
         base = name.rsplit("/", 1)[-1].rsplit("\\", 1)[-1].lower()
         drop = False
