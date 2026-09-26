@@ -75,12 +75,12 @@ class Toast(QWidget):
         card.setStyleSheet(
             f"""
             #toastCard {{
-                background: {theme.current().bg};
+                background: {theme.current.bg};
                 border: 1px solid {color};
                 border-left: 3px solid {color};
                 border-radius: 6px;
             }}
-            QLabel {{ color: {theme.current().fg}; }}
+            QLabel {{ color: {theme.current.text}; }}
             """
         )
         box = QVBoxLayout(card)

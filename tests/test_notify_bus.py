@@ -6,6 +6,7 @@ source-guard the integrations (main.py flush before window.show,
 model-load-failed via bus, download overlay gated on modal_active).
 """
 import ast
+import pytest
 import inspect
 import os
 import textwrap
@@ -169,3 +170,69 @@ def test_onboarding_has_accent_marks():
     src = _src(os.path.join("ui", "onboarding.py"))
     assert "_mark_invalid" in src and "_refresh_llm_marks" in src
     assert "#ff2a1a" in src
+
+
+# --- Toast layer (offscreen QApplication) -----------------------------------
+
+
+def _qapp():
+    pytest.importorskip("PySide6")
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])
+    return app
+
+
+def test_info_routes_to_toast_not_queue():
+    _qapp()
+    bus = _fresh_bus()
+    bus._exec_dialog = lambda n: pytest.fail("info must not open a modal")
+    bus.info("Готово", "Архив создан")
+    assert bus._queue == []
+    assert len(bus._toasts) == 1
+    bus._toasts[0].close()
+
+
+def test_toast_stack_evicts_beyond_four():
+    _qapp()
+    bus = _fresh_bus()
+    for i in range(6):
+        bus.info(f"t{i}", "x")
+    assert len(bus._toasts) == 4
+    for t in bus._toasts:
+        t.close()
+
+
+def test_late_startup_push_promoted_to_runtime():
+    _qapp()
+    bus = _fresh_bus()
+    shown = []
+    bus._exec_dialog = lambda n: shown.append(n.title)
+    bus.flush_startup()  # nothing queued -> flushes, marks flushed
+    bus.push("late", "x", severity="warning", scope="startup")
+    assert shown == ["late"]  # shown as runtime, not stuck in the queue
+
+
+def test_push_from_flush_callback_does_not_pump_inline():
+    _qapp()
+    bus = _fresh_bus()
+    order = []
+    real_exec = bus._exec_dialog
+
+    def spy_exec(n):
+        order.append(("show", n.title))
+        if n.title == "start":
+            # Simulate a callback that pushes a runtime notification while
+            # the startup dialog is being shown.
+            bus.push("runtime-late", "x", severity="warning")
+
+    bus._exec_dialog = spy_exec
+    bus._modal_depth = 1  # startup dialog already on screen
+    bus.push("start", "x", severity="warning", scope="startup")
+    bus.flush_startup()
+    # The runtime push must not interleave BETWEEN startup dialogs; it may
+    # be shown right after the flush completes (final _pump) - assert order:
+    # every "start" show precedes the runtime one.
+    starts = [i for i, (k, t) in enumerate(order) if t == "start"]
+    lates = [i for i, (k, t) in enumerate(order) if t == "runtime-late"]
+    assert starts and (not lates or max(starts) < min(lates))

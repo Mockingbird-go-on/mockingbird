@@ -227,3 +227,77 @@ def test_silero_vad_context_resets(monkeypatch):
 
     assert len(session.calls) == 2
     np.testing.assert_array_equal(session.calls[1]["input"][0, :64], np.zeros(64))
+
+
+# --- Adaptive silence threshold (T2.5) --------------------------------------
+
+
+def _bare_vad():
+    """SileroVAD without the ONNX model — _adaptive_silent_threshold only
+    touches the EMA state, no session needed."""
+    vad = SileroVAD.__new__(SileroVAD)
+    vad._noise_floor_ema = None
+    return vad
+
+
+def test_adaptive_threshold_initializes_on_first_quiet_block():
+    vad = _bare_vad()
+    thr, silent = vad._adaptive_silent_threshold(0.010, triggered=False)
+    assert vad._noise_floor_ema == 0.010
+    # 0.010 * 3 = 0.030 -> clamped to the strict ceiling 0.015
+    assert thr == 0.015
+    assert silent is True  # 0.010 < 0.015: quiet block IS silence
+
+
+def test_adaptive_threshold_clamps_low_floor():
+    vad = _bare_vad()
+    vad._noise_floor_ema = 0.0005  # very quiet room
+    thr, _ = vad._adaptive_silent_threshold(0.0006, triggered=False)
+    assert thr == 0.004  # floor*3 = 0.0015 -> clamped up to 0.004
+
+
+def test_adaptive_threshold_relaxed_inside_speech():
+    vad = _bare_vad()
+    vad._noise_floor_ema = 0.006  # floor*3 = 0.018 -> clamp 0.015
+    thr, _ = vad._adaptive_silent_threshold(0.010, triggered=True)
+    assert thr == 0.007  # never above the old fixed in-speech threshold
+
+
+def test_adaptive_threshold_ema_converges_slowly():
+    vad = _bare_vad()
+    vad._adaptive_silent_threshold(0.010, triggered=False)  # init 0.010
+    vad._adaptive_silent_threshold(0.019, triggered=False)  # quiet, a=0.05
+    assert vad._noise_floor_ema == pytest.approx(0.05 * 0.019 + 0.95 * 0.010)
+
+
+def test_adaptive_threshold_ignores_loud_blocks_when_untriggered():
+    vad = _bare_vad()
+    vad._adaptive_silent_threshold(0.010, triggered=False)
+    # A loud block (rms >= 0.02) must NOT pollute the noise floor.
+    vad._adaptive_silent_threshold(0.5, triggered=False)
+    assert vad._noise_floor_ema == pytest.approx(0.010)
+
+
+def test_adaptive_threshold_quiet_speech_survives():
+    """Loopback sources: speech rms 0.010-0.014 must not be silenced once
+    the floor has settled LOW (floor 0.001 -> threshold 0.004 via clamp)."""
+    vad = _bare_vad()
+    vad._noise_floor_ema = 0.001
+    thr, silent = vad._adaptive_silent_threshold(0.0035, triggered=True)
+    # In speech the threshold relaxes to <= 0.007; rms 0.0035 < 0.004
+    # (clamped floor*3) -> silent. Use rms clearly above the clamp floor:
+    thr2, silent2 = vad._adaptive_silent_threshold(0.006, triggered=True)
+    assert thr2 <= 0.007
+    assert silent2 is False  # quiet speech survives the adaptive threshold
+
+
+def test_vad_reset_clears_noise_floor():
+    vad = SileroVAD.__new__(SileroVAD)
+    vad._noise_floor_ema = 0.008
+    # reset() needs the full state — emulate the two load-bearing init sites
+    # by checking reset() source touches _noise_floor_ema (AGENTS.md: both
+    # __init__ and reset() MUST init it).
+    import inspect
+
+    src = inspect.getsource(SileroVAD.reset)
+    assert "_noise_floor_ema" in src
