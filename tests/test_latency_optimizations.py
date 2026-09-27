@@ -108,10 +108,11 @@ def test_fast_flush_with_provisional_query():
 # ── B2: speculative answers ─────────────────────────────────────────
 
 def test_speculative_answers_default_off():
+    # 2026-09-27: flipped ON by default (see test_latency_knobs.py).
     from mockingbird.config import load_config
 
     cfg = load_config()
-    assert cfg.interview.speculative_answers is False
+    assert cfg.interview.speculative_answers is True
 
 
 def test_speculative_cancel_emits_cancelled_message():

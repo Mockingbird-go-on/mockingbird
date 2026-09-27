@@ -127,9 +127,11 @@ class InterviewConfig(BaseModel):
     # Speculative answers: on marker-miss utterances with a topical signal,
     # start streaming an answer on the raw text IMMEDIATELY while the Tier-3
     # LLM rescue classifies in parallel. If the rescue says "not a question",
-    # the in-flight stream is cancelled. Costs tokens on statements; OFF by
-    # default (experimental latency knob).
-    speculative_answers: bool = False
+    # the in-flight stream is cancelled. Costs tokens on statements. The
+    # restart-vs-cancel accounting landed (audit 2026-09-26) and the partial
+    # early-start path is stable, so ON by default (2026-09-27): the LLM
+    # request leaves while the interviewer is still finishing the question.
+    speculative_answers: bool = True
 
 
 class WindowConfig(BaseModel):

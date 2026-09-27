@@ -546,6 +546,8 @@ class LlmClient:
         # — it could not stop the ones already racing the answer.
         self._bg_cond = threading.Condition()
         self._bg_inflight = 0
+        # Connection refresher state (see _start_refresher).
+        self._refresh_stop: threading.Event | None = None
 
     def set_profile(self, profile) -> None:
         """Render answer-mode prompts from the given specialization profile."""
@@ -681,6 +683,7 @@ class LlmClient:
                 timeout=self._cfg.timeout_s,
                 http_client=self._http_client(),
             )
+            self._start_refresher()
         return self._client
 
     def warmup(self) -> None:
@@ -704,6 +707,61 @@ class LlmClient:
                 pass
 
         threading.Thread(target=_ping, daemon=True, name="llm-warmup").start()
+
+    # Connection refresher: httpx keepalive_expiry is 600 s, but the SERVER
+    # side may idle-close sooner (many providers close at 60-300 s), and
+    # after that the next question re-pays DNS (~50-150 ms) + TCP+TLS
+    # handshake (~150-400 ms). A daemon thread pings the endpoint every
+    # _REFRESH_INTERVAL_S (well under both expiry budgets) on the SAME httpx
+    # client, so the pooled connection (and its resolved DNS entry) stays
+    # warm for hours-long interview sessions with sparse questions. Works
+    # for ANY OpenAI-compatible endpoint — models.list() costs no tokens.
+    _REFRESH_INTERVAL_S = 240.0
+
+    def _start_refresher(self) -> None:
+        if self._refresh_stop is not None:
+            return
+        self._refresh_stop = threading.Event()
+        stop = self._refresh_stop
+        interval = self._REFRESH_INTERVAL_S
+        # Failure backoff: a dead network must not produce a log/dns storm.
+        consecutive_failures = [0]
+
+        def _loop() -> None:
+            while not stop.wait(interval):
+                client = self._client
+                if client is None or self._refresh_stop is not stop:
+                    return
+                try:
+                    # Non-streaming, no tokens: reuses the pooled connection
+                    # or re-establishes it (the point of the exercise).
+                    client.models.list()
+                    consecutive_failures[0] = 0
+                except Exception:  # noqa: BLE001
+                    consecutive_failures[0] += 1
+                    if consecutive_failures[0] == 3:
+                        log.info("llm: connection refresher failing (network down?) — backing off")
+                    # Exponential backoff (240s → 8m → 16m, capped).
+                    extra = min(interval * (2 ** min(consecutive_failures[0] - 1, 3)), 960.0)
+                    stop.wait(extra)
+
+        threading.Thread(target=_loop, daemon=True, name="llm-conn-refresh").start()
+        log.debug("llm: connection refresher started (%.0fs interval)", interval)
+
+    def close(self) -> None:
+        """Stop the connection refresher and drop the HTTP clients."""
+        if self._refresh_stop is not None:
+            self._refresh_stop.set()
+            self._refresh_stop = None
+        for client in (self._client, self._failover_client):
+            close = getattr(client, "close", None)
+            if close is not None:
+                try:
+                    close()
+                except Exception:  # noqa: BLE001
+                    pass
+        self._client = None
+        self._failover_client = None
 
     @property
     def failover_available(self) -> bool:
