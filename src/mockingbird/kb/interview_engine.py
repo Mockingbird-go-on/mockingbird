@@ -57,6 +57,10 @@ _ACCUM_WINDOW_S = 0.2
 # Fast path: halved window when the pending final is already a confident
 # question or a partial-based answer is streaming (see _pending_fast_flush).
 _ACCUM_FAST_WINDOW_S = 0.1
+# K5: a confident question with NO hanging tail needs no courtesy window at
+# all — 50 ms only, so the LLM answer starts ~150 ms sooner on every such
+# question. Questions WITH a dangling tail keep _ACCUM_FAST_WINDOW_S.
+_ACCUM_TAILFREE_WINDOW_S = 0.05
 _ACCUM_MAX_GAP_S = 1.5
 # A trailing connective/question word means the utterance is mid-question
 # and the next segment completes it («…инфраструктура как код какие» +
@@ -308,6 +312,12 @@ class InterviewEngine:
         self._last_final_ts = 0.0
         self._answer_cache = _AnswerCache()
         self._generation = 0
+        # K5 ordering guard: the subject-rescue thread (fast LLM) must not
+        # emit its upgraded view BEFORE the worker emits the base view for
+        # the same final — the base placeholder would then clobber the
+        # upgrade on the panel. Cleared before the base build, set after
+        # _emit_view; the rescue waits (bounded) for it.
+        self._base_view_done = threading.Event()
         self._current_answer_mode: str = "technical"
         self._mode_lock = threading.Lock()
         # Speculative answers (B2): cancellation event for the in-flight
@@ -386,8 +396,7 @@ class InterviewEngine:
         while True:
             if self._pending_segment is not None:
                 timeout = (
-                    _ACCUM_FAST_WINDOW_S if self._pending_fast_flush(self._pending_segment)
-                    else _ACCUM_WINDOW_S
+                    self._accum_window_for(self._pending_segment)
                 )
             else:
                 timeout = None
@@ -413,8 +422,8 @@ class InterviewEngine:
         («расскажи про … [pause] k8s»). It buys nothing when the final is
         already a confident question (detector matches markers) — or when a
         partial-based early answer is already streaming (its restart logic
-        covers wording changes). In both cases the extra 0.1 s is dead time
-        on the answer critical path.
+        covers wording changes). In both cases the extra window time is dead
+        time on the answer critical path.
         """
         try:
             if detector.is_question(seg.text):
@@ -424,6 +433,26 @@ class InterviewEngine:
         return bool(
             getattr(self._llm, "is_streaming", False) or self._provisional_query
         )
+
+    def _accum_window_for(self, seg) -> float:
+        """Pick the accumulation window for a deferred final (K5, 2026-09-27).
+
+        Base 0.2 s / fast 0.1 s as before; a confident question WITHOUT a
+        hanging tail («расскажи про k8s» — no dangling «расскажи про») gets a
+        0.05 s courtesy window: a continuation fragment that arrives within
+        50 ms of the previous final is speech that was split by VAD mid-word,
+        and the tail-merge path (:470) still catches such micro-fragments via
+        _ACCUM_MAX_GAP_S. Fragments WITH a hanging tail keep the full fast
+        window — the tail explicitly waits for its continuation.
+        """
+        if self._pending_fast_flush(seg):
+            try:
+                if not _has_hanging_tail(seg.text):
+                    return _ACCUM_TAILFREE_WINDOW_S
+            except Exception:  # noqa: BLE001
+                pass
+            return _ACCUM_FAST_WINDOW_S
+        return _ACCUM_WINDOW_S
 
     def _flush_pending(self) -> None:
         """Process the deferred segment after the accumulation window expires.
@@ -559,9 +588,20 @@ class InterviewEngine:
         self._process_immediate(msg)
 
     def _process_immediate(self, msg: protocol.FinalTranscript) -> None:
-        """Process a final transcript without deferral (bypasses accumulation)."""
+        """Process a final transcript without deferral (bypasses accumulation).
+
+        Wrapped for base-view ordering (see _base_view_done): the subject
+        rescue must never emit before the worker's own view for this final.
+        """
         if not self._cfg.enabled or not msg.text:
             return
+        self._base_view_done.clear()
+        try:
+            self._process_immediate_inner(msg)
+        finally:
+            self._base_view_done.set()
+
+    def _process_immediate_inner(self, msg: protocol.FinalTranscript) -> None:
         text = msg.text.strip()
         self._context.on_segment(msg.text)
         self._tracker.on_segment(msg.text)
@@ -1246,6 +1286,10 @@ class InterviewEngine:
         # upgraded view in the cache but do not clobber the live stream.
         if getattr(self._llm, "is_streaming", False):
             return
+        # K5 ordering: wait (bounded) for the worker's own view of this final
+        # to be emitted first — a fast rescue LLM could otherwise land BEFORE
+        # the deferred base placeholder and be clobbered by it on the panel.
+        self._base_view_done.wait(timeout=1.0)
         self._emit_answer(view)
 
     def _llm_rescue_available(self) -> bool:

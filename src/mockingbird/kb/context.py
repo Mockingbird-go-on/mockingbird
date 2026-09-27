@@ -21,6 +21,9 @@ class ConversationContext:
         self._topic_activity: dict[str, float] = {}
         self._term_activity: dict[str, float] = {}
         self._blocks: list[dict] = []  # answered KB blocks over the session
+        # K7 (2026-09-27): id -> block dict index so add_block dedup is O(1)
+        # instead of a linear scan that degraded as the session grew.
+        self._block_by_id: dict[str, dict] = {}
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -29,6 +32,7 @@ class ConversationContext:
         self._topic_activity.clear()
         self._term_activity.clear()
         self._blocks.clear()
+        self._block_by_id.clear()
 
     # -- ingest ------------------------------------------------------------
 
@@ -45,25 +49,25 @@ class ConversationContext:
     def add_block(self, topic_id: str, title: str, section: str, question: str, answer: str, related: list[str], score: float) -> None:
         """Record an answered KB block for the theory cloud (dedup by id)."""
         block_id = f"{topic_id}:{section}:{question}"
-        existing = next((b for b in self._blocks if b["id"] == block_id), None)
+        existing = self._block_by_id.get(block_id)
         if existing is not None:
             existing["count"] += 1
             existing["score"] = max(existing["score"], score)
             return
-        self._blocks.append(
-            {
-                "id": block_id,
-                "topic": topic_id,
-                "title": title,
-                "section": section,
-                "question": question,
-                "answer": answer,
-                "related": list(related),
-                "score": score,
-                "count": 1,
-                "ts": time.time(),
-            }
-        )
+        entry = {
+            "id": block_id,
+            "topic": topic_id,
+            "title": title,
+            "section": section,
+            "question": question,
+            "answer": answer,
+            "related": list(related),
+            "score": score,
+            "count": 1,
+            "ts": time.time(),
+        }
+        self._blocks.append(entry)
+        self._block_by_id[block_id] = entry
 
     # -- query-time --------------------------------------------------------
 

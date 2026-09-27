@@ -36,7 +36,11 @@ class AudioConfig(BaseModel):
 class VadConfig(BaseModel):
     threshold: float = 0.5
     min_speech_ms: int = 250
-    min_silence_ms: int = 500
+    # S1 (2026-09-27 latency audit): 400 ms (was 500) — speech_end fires
+    # 100 ms sooner on every utterance. Intra-phrase pauses shorter than
+    # this are rare in continuous speech; the chunker's 2 s hold-open
+    # (is_utterance_complete) still guards mid-question splits.
+    min_silence_ms: int = 400
     stop_hint_delay_ms: int = 180  # sustained silence before the "speech_stop" hint fires
     model_path: str | None = None
 
