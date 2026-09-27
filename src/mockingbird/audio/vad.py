@@ -150,6 +150,19 @@ class VadStateMachine:
         self._silence = 0
         self._stop_hint_fired = False
 
+    def cancel_pending_end(self) -> None:
+        """Drop the in-flight segment (early finalize from the chunker).
+
+        The consumer closed the segment itself (confident-question early
+        finalize); reset the machine so the next silence window does not
+        emit a duplicate ``end`` for the already-finalized audio. The
+        buffered speech is discarded — the engine holds its own copy.
+        """
+        self._speech = np.zeros(0, dtype=np.float32)
+        self._triggered = False
+        self._silence = 0
+        self._stop_hint_fired = False
+
     def consume(self, frame: np.ndarray, prob: float) -> list[dict]:
         events: list[dict] = []
         if not self._triggered:
@@ -247,6 +260,14 @@ class SileroVAD:
         self._machine.reset()
         self._max_prob = 0.0
         self._noise_floor_ema = None
+
+    def cancel_pending_end(self) -> None:
+        """Delegate to the state machine (early finalize support)."""
+        self._machine.cancel_pending_end()
+        # Halve (not zero) the recurrent state — same rationale as after a
+        # normal segment end: a hard reset delays the next speech start.
+        self._state = (self._state * 0.5).astype(np.float32)
+        self._context = self._context * 0.5
 
     def _adaptive_silent_threshold(self, block_rms: float, triggered: bool) -> tuple[float, bool]:
         """Adaptive silence threshold from the measured noise floor.

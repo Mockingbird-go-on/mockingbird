@@ -25,6 +25,69 @@ log = logging.getLogger(__name__)
 # whisper simply did not punctuate.
 _HOLD_OPEN_MAX_S = 2.0
 
+# Early finalize (two-stage endpointing): a partial that is a CONFIDENT
+# finished question (ends on terminal punctuation, no hanging tail) lets the
+# chunker close the segment after this much silence — earlier than the full
+# min_silence window. The VAD stop-hint already started the speculative
+# decode at 180 ms; this closes ~300-400 ms sooner on every clear question
+# while narrative mid-word pauses (no punctuation / hanging tail) keep the
+# full window.
+_EARLY_FINALIZE_S = 0.25
+
+
+def _is_confident_question_close(text: str) -> bool:
+    """True when the latest partial is a finished confident question.
+
+    Criteria (all must hold): the decoded text ends on terminal punctuation
+    (whisper punctuates finished sentences), the terminal char is a question
+    mark OR the text starts with a question word, and the last word is not a
+    connective/question stem (a hanging tail means mid-question).
+    """
+    t = (text or "").strip()
+    if not t or len(t.split()) < 2:
+        return False
+    last_char = t[-1:]
+    if last_char not in (".", "?", "!", "…"):
+        return False
+    if last_char != "?" and not detector_is_question(t):
+        return False
+    return not _has_hanging_tail(t)
+
+
+def detector_is_question(text: str) -> bool:
+    """Cheap question-shape check without importing the interview stack.
+
+    The chunker runs on the audio path; a heavy import would be wrong here.
+    Mirrors the interview detector's core markers (question words / «?»).
+    """
+    t = text.lower()
+    if "?" in t:
+        return True
+    first = t.split()[0] if t.split() else ""
+    return first in (
+        "что", "как", "какие", "какая", "какой", "какое", "чем", "где", "когда",
+        "почему", "зачем", "сколько", "кто", "кому", "расскажи", "поясни",
+        "объясни", "приведи", "сравни", "в", "а",
+    )
+
+
+def _has_hanging_tail(text: str) -> bool:
+    words = (text or "").strip().lower().split()
+    if not words:
+        return False
+    last = words[-1].strip(".?!,…")
+    return last in _HANGING_TAIL_WORDS
+
+
+_HANGING_TAIL_WORDS = frozenset(
+    (
+        "какие", "какая", "какое", "что", "чем", "как", "где", "когда",
+        "почему", "зачем", "сколько", "кто", "кому", "и", "или", "а",
+        "для", "в", "на", "при", "между", "про", "об", "о", "если", "тобы",
+        "чтобы", "каком", "какой", "какую",
+    )
+)
+
 
 class SpeechChunker:
     def __init__(
@@ -41,12 +104,17 @@ class SpeechChunker:
         self._segment_id: str | None = None
         # Endpointing state: a pending (held) end event with its deadline.
         self._held_end: tuple | None = None  # (audio, segment_id, deadline)
+        # Two-stage endpointing: deadline after which a confident-question
+        # close may fire (set on speech_stop, cleared on resume/close).
+        self._early_finalize_at: float | None = None
 
     @property
     def _current_segment_id(self) -> str | None:
         return self._segment_id
 
     def _close_segment(self, audio, segment_id: str | None) -> None:
+        # ``audio=None`` (early finalize): the engine finalizes its rolling
+        # buffer instead — it already contains everything fed so far.
         self._engine.end_segment(audio, segment_id)
         log.info("vad: speech end (segment %s)", segment_id)
         if self._on_segment_event and segment_id:
@@ -55,6 +123,7 @@ class SpeechChunker:
             self._on_speech(False)
         self._segment_id = None
         self._held_end = None
+        self._early_finalize_at = None
 
     def _try_release_held_end(self) -> None:
         """Close a held segment when the hold expires or speech completes."""
@@ -72,10 +141,42 @@ class SpeechChunker:
         if complete is not None and complete():
             self._close_segment(audio, segment_id)
 
+    def _maybe_early_finalize(self) -> None:
+        """Two-stage endpointing: close a confident finished question early.
+
+        After the VAD stop-hint (silence detected) + ``_EARLY_FINALIZE_S``,
+        a latest partial that is a finished confident question closes the
+        segment — ~300-400 ms before the full min_silence window. Narrative
+        mid-word pauses (no punctuation / hanging tail) keep the full window.
+        """
+        if (
+            self._segment_id is None
+            or self._early_finalize_at is None
+            or time.monotonic() < self._early_finalize_at
+        ):
+            return
+        self._early_finalize_at = None
+        last_partial = getattr(self._engine, "last_partial_text", "")
+        if not _is_confident_question_close(last_partial):
+            return
+        log.info(
+            "vad: early finalize — confident question + %.0fms silence (segment %s)",
+            _EARLY_FINALIZE_S * 1000, self._segment_id,
+        )
+        # Cancel the pending VAD end: the state machine would emit a
+        # duplicate ``end`` for the already-finalized audio. The engine
+        # finalizes its own rolling buffer (audio=None).
+        self._vad.cancel_pending_end()
+        self._close_segment(None, self._segment_id)
+
     def on_audio(self, audio, ts) -> None:
         # First: a held end may be releasable (completeness arrived via a new
         # decode, or the hold budget expired).
         self._try_release_held_end()
+        # Two-stage endpointing check runs on EVERY audio block (not only on
+        # VAD events — during silence the VAD emits no events until its own
+        # end fires, which is exactly what we want to beat).
+        self._maybe_early_finalize()
         for event in self._vad.process(audio):
             kind = event.get("kind")
             if kind == "start":
@@ -101,8 +202,13 @@ class SpeechChunker:
                 self._engine.feed(event["audio"])
             elif kind == "speech_stop":
                 self._engine.on_speech_stop()
+                if self._on_segment_event and self._segment_id:
+                    self._on_segment_event(self._segment_id, "speech_stop")
+                if self._segment_id is not None:
+                    self._early_finalize_at = time.monotonic() + _EARLY_FINALIZE_S
             elif kind == "speech_resume":
                 self._engine.on_speech_resume()
+                self._early_finalize_at = None
             elif kind == "end":
                 complete = getattr(self._engine, "is_utterance_complete", None)
                 if (

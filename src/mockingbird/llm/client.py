@@ -222,7 +222,7 @@ def _apply_default_profile() -> None:
 _apply_default_profile()
 
 _GEN_PARAMS_BY_MODE = {
-    "technical": {"temperature": 0.3, "max_tokens": 400},
+    "technical": {"temperature": 0.3, "max_tokens": 300},
     "personal": {"temperature": 0.4, "max_tokens": 1000},
     "mixed": {"temperature": 0.4, "max_tokens": 1000},
     "behavioral": {"temperature": 0.4, "max_tokens": 900},
@@ -1060,6 +1060,7 @@ class LlmClient:
         winner: list[str | None] = [None]
         stop = threading.Event()
         streams: dict[str, object] = {}
+        _first_chunk_logged: dict[str, bool] = {}
 
         def _try_create(client, model):
             try:
@@ -1095,9 +1096,16 @@ class LlmClient:
                     if winner[0] is not None or stop.is_set():
                         return
                     log.info("llm: hedge started — primary produced no first token in %.1fs", hedge_s)
+                _t_conn = time.monotonic()
                 stream = _try_create(client, model)
                 streams[name] = stream
                 for chunk in stream:
+                    if not _first_chunk_logged.get(name, False):
+                        _first_chunk_logged[name] = True
+                        log.info(
+                            "llm-stream[%s]: create+first chunk after %.0fms",
+                            name, (time.monotonic() - _t_conn) * 1000,
+                        )
                     if stop.is_set() or (winner[0] is not None and winner[0] != name):
                         _close_quietly(stream)
                         return
