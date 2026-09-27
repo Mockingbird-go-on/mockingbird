@@ -285,7 +285,8 @@ def test_pack_move_source_contains_replace_logic():
     src = (Path(we.__file__) if (we := __import__(
         "mockingbird.stt.whisper_engine", fromlist=["x"])).__file__ else "")
     text = Path(src).read_text(encoding="utf-8")
-    assert "cannot replace stale model dir" in text
-    assert "if target.exists():\n                continue" not in text.split(
-        "The pack contains cache/models--<slug>"
-    )[1].split("slug = ")[0]
+    # 2026-09-27: replacement goes through _replace_dir_robust (retries +
+    # read-only clear + rename-aside); a locked dir must NOT silently
+    # swallow the pack — the snapshot also resolves from cache/ fallback.
+    assert "_replace_dir_robust" in text
+    assert "for base in (root, root / \"cache\")" in text
