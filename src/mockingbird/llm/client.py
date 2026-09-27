@@ -1121,25 +1121,40 @@ class LlmClient:
         _first_chunk_logged: dict[str, bool] = {}
 
         def _try_create(client, model):
-            try:
+            effort = (self._cfg.reasoning_effort or "").strip().lower() or None
+            messages = [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user_content},
+            ]
+
+            def _create(**extra):
                 return client.chat.completions.create(
                     model=model,
-                    messages=[
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": user_content},
-                    ],
+                    messages=messages,
                     temperature=gen["temperature"],
                     max_tokens=gen["max_tokens"],
                     stream=True,
                     stream_options={"include_usage": True},
+                    **extra,
                 )
+
+            if effort is not None:
+                try:
+                    # OpenAI-compatible reasoning control; providers that
+                    # do not know it may 400 — fall through to the plain
+                    # request below (single attempt with, then without).
+                    return _create(extra_body={"reasoning_effort": effort})
+                except Exception:  # noqa: BLE001
+                    log.debug(
+                        "llm: reasoning_effort rejected by provider (%s) — retrying without",
+                        effort,
+                    )
+            try:
+                return _create()
             except Exception:  # noqa: BLE001 — provider may reject stream_options
                 return client.chat.completions.create(
                     model=model,
-                    messages=[
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": user_content},
-                    ],
+                    messages=messages,
                     temperature=gen["temperature"],
                     max_tokens=gen["max_tokens"],
                     stream=True,

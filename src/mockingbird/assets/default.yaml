@@ -38,6 +38,7 @@ llm:
   failover_api_key: null
   failover_model: null
   failover_hedge_s: 2.0
+  reasoning_effort: none
 terms:
   explanation_language: ru
   llm_fallback: true
