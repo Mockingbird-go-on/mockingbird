@@ -163,7 +163,10 @@ def test_download_overlay_respects_modal_active():
         src.index("def _sync_visibility_with_main") : src.index("def show_above")
     ]
     assert "modal_active" in fn
-    assert fn.index("modal_active") < fn.index("main_active")
+    # 2026-09-27: the overlay stays visible even while the app is inactive
+    # (user request) — no activeWindow() gating may remain.
+    assert "activeWindow" not in fn
+    assert "self.raise_()" in fn
 
 
 def test_onboarding_has_accent_marks():

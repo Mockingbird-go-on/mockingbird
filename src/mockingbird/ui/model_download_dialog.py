@@ -91,10 +91,10 @@ class ModelDownloadDialog(QWidget):
         self._hide_timer.setSingleShot(True)
         self._hide_timer.timeout.connect(self.hide)
 
-        # Track the main window's activation: the overlay is only visible
-        # while the app itself is active. Switching to a browser hides it
-        # (it has WindowStaysOnTopHint and would otherwise hover over
-        # unrelated windows); coming back re-shows it mid-download.
+        # Anchor to the main window for positioning. Visibility no longer
+        # follows the main window's activation: the overlay (StaysOnTop)
+        # must remain above it even while the app is inactive — the user
+        # keeps seeing the download progress over whatever else they do.
         self._main_window: QWidget | None = None
         self._download_active = False
         # Once True (done_ok/done_failed/cancel confirmed) no late progress
@@ -178,23 +178,24 @@ class ModelDownloadDialog(QWidget):
             self.hide()
 
     def _sync_visibility_with_main(self) -> None:
-        """Show the overlay only while the main window is the active window."""
+        """Keep the overlay visible while the download is active.
+
+        2026-09-27 (user request): the overlay must stay ABOVE the main
+        window at all times — including when the app itself is INACTIVE
+        (user switched to a browser while the 1.6 GB model downloads).
+        The old hide-on-inactive logic made the download silently invisible.
+        It still yields to a modal NotificationBus dialog (stacking fight).
+        """
         if not self._download_active:
             return
-        # A modal NotificationBus dialog owns the screen — do not fight it
-        # for stacking (was: raise_() on every timer tick over modal boxes).
         from .notify import bus as notify_bus
 
         if notify_bus.modal_active:
             self.hide()
             return
-        main_active = QApplication.activeWindow() is not None
-        if main_active:
-            if not self.isVisible():
-                self.show()
-                self.raise_()
-        else:
-            self.hide()
+        if not self.isVisible():
+            self.show()
+        self.raise_()
 
     def show_above(self, window: QWidget) -> None:
         if window is not None:
