@@ -1196,14 +1196,17 @@ def test_engine_partial_early_start_streams_answer():
 
 
 def test_engine_partial_requires_stability_rounds():
+    # 2026-09-27: a CLEAR question needs just one stable partial (adaptive
+    # stability) — this test must use a markerless statement to exercise the
+    # stability-rounds gate itself.
     llm = _FakeStreamLlm(["a"])
     engine = _partial_engine(llm)
-    engine._process_partial(_partial("в чём отличие entrypoint от cmd"))
+    engine._process_partial(_partial("мы деплоили через gitlab ci"))
     assert engine._partial_stable == 1
     assert not llm.calls
     assert engine._provisional_query == ""
     # a different partial resets the stability counter
-    engine._process_partial(_partial("что такое dockerfile"))
+    engine._process_partial(_partial("настраивали пайплайны в GitLab"))
     assert engine._partial_stable == 1
 
 

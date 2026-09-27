@@ -877,10 +877,20 @@ class InterviewEngine:
         Broad questions («расскажи всё про X») and long utterances need more
         consecutive identical partials before early answering — they change
         more between partial updates and an early start is likely to restart.
+        A CLEAR question (explicit «?» or a leading question word, <10 words)
+        needs just ONE stable partial: the wording is already final and every
+        250 ms of waiting is pure latency on the answer's critical path.
         """
-        if detector.is_broad(text) or len(text.split()) > 10:
+        if detector.is_broad(text) or len(text.split()) >= 10:
             return 4
+        t = text.strip()
+        if "?" in t or detector.is_question(t):
+            return 1
         return max(1, self._cfg.partial_stability_rounds)
+
+    # NOTE: order matters — the broad/long check (4 rounds) must run BEFORE
+    # the clear-question shortcut (1 round): a long question is unstable
+    # across partial updates even when its wording is already interrogative.
 
     def _process_partial(self, msg: protocol.PartialTranscript) -> None:
         """Overlap the LLM answer and the RAG view with the STT tail.
@@ -1958,7 +1968,7 @@ class InterviewEngine:
         ):
             prev_qa = (
                 f"Предыдущий вопрос и ответ:\n"
-                f"Q: {self._last_answer_q}\nA: {self._last_answer_a[:300]}\n\n"
+                f"Q: {self._last_answer_q}\nA: {self._last_answer_a[:150]}\n\n"
             )
         # Calibration diagnostics: WHY this exact prompt went to the LLM.
         log.debug(
@@ -2024,7 +2034,7 @@ class InterviewEngine:
                     buffer.append(delta)
                     _emit_buf.append(delta)
                     if len(buffer) == 1 or (
-                        time.monotonic() - _last_emit_t >= 0.08
+                        time.monotonic() - _last_emit_t >= 0.05
                         or sum(len(p) for p in _emit_buf) >= 120
                     ):
                         _flush_emit()
@@ -2300,7 +2310,11 @@ class InterviewEngine:
         resume_blocks = self._find_resume_blocks(query, view.topic)
         if resume_blocks:
             lines.append("Релевантный опыт из резюме:")
-            for block in resume_blocks:
+            # Top-3 by score: prefill tokens are TTFB latency, and beyond
+            # three blocks the marginal relevance drops fast (2026-09-27).
+            for block in sorted(
+                resume_blocks, key=lambda b: getattr(b, "score", 0.0), reverse=True
+            )[:3]:
                 lines.append(f"Вопрос: {block.question}\nОтвет: {block.answer}")
         else:
             lines.append(

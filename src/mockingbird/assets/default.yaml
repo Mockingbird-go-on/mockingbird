@@ -54,6 +54,7 @@ interview:
   max_blocks: 6
   use_partials: true
   partial_stability_rounds: 2
+  speculative_answers: true
   highlight: true
   cooldown_s: 20.0
   subject_llm: true
