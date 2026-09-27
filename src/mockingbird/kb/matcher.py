@@ -1,6 +1,7 @@
 """Rank KB blocks for a spoken query using the inverted index."""
 from __future__ import annotations
 
+import functools
 import re
 from collections import defaultdict
 
@@ -15,9 +16,37 @@ from mockingbird.kb.model import KbBlock, KbSection, KbTopic
 MatchResult = tuple[float, KbTopic, KbSection, KbBlock, list[str]]
 
 
+# K1 (2026-09-27 latency audit): phrase patterns depend only on the phrase
+# text — compile once per phrase, reuse across every match() call. The index
+# carries 3-10k phrases; rebuilding the rf-string + re-cache lookup per call
+# was the dominant CPU cost of matching (~10-40 ms per call, 2-6 calls per
+# final transcript).
+@functools.lru_cache(maxsize=16384)
+def _phrase_pattern(phrase: str) -> "re.Pattern[str]":
+    return re.compile(rf"(?<![\w]){re.escape(phrase)}(?![\w])")
+
+
+@functools.lru_cache(maxsize=4096)
+def _block_question_terms(block_id: str, question: str) -> tuple[str, ...]:
+    """Significant folded terms of a block's question, in order (K2 cache).
+
+    Keyed by the block id AND the question text so a rebuilt KB (same ids,
+    edited questions) never serves stale terms.
+    """
+    return tuple(
+        fold(t)
+        for t in normalize_terms(question)
+        if fold(t) not in _STOPWORDS and len(fold(t)) > 1
+    )
+
+
 class KbMatcher:
     def __init__(self, index: KbIndex):
         self._index = index
+        # K4: folded-term -> resolved index term (or the fold itself when
+        # unresolvable). Lives on the matcher so a KB reload (new matcher)
+        # starts clean.
+        self._fuzzy_cache: dict[str, str] = {}
 
     def match(
         self,
@@ -46,14 +75,21 @@ class KbMatcher:
 
         # STT renders English keywords as Russian phonetics; resolve such
         # tokens to a known index term so they still match blocks.
+        # K4 (2026-09-27): the fuzzy resolution is deterministic per term —
+        # cache it, a mangled token ("Zabix") was re-resolved in every one of
+        # the 2-6 match() calls a single final transcript triggers.
         term_to_lookup: dict[str, str] = {}
         for term in significant:
             folded = fold(term)
             if folded in self._index._term_blocks:
                 term_to_lookup[term] = folded
             else:
-                fuzzy = self._index.fuzzy_resolve(term)
-                term_to_lookup[term] = fuzzy if fuzzy is not None else folded
+                cached = self._fuzzy_cache.get(folded)
+                if cached is None:
+                    fuzzy = self._index.fuzzy_resolve(term)
+                    cached = fuzzy if fuzzy is not None else folded
+                    self._fuzzy_cache[folded] = cached
+                term_to_lookup[term] = cached
 
         term_scores: dict[int, float] = defaultdict(float)
         specificity: dict[int, float] = defaultdict(float)
@@ -72,18 +108,28 @@ class KbMatcher:
         phrase_hits: dict[int, float] = defaultdict(float)
         for phrase, block_idxs in self._index._phrase_blocks.items():
             # Word-boundary match only: a keyword like "te" (or "entrypoint")
-            # must not match inside "kubernetes".
-            if phrase and re.search(rf"(?<![\w]){re.escape(phrase)}(?![\w])", q):
-                for block_idx in block_idxs:
-                    phrase_hits[block_idx] = max(phrase_hits[block_idx], _PHRASE_BONUS)
+            # must not match inside "kubernetes". Patterns depend only on the
+            # phrase — compiled once and cached (K1, 2026-09-27 audit: the
+            # rf-string rebuild + re-cache lookup over 3-10k phrases was the
+            # dominant CPU cost of every match() call).
+            if phrase:
+                pattern = _phrase_pattern(phrase)
+                if pattern.search(q):
+                    for block_idx in block_idxs:
+                        phrase_hits[block_idx] = max(phrase_hits[block_idx], _PHRASE_BONUS)
 
         candidates: set[int] = set(term_scores) | set(phrase_hits)
         if not candidates:
             return []
 
         def question_overlap(block: KbBlock) -> int:
-            """Count significant query terms appearing in order in the question."""
-            sig_terms = [fold(t) for t in normalize_terms(block.question) if fold(t) not in _STOPWORDS and len(fold(t)) > 1]
+            """Count significant query terms appearing in order in the question.
+
+            K2 (2026-09-27): the block's own significant terms never change —
+            parsed once per block and cached (the old per-call normalize_terms
+            parse over hundreds of candidate blocks cost 5-20 ms per match).
+            """
+            sig_terms = _block_question_terms(block.id, block.question)
             ptr = 0
             matched = 0
             for term in sig_terms:

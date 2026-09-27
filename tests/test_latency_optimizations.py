@@ -25,14 +25,16 @@ def _read(rel: str) -> str:
 
 # ── A1: min_silence_ms ──────────────────────────────────────────────
 
-def test_vad_min_silence_default_500():
+def test_vad_min_silence_default_400():
     from mockingbird.config import load_config
 
     cfg = load_config()
-    assert cfg.vad.min_silence_ms == 500
+    # S1 (2026-09-27): 500 -> 400 ms — speech_end fires 100 ms sooner; the
+    # chunker's 2 s hold-open still guards mid-question splits.
+    assert cfg.vad.min_silence_ms == 400
     src = _read("audio/vad.py")
-    assert "min_silence_ms: int = 500" in src
-    assert "int(0.5 * 16000)" in src
+    assert "min_silence_ms: int = 400" in src
+    assert "int(0.4 * 16000)" in src
 
 
 # ── A2: speculative reuse budget ────────────────────────────────────

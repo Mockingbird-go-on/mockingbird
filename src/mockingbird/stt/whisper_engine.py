@@ -2077,7 +2077,13 @@ class WhisperEngine:
         # segment buffer is the main source of whisper hallucinations (SLO /
         # NAUMEN-style phantom terms on quiet tails). Partials skip it — they
         # feed on already VAD-gated audio and the filter adds latency.
+        # S3 (2026-09-27): the filter's DEFAULT min_silence_duration_ms is
+        # 2000 — our own SileroVAD already segmented the audio with a 400 ms
+        # silence threshold, so the second filter re-scanned 2 s windows for
+        # nothing. Align it with our threshold: the anti-hallucination tail
+        # trim still runs, just without the dead 1.6 s of scanning.
         vad_filter = kind != "partial"
+        vad_parameters = {"min_silence_duration_ms": 400} if vad_filter else None
         t0 = time.monotonic()
         segments, info = self._model.transcribe(
             audio,
@@ -2085,6 +2091,7 @@ class WhisperEngine:
             language=language,
             condition_on_previous_text=False,
             vad_filter=vad_filter,
+            vad_parameters=vad_parameters,
             initial_prompt=prompt,
             hotwords=hotwords,
         )
