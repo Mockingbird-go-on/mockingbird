@@ -15,7 +15,8 @@ log = logging.getLogger(__name__)
 # The ordered stages we expect to see (used for the summary line).
 _STAGES = [
     "speech_start",
-    "speech_end",
+    "speech_stop",   # VAD stop-hint: silence detected, speculative decode starts
+    "speech_end",    # segment closed (normal, held or early finalize)
     "stt_final",
     "kb_view",
     "llm_start",
@@ -41,7 +42,11 @@ class SegmentTrace:
             self._marks[event] = time.monotonic()
 
     def summary(self) -> str:
-        """Compact one-liner: ``vad=0.8s stt=2.1s ... total=7.0s``."""
+        """Compact one-liner: ``vad=0.8s stt=2.1s ... total=7.0s``.
+
+        Sub-second gaps are printed in milliseconds (endpointing and KB
+        stages are exactly where the fine-grained losses hide).
+        """
         with self._lock:
             marks = dict(self._marks)
         if not marks:
@@ -49,11 +54,17 @@ class SegmentTrace:
         # Build deltas between consecutive known stages.
         present = [s for s in _STAGES if s in marks]
         parts: list[str] = []
+
+        def _fmt(dt: float, label: str) -> str:
+            if dt < 1.0:
+                return f"{label}={dt * 1000:.0f}ms"
+            return f"{label}={dt:.2f}s"
+
         for i in range(1, len(present)):
             dt = marks[present[i]] - marks[present[i - 1]]
             if dt >= 0:
                 label = _SHORT_LABELS.get(present[i], present[i])
-                parts.append(f"{label}={dt:.2f}s")
+                parts.append(_fmt(dt, label))
         if present:
             total = marks[present[-1]] - marks[present[0]]
             parts.append(f"total={total:.2f}s")
@@ -62,6 +73,7 @@ class SegmentTrace:
 
 # Short labels for the summary line (kept compact for log readability).
 _SHORT_LABELS = {
+    "speech_stop": "sil",
     "speech_end": "vad",
     "stt_final": "stt",
     "kb_view": "kb",

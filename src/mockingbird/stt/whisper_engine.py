@@ -1394,7 +1394,23 @@ class WhisperEngine:
         self._pending_final_cmds += 1
         self._queue.put((cmd, payload))
 
-    def end_segment(self, audio: np.ndarray, segment_id: str | None = None) -> None:
+    @property
+    def last_partial_text(self) -> str:
+        """Latest decoded partial text for the open segment (endpointing aid)."""
+        return self._last_partial_text or ""
+
+    def end_segment(self, audio: np.ndarray | None, segment_id: str | None = None) -> None:
+        """Finalize the segment.
+
+        ``audio=None`` (early finalize from the chunker) finalizes the
+        engine's own rolling buffer — it contains every sample fed so far.
+        """
+        if audio is None:
+            with self._lock:
+                audio = self._rolling.copy()
+                segment_id = segment_id if segment_id is not None else self._segment_id
+            if len(audio) == 0:
+                return
         self._put_final(_CMD_END, (np.ascontiguousarray(audio, dtype=np.float32), segment_id))
 
     def on_speech_stop(self) -> None:
@@ -2102,6 +2118,22 @@ class WhisperEngine:
             probs.append(seg.avg_logprob)
         text = "".join(pieces).strip()
         text = _dedupe_repeated_words(text)
+        _decode_dt = time.monotonic() - t0
+        # Per-decode timing: partials at DEBUG (they fire every 250 ms),
+        # final/speculative at INFO so field logs show where the GPU time
+        # went on the question's critical path.
+        if kind == "partial":
+            log.debug(
+                "whisper: partial decode %.0fms (%.1fs audio, rtf %.2f)",
+                _decode_dt * 1000, len(audio) / self._sr,
+                _decode_dt / max(len(audio) / self._sr, 1e-6),
+            )
+        else:
+            log.info(
+                "whisper: %s decode %.0fms (%.1fs audio, rtf %.2f)",
+                kind, _decode_dt * 1000, len(audio) / self._sr,
+                _decode_dt / max(len(audio) / self._sr, 1e-6),
+            )
         if _looks_like_hallucination(text):
             log.warning("whisper: hallucination guard tripped on %r", text[:80])
             text = ""
