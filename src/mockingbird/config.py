@@ -85,6 +85,14 @@ class LlmConfig(BaseModel):
     failover_api_key: str | None = None
     failover_model: str | None = None
     failover_hedge_s: float = 2.0
+    # Reasoning control (2026-09-27): thinking-capable models (deepseek-flash,
+    # gpt-5-class, various proxies) default to hidden chain-of-thought which
+    # adds SECONDS to the time-to-first-visible-token. For a live interview
+    # assistant that latency is unacceptable — disable reasoning explicitly.
+    # Sent as extra_body={"reasoning_effort": ...} (the OpenAI-compatible
+    # convention). Providers that reject the parameter fall back to a plain
+    # request (single retry, see _hedged_answer_stream).
+    reasoning_effort: str = "none"
 
 
 class TermsConfig(BaseModel):
@@ -254,6 +262,7 @@ ENV_OVERRIDES: dict[str, tuple[str, str]] = {
     "MOCKINGBIRD_LLM_FAILOVER_API_KEY": ("llm", "failover_api_key"),
     "MOCKINGBIRD_LLM_FAILOVER_MODEL": ("llm", "failover_model"),
     "MOCKINGBIRD_LLM_FAILOVER_HEDGE_S": ("llm", "failover_hedge_s"),
+    "MOCKINGBIRD_LLM_REASONING_EFFORT": ("llm", "reasoning_effort"),
 }
 
 # Settings persisted through the Settings dialog and restored on startup.
