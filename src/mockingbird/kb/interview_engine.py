@@ -1178,6 +1178,18 @@ class InterviewEngine:
         """
         if getattr(self._llm, "is_streaming", False):
             return
+        # B2 (2026-09-27): self-sufficient "what is X" questions do not need
+        # the subject rescue — their KB view adds nothing to the answer (the
+        # LLM answers from its own expertise) while the rescue POST occupies
+        # a provider slot ahead of it (field trace: llm_wait=8.8s with a
+        # useless rescue in flight on «что такое Zabix»). Context-dependent
+        # questions («расскажи про тот инструмент») still get the rescue —
+        # it resolves their subject.
+        try:
+            if re.search(r"что такое|что за |расскажи,? что такое", query.lower()):
+                return
+        except Exception:  # noqa: BLE001
+            pass
         threading.Thread(
             target=self._subject_rescue_worker,
             args=(query, display, self._generation),

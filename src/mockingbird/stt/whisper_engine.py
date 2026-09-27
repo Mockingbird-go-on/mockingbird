@@ -35,7 +35,15 @@ _CMD_RESUME = "resume"
 
 # Segment-length cap (seconds of buffered speech): split monologues that
 # never pause so the final decode stays fast and the transcript clean.
-_MAX_OPEN_SEGMENT_S = 45.0
+# 12 s (was 45): on a float32 Pascal GPU the decode runs SLOWER than
+# realtime (RTF ~1.3), so a long chatter segment ahead of a question
+# blocks the single worker for decode_len × 1.3 s — the question's
+# _CMD_END sat in the FIFO queue behind it (head-of-line blocking, trace
+# 2026-09-26: stt=15.4s on a 7.4 s chatter segment). Capping at 12 s
+# bounds any single finalize to ~4-16 s of decode while the interview
+# engine's accumulation window + tail-merge re-joins the pieces into one
+# question downstream.
+_MAX_OPEN_SEGMENT_S = 12.0
 
 # Max extra audio (seconds) the finalize buffer may have grown beyond the
 # speculative decode before the speculative result is considered stale. The
@@ -1177,6 +1185,12 @@ class WhisperEngine:
         self._sr = sample_rate
         self._end_ahead = end_ahead
         self._queue: queue.Queue = queue.Queue()
+        # Number of finalization commands (END / STOP_HINT / FLUSH) that are
+        # queued but not yet served by the worker. _maybe_decode uses this to
+        # give the final decode GPU priority over cosmetic partial decodes:
+        # with RTF > 1 every skipped partial window (~0.85 s GPU) is nearly a
+        # second off the question's time-to-answer (A3, 2026-09-27).
+        self._pending_final_cmds = 0
         self._thread: threading.Thread | None = None
         # True between stop() putting _CMD_STOP and the worker thread actually
         # exiting. start() only waits for the leftover worker when this is set:
@@ -1375,12 +1389,17 @@ class WhisperEngine:
     def feed(self, audio: np.ndarray) -> None:
         self._queue.put((_CMD_AUDIO, np.ascontiguousarray(audio, dtype=np.float32)))
 
+    def _put_final(self, cmd: str, payload) -> None:
+        """Enqueue a finalization command and mark it pending (A3 priority)."""
+        self._pending_final_cmds += 1
+        self._queue.put((cmd, payload))
+
     def end_segment(self, audio: np.ndarray, segment_id: str | None = None) -> None:
-        self._queue.put((_CMD_END, (np.ascontiguousarray(audio, dtype=np.float32), segment_id)))
+        self._put_final(_CMD_END, (np.ascontiguousarray(audio, dtype=np.float32), segment_id))
 
     def on_speech_stop(self) -> None:
         """End-ahead hint: silence has started, start decoding the full segment now."""
-        self._queue.put((_CMD_STOP_HINT, None))
+        self._put_final(_CMD_STOP_HINT, None)
 
     def on_speech_resume(self) -> None:
         """Speech resumed after an end-ahead hint; discard the speculative result."""
@@ -1389,10 +1408,10 @@ class WhisperEngine:
     def flush(self) -> None:
         """Finalize whatever speech is currently buffered.
 
-        Runs on the worker thread *after* all queued audio commands, so no
+        Runs on the worker thread *after all queued audio commands, so no
         audio can be dropped by the race between feeding and flushing.
         """
-        self._queue.put((_CMD_FLUSH, None))
+        self._put_final(_CMD_FLUSH, None)
 
     # -- worker thread --
     def _run(self) -> None:
@@ -1426,6 +1445,8 @@ class WhisperEngine:
                 continue
             if cmd == _CMD_STOP:
                 break
+            if cmd in (_CMD_END, _CMD_STOP_HINT, _CMD_FLUSH):
+                self._pending_final_cmds = max(0, self._pending_final_cmds - 1)
             if cmd == _CMD_AUDIO:
                 with self._lock:
                     self._rolling = np.concatenate([self._rolling, payload])
@@ -1605,6 +1626,12 @@ class WhisperEngine:
 
     def _maybe_decode(self) -> None:
         if self._model is None or self._decoding or self._spec_partial_emitted:
+            return
+        # A3: a finalization command is queued — the final/speculative decode
+        # that serves it needs the GPU NOW. A cosmetic partial here would add
+        # its ~0.85 s decode to the question's critical path (the worker is
+        # single-threaded; the partial runs first and the END waits).
+        if self._pending_final_cmds > 0:
             return
         with self._lock:
             if len(self._rolling) == 0:

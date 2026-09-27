@@ -1,6 +1,7 @@
 """OpenAI-compatible chat client used for term analysis and explanations."""
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import re
@@ -535,6 +536,16 @@ class LlmClient:
         self._answer_pending = 0
         self._streaming_lock = threading.Lock()
         self._vision_cache: dict[tuple[str, str], bool] = {}
+        # B1 (2026-09-27): providers serialize per-key requests, so a
+        # background POST that started BEFORE the answer was reserved still
+        # occupies a provider slot and queues the answer behind it (field
+        # trace: llm_wait=8.8s with context-tracker + subject-rescue in
+        # flight). Background calls now hold an inflight-slot for the whole
+        # HTTP round-trip; a starting answer waits (bounded) for them to
+        # drain. The old is_streaming check only fenced NEW background calls
+        # — it could not stop the ones already racing the answer.
+        self._bg_cond = threading.Condition()
+        self._bg_inflight = 0
 
     def set_profile(self, profile) -> None:
         """Render answer-mode prompts from the given specialization profile."""
@@ -603,6 +614,49 @@ class LlmClient:
                 waited, self.is_streaming,
             )
         return not self.is_streaming
+
+    # -- B1: background inflight slots ----------------------------------------
+
+    _BG_DRAIN_WAIT_S = 1.5
+
+    @contextlib.contextmanager
+    def _bg_slot(self):
+        """Hold a background-call slot for the duration of one HTTP call.
+
+        A background call registers itself here right before its request
+        flies; ``_drain_background`` then lets a starting ANSWER wait
+        (bounded) until the in-flight background POSTs finish, so the
+        provider slot they occupy frees up for the answer instead of the
+        answer queueing behind them server-side.
+        """
+        with self._bg_cond:
+            self._bg_inflight += 1
+        try:
+            yield
+        finally:
+            with self._bg_cond:
+                self._bg_inflight -= 1
+                self._bg_cond.notify_all()
+
+    def _drain_background(self, timeout: float = _BG_DRAIN_WAIT_S) -> float:
+        """Wait (bounded) for in-flight background calls to finish.
+
+        Called by the ANSWER path at stream start. Returns seconds waited.
+        The wait is short and best-effort: the answer is more important than
+        any background advisory data, so past the timeout it proceeds anyway.
+        """
+        t0 = time.monotonic()
+        with self._bg_cond:
+            if self._bg_inflight <= 0:
+                return 0.0
+            self._bg_cond.wait_for(lambda: self._bg_inflight <= 0, timeout=timeout)
+        waited = time.monotonic() - t0
+        if waited >= 0.5:
+            log.info(
+                "llm: answer waited %.1fs for %d background call(s) to drain",
+                waited, self._bg_inflight,
+            )
+        return waited
 
     # Keepalive: httpx defaults to 5 s — interview question gaps are 10-60 s,
     # so every question re-paid TCP+TLS (~150-500 ms TTFB). Hold connections
@@ -955,6 +1009,10 @@ class LlmClient:
                 question=question,
             )
         _t0 = time.monotonic()
+        # B1: give in-flight BACKGROUND calls a bounded chance to drain so
+        # the provider slot frees for the answer (B3 logs their overlap).
+        self._drain_background()
+        _post_t0 = time.monotonic()
         self._enter_stream()
         try:
             for delta in self._hedged_answer_stream(system, user_content, gen):
@@ -965,9 +1023,12 @@ class LlmClient:
                     )
                     return
                 if not _first_yield_logged and delta:
+                    # B3: split the TTFB into our wait vs the provider's.
+                    now = time.monotonic()
                     log.info(
-                        "llm-stream: first token after %.2fs (mode=%s)",
-                        time.monotonic() - _t0, mode,
+                        "llm-stream: first token after %.2fs (mode=%s, "
+                        "post_sent→first_token=%.2fs)",
+                        now - _t0, mode, now - _post_t0,
                     )
                     _first_yield_logged = True
                 yield delta
@@ -1124,22 +1185,23 @@ class LlmClient:
             log.info("llm: predict_questions skipped — answer stream busy")
             return []
         try:
-            response = client.chat.completions.create(
-                model=self._cfg.model,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": PREDICT_PROMPT.format(
-                            question=question,
-                            topic=topic,
-                            context=context or "(пока пусто)",
-                            max_questions=max_q,
-                        ),
-                    }
-                ],
-                temperature=0.4,
-                max_tokens=700,
-            )
+            with self._bg_slot():
+                response = client.chat.completions.create(
+                    model=self._cfg.model,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": PREDICT_PROMPT.format(
+                                question=question,
+                                topic=topic,
+                                context=context or "(пока пусто)",
+                                max_questions=max_q,
+                            ),
+                        }
+                    ],
+                    temperature=0.4,
+                    max_tokens=700,
+                )
             text = (response.choices[0].message.content or "").strip()
             return parse_questions_json(text)
         except Exception as exc:  # noqa: BLE001
@@ -1161,17 +1223,18 @@ class LlmClient:
             log.info("llm: extract_subject skipped — answer stream busy")
             return []
         try:
-            response = client.chat.completions.create(
-                model=self._cfg.model,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": SUBJECT_PROMPT.format(text=text, context=context or "(пусто)"),
-                    }
-                ],
-                temperature=0.0,
-                max_tokens=120,
-            )
+            with self._bg_slot():
+                response = client.chat.completions.create(
+                    model=self._cfg.model,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": SUBJECT_PROMPT.format(text=text, context=context or "(пусто)"),
+                        }
+                    ],
+                    temperature=0.0,
+                    max_tokens=120,
+                )
             answer = (response.choices[0].message.content or "").strip()
             return parse_subjects_json(answer)
         except Exception as exc:  # noqa: BLE001
@@ -1195,24 +1258,25 @@ class LlmClient:
             log.info("llm: correct_transcript skipped — answer stream busy")
             return None
         try:
-            response = client.chat.completions.create(
-                model=self._cfg.model,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": (
-                            "Исправь ТОЛЬКО написание технических терминов в "
-                            "расшифровке речи (STT). Не меняй слова, порядок и "
-                            "формулировки — только орфографию терминов "
-                            "(например «хелмчарт» → «Helm chart», «кубернетес» → "
-                            "«Kubernetes»). Верни исправленный текст целиком, "
-                            "без комментариев.\n\n" + transcript
-                        ),
-                    }
-                ],
-                temperature=0.0,
-                max_tokens=2048,
-            )
+            with self._bg_slot():
+                response = client.chat.completions.create(
+                    model=self._cfg.model,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": (
+                                "Исправь ТОЛЬКО написание технических терминов в "
+                                "расшифровке речи (STT). Не меняй слова, порядок и "
+                                "формулировки — только орфографию терминов "
+                                "(например «хелмчарт» → «Helm chart», «кубернетес» → "
+                                "«Kubernetes»). Верни исправленный текст целиком, "
+                                "без комментариев.\n\n" + transcript
+                            ),
+                        }
+                    ],
+                    temperature=0.0,
+                    max_tokens=2048,
+                )
             fixed = (response.choices[0].message.content or "").strip()
             # Guard: the answer must be roughly the same length as the input —
             # a rephrased/summarized response is a protocol violation, keep
@@ -1243,21 +1307,22 @@ class LlmClient:
             log.info("llm: analyze_context skipped — answer stream busy")
             return {}
         try:
-            response = client.chat.completions.create(
-                model=self._cfg.model,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": CONTEXT_PROMPT.format(
-                            previous_topic=previous_topic or "(нет)",
-                            previous_kind=previous_kind or "none",
-                            transcript=transcript,
-                        ),
-                    }
-                ],
-                temperature=0.0,
-                max_tokens=500,
-            )
+            with self._bg_slot():
+                response = client.chat.completions.create(
+                    model=self._cfg.model,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": CONTEXT_PROMPT.format(
+                                previous_topic=previous_topic or "(нет)",
+                                previous_kind=previous_kind or "none",
+                                transcript=transcript,
+                            ),
+                        }
+                    ],
+                    temperature=0.0,
+                    max_tokens=500,
+                )
             text = (response.choices[0].message.content or "").strip()
             return parse_context_state(text)
         except Exception as exc:  # noqa: BLE001
@@ -1284,20 +1349,21 @@ class LlmClient:
             log.info("llm: analyze_dialog_context skipped — answer stream busy")
             return {}
         try:
-            response = client.chat.completions.create(
-                model=self._cfg.model,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": DIALOG_CONTEXT_PROMPT.format(
-                            history=history or "(пусто)",
-                            utterance=utterance,
-                        ),
-                    }
-                ],
-                temperature=0.0,
-                max_tokens=200,
-            )
+            with self._bg_slot():
+                response = client.chat.completions.create(
+                    model=self._cfg.model,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": DIALOG_CONTEXT_PROMPT.format(
+                                history=history or "(пусто)",
+                                utterance=utterance,
+                            ),
+                        }
+                    ],
+                    temperature=0.0,
+                    max_tokens=200,
+                )
             text = (response.choices[0].message.content or "").strip()
             return parse_dialog_context(text)
         except Exception as exc:  # noqa: BLE001
