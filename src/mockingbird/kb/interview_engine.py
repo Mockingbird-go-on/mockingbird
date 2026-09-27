@@ -109,6 +109,41 @@ def _is_narrative_sentence(text: str) -> bool:
     return any(marker in t for marker in _NARRATIVE_MARKERS)
 
 
+# Filler/counting utterances («раз, два,», «ну», «так», «э-э») must NOT
+# start a speculative answer stream: the stream occupies the question queue
+# and the REAL question that follows waits behind it (field case
+# 2026-09-27 23:22: llm_wait=6.25s — «Раз, два,» streamed for 5.8 s while
+# «расскажи что такое Zabbix» sat in the queue). The gate is conservative:
+# it only blocks utterances that are SHORT (<4 words) AND carry no question
+# marker AND consist solely of counting words / interjections. Everything
+# else keeps the early-start path.
+_FILLER_WORDS = frozenset(
+    (
+        "раз", "два", "три", "четыре", "пять", "шесть", "семь", "восемь",
+        "девять", "десять", "ну", "так", "вот", "э", "ээ", "мм", "ага",
+        "ладно", "ок", "окей", "значит", "короче", "типа",
+    )
+)
+
+
+def _is_filler_utterance(text: str) -> bool:
+    """True for short counting/interjection-only utterances (spec-gate)."""
+    t = (text or "").strip().lower()
+    if not t:
+        return True
+    words = [w.strip(".,!?…;:«»\"'") for w in t.split()]
+    words = [w for w in words if w]
+    if not words or len(words) >= 4:
+        return False
+    # All-filler short utterance: even punctuated («раз, два?» = «ну?»),
+    # it is a counting/filler start, never a real interview question.
+    if all(w in _FILLER_WORDS for w in words):
+        return True
+    # Non-filler words: not a filler unless it fails the question shape
+    # (the generic path handles real questions — this gate never blocks them).
+    return False
+
+
 # A segment STARTING with a connective («и DevOps.», «или деплой?») is the
 # tail of a question whose beginning the VAD clipped or split off — it must
 # be glued to the last processed utterance and re-asked as one question.
@@ -647,8 +682,13 @@ class InterviewEngine:
                 # on the raw utterance NOW — the Tier-3 rescue classifies in
                 # parallel; if it says "not a question", the stream is
                 # cancelled (see _rescue_question_worker).
-                if self._cfg.speculative_answers and not getattr(
-                    self._llm, "is_streaming", False
+                # Filler gate (2026-09-27): counting/interjection utterances
+                # («раз, два,») never start a stream — they would squat the
+                # question queue while the real question waits behind.
+                if (
+                    self._cfg.speculative_answers
+                    and not getattr(self._llm, "is_streaming", False)
+                    and not _is_filler_utterance(text)
                 ):
                     self._start_speculative_answer(text, msg)
                 gen = self._generation

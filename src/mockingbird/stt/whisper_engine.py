@@ -28,6 +28,12 @@ log = logging.getLogger(__name__)
 
 _CMD_AUDIO = "audio"
 _CMD_END = "end"
+
+# Idle re-warm: how long the worker may idle (no audio, no pending work)
+# before a throwaway decode keeps the CUDA context hot. Idle-clock drop +
+# cuDNN autotune re-pay was measured at 9.9 s for 0.6 s of audio after a
+# 7-minute pause (GTX 1070, 2026-09-27).
+_IDLE_REWARM_S = 180.0
 _CMD_FLUSH = "flush"
 _CMD_STOP = "stop"
 _CMD_STOP_HINT = "stop_hint"
@@ -1241,6 +1247,11 @@ class WhisperEngine:
         # with RTF > 1 every skipped partial window (~0.85 s GPU) is nearly a
         # second off the question's time-to-answer (A3, 2026-09-27).
         self._pending_final_cmds = 0
+        # Idle re-warm switch: enabled by the app while a capture session is
+        # active (see enable_idle_rewarm). Off outside sessions — no point
+        # burning GPU cycles while nobody is listening.
+        self._idle_rewarm_enabled = False
+        self._idle_rewarm_done = False
         self._thread: threading.Thread | None = None
         # True between stop() putting _CMD_STOP and the worker thread actually
         # exiting. start() only waits for the leftover worker when this is set:
@@ -1497,7 +1508,17 @@ class WhisperEngine:
             # — the audio callback likely stalled (pyaudiowpatch loopback bug)
             # or VAD's LSTM state is stuck at prob=1.0 — auto-finalize using
             # the speculative result so the answer is not lost.
-            timeout = 5.0 if self._speculative is not None else None
+            # Otherwise wait up to _IDLE_REWARM_S: a long silence in an
+            # interview lets the GPU drop to idle clocks and the first real
+            # decode then re-pays autotune/spin-up (field 2026-09-27 23:22:
+            # 9.9 s for 0.6 s of audio after a 7-minute pause). A throwaway
+            # decode on synthetic audio keeps the context hot.
+            if self._speculative is not None:
+                timeout = 5.0
+            elif self._idle_rewarm_enabled and len(self._rolling) == 0:
+                timeout = _IDLE_REWARM_S
+            else:
+                timeout = None
             try:
                 cmd, payload = self._queue.get(timeout=timeout)
             except queue.Empty:
@@ -1508,6 +1529,13 @@ class WhisperEngine:
                         segment_id = self._segment_id
                     if len(audio) > 0:
                         self._finalize(audio, segment_id)
+                elif (
+                    self._idle_rewarm_enabled
+                    and self._model is not None
+                    and not self._decoding
+                    and self._pending_final_cmds == 0
+                ):
+                    self._idle_rewarm()
                 continue
             if cmd == _CMD_STOP:
                 break
@@ -1727,6 +1755,39 @@ class WhisperEngine:
                     self.on_partial(msg)
         except Exception as exc:  # noqa: BLE001
             log.warning("partial decode failed: %s", exc)
+        finally:
+            self._decoding = False
+            self._refire_pending_stop_hint()
+
+    def enable_idle_rewarm(self, enabled: bool) -> None:
+        """Toggle the idle CUDA re-warm (called by the app per session)."""
+        if self._idle_rewarm_enabled == enabled:
+            return
+        self._idle_rewarm_enabled = enabled
+        if enabled:
+            # Nudge the worker out of its indefinite queue.get() wait so the
+            # re-warm timeout takes effect immediately.
+            self._queue.put((_CMD_AUDIO, np.zeros(0, dtype=np.float32)))
+        else:
+            self._idle_rewarm_done = False
+
+    def _idle_rewarm(self) -> None:
+        """One throwaway decode to keep the CUDA context hot after a pause.
+
+        Runs on the worker thread (safe: _decoding is False, the rolling
+        buffer is empty, no finals pending). Result is discarded; the point
+        is the GPU work. Re-arms itself via the next queue timeout.
+        """
+        if self._model is None:
+            return
+        audio = np.zeros(int(self._sr), dtype=np.float32)
+        audio[::50] = 0.01
+        self._decoding = True
+        try:
+            self._transcribe(audio, kind="decode", beam_size=self._cfg.beam_size)
+            log.info("whisper: idle re-warm decode (kept CUDA context hot)")
+        except Exception as exc:  # noqa: BLE001
+            log.debug("idle re-warm failed (non-fatal): %s", exc)
         finally:
             self._decoding = False
             self._refire_pending_stop_hint()

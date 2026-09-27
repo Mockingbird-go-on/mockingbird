@@ -552,6 +552,10 @@ class App:
             self.signals.error.emit(f"capture: {exc}")
             return False
         log.info("audio capture started")
+        # Keep the CUDA context hot during session pauses (idle re-warm).
+        enable = getattr(self.engine, "enable_idle_rewarm", None)
+        if enable is not None:
+            enable(True)
         return True
 
     # -- session lifecycle --
@@ -792,6 +796,9 @@ class App:
             # stale non-None id and silently swallow the click.
             sid = self.session_id
             self.session_id = None
+            disable = getattr(self.engine, "enable_idle_rewarm", None)
+            if disable is not None:
+                disable(False)
             self.signals.status.emit("idle", "")
             log.info("session stopped: %s", sid)
 
