@@ -768,6 +768,46 @@ def _github_model_url(repo_id: str) -> str:
     )
 
 
+def _replace_dir_robust(fresh: Path, target: Path, attempts: int = 3) -> bool:
+    """Replace ``target`` with ``fresh`` on Windows, where locks are sticky.
+
+    AV scanners (and occasionally Explorer/backup agents) hold brief handles
+    on freshly-written model files: a single rmtree then fails, and with
+    ignore_errors=True the failure was INVISIBLE — the fresh pack got
+    stranded and a full 1.5 GB download was wasted. Strategy:
+      1. retry rmtree a few times (AV usually lets go in <1 s);
+      2. clear the read-only bit on failure and retry;
+      3. rename the stubborn dir aside (fresh install proceeds; the renamed
+         carcass is swept by a later run or by the user).
+    Returns True when ``target`` is gone (or was never there).
+    """
+    if not target.exists():
+        return True
+    for attempt in range(attempts):
+        shutil.rmtree(target, ignore_errors=True)
+        if not target.exists():
+            return True
+        # Clear read-only attributes (Windows HF caches mark blobs read-only).
+        try:
+            for p in target.rglob("*"):
+                try:
+                    p.chmod(0o777)
+                except OSError:
+                    pass
+        except OSError:
+            pass
+        time.sleep(0.8 * (attempt + 1))
+    if target.exists():
+        aside = target.with_name(target.name + f".stale-{int(time.time())}")
+        try:
+            target.rename(aside)
+            log.warning("whisper: locked stale dir renamed aside: %s", aside)
+            return True
+        except OSError:
+            return False
+    return True
+
+
 def _download_from_github(
     cfg: WhisperConfig, repo_id: str, download_root: str,
     progress_cb=None, cancel_event=None,
@@ -866,11 +906,14 @@ def _download_from_github(
                 # locked files behind on Windows (AV scan), and the old
                 # "skip if exists" logic then dropped refs/main in cache/ →
                 # "unexpected layout" after a full 1.5 GB download.
-                shutil.rmtree(target, ignore_errors=True)
-                if target.exists():
-                    log.error(
-                        "whisper: cannot replace stale model dir %s "
-                        "(locked?) — try deleting it manually", target,
+                if not _replace_dir_robust(entry, target):
+                    # Last resort: the fresh pack dir stays under cache/ —
+                    # resolve_model_path's caller only needs a VALID SNAPSHOT
+                    # PATH, it does not care which parent holds it. Leave it
+                    # in place; the layout check below also accepts it.
+                    log.warning(
+                        "whisper: stale model dir %s is locked — keeping the "
+                        "fresh pack under %s", target, entry,
                     )
                     continue
             try:
@@ -883,30 +926,37 @@ def _download_from_github(
             pass
 
     slug = f"models--{repo_id.replace('/', '--')}"
-    refs = root / slug / "refs" / "main"
-    snaps = root / slug / "snapshots"
-    if not (refs.is_file() and snaps.is_dir()):
-        # Diagnostics: what actually landed under the root (the silent
-        # "skip if exists" move bug left refs/ stranded under cache/).
-        try:
-            listing = [p.name for p in root.iterdir()]
-            cache_listing = (
-                [p.name for p in (root / "cache").iterdir()] if (root / "cache").is_dir() else None
+    for base in (root, root / "cache"):
+        refs = base / slug / "refs" / "main"
+        snaps = base / slug / "snapshots"
+        if not (refs.is_file() and snaps.is_dir()):
+            continue
+        commit = refs.read_text(encoding="utf-8").strip()
+        snapshot = snaps / commit
+        if not snapshot.is_dir():
+            log.error("whisper: pack refs point to missing snapshot %s", snapshot)
+            return None
+        if base != root:
+            log.warning(
+                "whisper: model resolved from pack dir under cache/ (stale "
+                "root dir is locked; it will be replaced on a later run)"
             )
-        except OSError:
-            listing = cache_listing = None
-        log.error(
-            "whisper: GitHub model pack has unexpected layout under %s "
-            "(root=%s, cache=%s)", root, listing, cache_listing,
+        log.info("whisper: model installed from GitHub release: %s", snapshot)
+        return str(snapshot)
+    # Diagnostics: what actually landed under the root (the silent
+    # "skip if exists" move bug left refs/ stranded under cache/).
+    try:
+        listing = [p.name for p in root.iterdir()]
+        cache_listing = (
+            [p.name for p in (root / "cache").iterdir()] if (root / "cache").is_dir() else None
         )
-        return None
-    commit = refs.read_text(encoding="utf-8").strip()
-    snapshot = snaps / commit
-    if not snapshot.is_dir():
-        log.error("whisper: pack refs point to missing snapshot %s", snapshot)
-        return None
-    log.info("whisper: model installed from GitHub release: %s", snapshot)
-    return str(snapshot)
+    except OSError:
+        listing = cache_listing = None
+    log.error(
+        "whisper: GitHub model pack has unexpected layout under %s "
+        "(root=%s, cache=%s)", root, listing, cache_listing,
+    )
+    return None
 
 
 def resolve_model_path(cfg: WhisperConfig, progress_cb=None, cancel_event=None) -> str:
