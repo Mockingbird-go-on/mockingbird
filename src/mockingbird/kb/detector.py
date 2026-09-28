@@ -58,6 +58,13 @@ _QUESTION_CONTAINS = (
     "ли ты", "ли вы", "ли у", "ли на", "ли с", "ли есть",
     "ли бы", "ли уже", "ли вообще", "ли когда", "ли где", "ли как",
     "ли опыт", "ли работа", "ли дело", "ли практика",
+    # Mid-sentence personal interrogatives glued to a topic shift
+    # («давай поговорим про terraform что ты там делал»). STARTS only
+    # matches at position 0, so the shifted compound needs CONTAINS forms.
+    "что там делал", "что там ты", "что ты там", "чем там занимался",
+    "что использовали", "что использовал", "какие плейбуки",
+    "какие инструменты", "какие подходы", "какой стек", "какой инструментарий",
+    "как был устроен", "как была устроена", "как было устроено",
     # Interviewer performatives: «интересует», «хочу услышать про»,
     # «вопрос такой», «уточни», «поясни», «подробнее про», «раскрой».
     "интересует", "хочу услышать", "хотелось бы узнать", "хочу узнать",
@@ -146,6 +153,29 @@ _DEPENDENT_TAIL_RE = re.compile(
 )
 
 _SENT_SPLIT = re.compile(r"[.!?…\n]+")
+
+# Personal interrogative mid-sentence: «…что ты там делал», «…как вы это
+# деплоили», «…чем ты занимался». These appear AFTER a topic-shift opener
+# («давай поговорим про terraform что ты там делал») where STARTS markers
+# can never match. Anchored to the pronoun (ты/вы) so plain narratives
+# («команда делала релизы») never fire. A leading verb in 3rd person past
+# («он показал что ты не прав») is the main false-positive shape — guarded
+# by requiring an interrogative word IMMEDIATELY before the pronoun
+# (что/как/чем/где/когда/зачем/кого/кому/каким).
+_PERSONAL_INTERROGATIVE_RE = re.compile(
+    r"\b(?:что|как|чем|где|когда|зачем|кого|кому|каким|какой)\s+"
+    r"(?:ты|вы)\b"
+)
+
+# Statement guards: phrases that contain a personal interrogative shape but
+# are reported speech / assertions («он показал что ты не прав»,
+# «оказалось что ты был прав»). These verbs BEFORE «что ты/вы» mark an
+# embedded clause, not a question to the candidate.
+_EMBEDDED_CLAUSE_VERBS_RE = re.compile(
+    r"\b(?:показал|сказал|оказалось|получилось|выходит|видно|казалось|"
+    r"подумал|решил|написал|заявил|объяснил|добавил|отметил)\s+"
+    r"(?:что|как)\s+(?:ты|вы)\b"
+)
 
 # ASR-tolerant forms of «расскажи» / «расскажите»: faster-whisper
 # sometimes clip the first syllable under background noise, producing «кажи»,
@@ -308,6 +338,10 @@ def is_question(text: str) -> bool:
     if any(_starts_with_marker(t, marker) for marker in _QUESTION_STARTS):
         return True
     if any(marker in t for marker in _QUESTION_CONTAINS):
+        return True
+    # Personal interrogative mid-sentence («…что ты там делал») — but NOT
+    # reported speech («он показал что ты не прав»).
+    if _PERSONAL_INTERROGATIVE_RE.search(t) and not _EMBEDDED_CLAUSE_VERBS_RE.search(t):
         return True
     # Regex-based forms: modal «ли», modal + infinitive task prompts,
     # hypotheticals, imperative tasks, desire-to-know, clipped verbs.

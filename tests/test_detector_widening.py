@@ -110,3 +110,31 @@ def test_implicit_question_requires_kb_match():
     eng = _engine()
     assert not eng._is_implicit_question("про погоду")
     assert not eng._is_implicit_question("насчёт зарплаты")
+
+
+# -- shift + personal interrogative compounds (field case 2026-09-28 13:03) ------
+
+def test_shift_compound_personal_question():
+    """«Давай поговорим про Terraform, что ты там делал» — a topic shift
+    with a nested personal question must take the QUESTION path (the
+    shift branch only handles shift-only statements)."""
+    assert detector.is_question("давай поговорим про terraform что ты там делал")
+    assert detector.is_question("давай обсудим kubernetes как ты его деплоил")
+    assert detector.is_question("чем ты занимался на прошлой работе")
+    assert detector.is_question("как вы решали инциденты в проде")
+    assert detector.is_question("расскажи что вы использовали для бэкапов")
+
+
+def test_shift_compound_passive_question():
+    assert detector.is_question("перейдём к ci/cd как был устроен пайплайн")
+    assert detector.is_question("теперь про мониторинг что использовали")
+
+
+def test_personal_interrogative_no_reported_speech_fp():
+    assert not detector.is_question("он показал что ты не прав был в оценке")
+    assert not detector.is_question("оказалось что ты был прав")
+
+
+def test_personal_interrogative_no_narrative_fp():
+    assert not detector.is_question("команда делала релизы каждую неделю")
+    assert not detector.is_question("я делал ревью кода каждое утро")
