@@ -92,7 +92,7 @@ def _has_hanging_tail(text: str) -> bool:
 # («Prometheus.», «про Zabbix») — an interviewer naming a topic expects an
 # answer. Only short finals qualify: a long markerless utterance is either
 # narration (handled by the context tracker) or the Tier 3 rescue.
-_IMPLICIT_QUESTION_MAX_WORDS = 7
+_IMPLICIT_QUESTION_MAX_WORDS = 10
 
 # Narrative markers: a short sentence about past experience («мы использовали
 # docker», «у нас был kubernetes») mentions a topic but is NOT a request —
@@ -107,6 +107,18 @@ def _is_narrative_sentence(text: str) -> bool:
     """True when a markerless utterance is a statement, not a term request."""
     t = " " + (text or "").strip().lower() + " "
     return any(marker in t for marker in _NARRATIVE_MARKERS)
+
+
+# Topic-request openers: a bare «про Zabbix» / «насчёт мониторинга» /
+# «по поводу деплоя» (no question marker anywhere) is an interviewer asking
+# to talk about the topic. Used inside _is_implicit_question only — the KB
+# strong-topic match still gates the promotion.
+_TOPIC_REQUEST_OPENERS = ("про ", "насчёт ", "насчет ", "по поводу ")
+
+
+def _is_topic_request(text: str) -> bool:
+    t = " " + (text or "").strip().lower() + " "
+    return any(t.startswith(" " + op) or (" " + op) in t for op in _TOPIC_REQUEST_OPENERS)
 
 
 # Filler/counting utterances («раз, два,», «ну», «так», «э-э») must NOT
@@ -503,6 +515,11 @@ class InterviewEngine:
             return False
         if _is_narrative_sentence(text):
             return False
+        # «про X» / «насчёт X» / «по поводу X» without any question marker:
+        # in an interview this is a topic request, not a statement. The KB
+        # match below still gates it, so «про погоду» stays a non-question.
+        if _is_topic_request(text):
+            return self._strong_topic(text) is not None
         return self._strong_topic(text) is not None
 
     @staticmethod
