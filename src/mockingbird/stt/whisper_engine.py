@@ -620,58 +620,78 @@ def _looks_like_hallucination(text: str) -> bool:
     return hits >= 1 and words <= 8
 
 
-def _has_trailing_latin_nonsense(text: str, matcher=None) -> bool:
-    """Truncated speech glued to an invented English word («…что твой Mindfuls»).
+def _strip_trailing_latin_nonsense(text: str, matcher=None) -> str:
+    """Drop the invented trailing Latin token, keep the rest of the final.
 
-    Pattern: the sentence does NOT end with terminal punctuation, and its last
-    token is a Latin word that is not a known glossary/KB term and is not a
-    prefix of one. On a cut-off quiet tail whisper frequently invents exactly
-    one such token instead of the real (quiet) speech.
+    Truncated speech glued to an invented English word («…что твой Mindfuls»):
+    the sentence does NOT end with terminal punctuation and its last token is
+    a Latin word that is not a known glossary/KB term and not a close miss of
+    one. On a cut-off quiet tail whisper frequently invents exactly one such
+    token instead of the real (quiet) speech.
+
+    Field case 2026-09-28 14:13: a clipped «Pod» came through as «Poda» —
+    the old guard suppressed the WHOLE final ('…расскажи, что такое Poda'),
+    killing a perfectly valid Kubernetes question. Now only the trailing
+    token is dropped; the question survives (the LLM handles a clipped
+    tail from context).
     """
     import re as _re
 
     t = (text or "").strip()
     if not t or t[-1] in ".?!":
-        return False
+        return t
     words = _re.findall(r"[A-Za-z][A-Za-z0-9._/-]+", t)
     if not words:
-        return False
+        return t
     last = words[-1]
     if len(last) < 4 or last.isdigit():
+        return t
+    if not _is_unknown_latin_token(last, matcher):
+        return t
+    # Cut the last occurrence of the bogus token (word-boundary safe).
+    cut = _re.compile(r"\s*" + _re.escape(last) + r"\s*$")
+    return cut.sub("", t).rstrip(" ,;-—").strip()
+
+
+def _is_unknown_latin_token(token: str, matcher=None) -> bool:
+    """True when a Latin token is neither a known term nor a close miss."""
+    t = (token or "").strip()
+    if len(t) < 4 or t.isdigit():
         return False
     # Without a glossary matcher every Latin token looks "unknown" — the
-    # guard would suppress legitimate finals («в чем связь между Agile и»).
+    # guard would clip legitimate finals («в чем связь между Agile и»).
     # Only run the known-term check when the matcher is actually wired.
     if matcher is None:
         return False
     known = getattr(matcher, "_surfaces", None) or []
-    folded = last.lower()
+    folded = t.lower()
     for surf in known:
         if folded == surf or surf.startswith(folded) or folded.startswith(surf):
             return False
-    # Fuzzy pass: a *close* miss of a known term («Zabix» → «Zabbix») is a
-    # legitimate speech artefact, not an invented token. resolve() is
-    # Cyrillic-only by design; resolve_latin() covers whisper's Latin
-    # misspellings with a strict edit-distance budget.
+    # Fuzzy pass: a *close* miss of a known term («Zabix» → «Zabbix»,
+    # «Poda» → «Pod») is a legitimate speech artefact, not an invented
+    # token. Budget is deliberately generous: distance 2 for ≥4-char
+    # tokens — whisper's clipped-tail typos are 1-2 edits from the real
+    # term, while true hallucinations («Mindfuls») are far from anything.
     resolve = getattr(matcher, "resolve_latin", None)
     if callable(resolve):
         try:
-            if resolve(last):
+            if resolve(t):
                 return False
         except Exception:
             pass
-    else:
-        try:
-            from mockingbird.terms.phonetics import levenshtein_bounded
+    try:
+        from mockingbird.terms.phonetics import levenshtein_bounded
 
-            budget = max(1, len(surf_for_budget := folded) // 4)
-            for surf in known:
-                if abs(len(surf) - len(folded)) <= budget and levenshtein_bounded(
-                    folded, surf, budget
-                ) <= budget:
-                    return False
-        except Exception:
-            pass
+        for surf in known:
+            surf_l = surf.lower()
+            budget = 2 if len(folded) >= 4 else 1
+            if abs(len(surf_l) - len(folded)) <= budget and levenshtein_bounded(
+                folded, surf_l, budget
+            ) <= budget:
+                return False
+    except Exception:
+        pass
     return True
 
 
@@ -2011,12 +2031,13 @@ class WhisperEngine:
                         "whisper: final decode lost content (final/partial ratio %.2f) — using last partial",
                         ratio,
                     )
-                if _has_trailing_latin_nonsense(text, self._text_matcher):
+                clipped = _strip_trailing_latin_nonsense(text, self._text_matcher)
+                if clipped != text:
                     log.warning(
-                        "stt: low-confidence final suppressed (trailing latin nonsense): %r",
-                        text[:80],
+                        "stt: trailing hallucinated token clipped: %r -> %r",
+                        text[-40:], clipped[-40:],
                     )
-                    text = ""
+                    text = clipped
                 if text:
                     log.info(
                         "whisper: final reused speculative (no re-decode): %r", text
@@ -2055,12 +2076,13 @@ class WhisperEngine:
                 # covering for a quiet cut-off tail. Suppress the final so the
                 # garbage question never reaches the LLM; the interviewer will
                 # repeat/finish the question anyway.
-                if _has_trailing_latin_nonsense(text, self._text_matcher):
+                clipped = _strip_trailing_latin_nonsense(text, self._text_matcher)
+                if clipped != text:
                     log.warning(
-                        "stt: low-confidence final suppressed (trailing latin nonsense): %r",
-                        text[:80],
+                        "stt: trailing hallucinated token clipped: %r -> %r",
+                        text[-40:], clipped[-40:],
                     )
-                    text = ""
+                    text = clipped
                 if text:
                     log.info("final transcript: %r", text)
                 msg = protocol.FinalTranscript(
