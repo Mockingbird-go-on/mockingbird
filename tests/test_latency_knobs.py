@@ -1,4 +1,4 @@
-"""Speculative-answer defaults, adaptive stability, prompt trims (2026-09-27)."""
+"""Adaptive partial stability, prompt trims (2026-09-27)."""
 from __future__ import annotations
 
 from unittest.mock import MagicMock
@@ -20,19 +20,6 @@ class _EngineStub:
 
 def _cfg():
     return load_config().interview
-
-
-def test_speculative_answers_default_on():
-    assert _cfg().speculative_answers is True
-
-
-def test_default_yaml_carries_speculative_answers():
-    import yaml
-    from importlib import resources
-
-    text = resources.files("mockingbird.assets").joinpath("default.yaml").read_text("utf-8")
-    data = yaml.safe_load(text)
-    assert data["interview"]["speculative_answers"] is True
 
 
 def test_stability_clear_question_one_round():

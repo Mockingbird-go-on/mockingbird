@@ -118,18 +118,12 @@ _HELP = {
     "llm.model": "Имя модели для LLM-запросов (например, gpt-4o-mini или локальная модель).",
     "terms.glossary_path": "Путь к файлу глоссария — базе знаний с терминами и определениями.",
     "interview.enabled": "Включить ассистента интервью — ответы из базы знаний на вопросы пользователя.",
-    "interview.subject_llm": "Определять тему нечёткого вопроса через LLM, когда она не находится напрямую.",
     "interview.answer_llm": "Если точного ответа нет в базе знаний — сформировать его через LLM.",
     "interview.context_tracker_llm": "Отслеживать контекст беседы и выводить актуальную тему в живом режиме.",
     "interview.llm_primary": "Использовать LLM как основной источник ответа на точный вопрос "
     "(база знаний — запасной вариант).",
     "interview.answer_stream": "Показывать ответ LLM с эффектом печати по мере генерации.",
     "interview.answer_cache": "Кэшировать повторные ответы, чтобы мгновенно показывать их при повторе вопроса.",
-    "interview.speculative_answers": (
-        "Отвечать сразу на неясную реплику, не дожидаясь проверки «вопрос ли это». "
-        "Быстрее на развёрнутых вопросах без явных вопросительных слов; тратит "
-        "токены, если реплика окажется не вопросом (ответ скрывается)."
-    ),
     "terms.glossary_path": "Путь к YAML-глоссарию терминов для STT-коррекции.",
 }
 
@@ -249,8 +243,6 @@ class SettingsDialog(QDialog):
         self._glossary = QLineEdit(config.terms.glossary_path or "")
         self._interview_enabled = ToggleSwitch("Ассистент интервью (база знаний)")
         self._interview_enabled.setChecked(config.interview.enabled)
-        self._interview_subject_llm = ToggleSwitch("LLM: определять тему нечёткого вопроса")
-        self._interview_subject_llm.setChecked(config.interview.subject_llm)
         self._interview_answer_llm = ToggleSwitch("LLM: отвечать, если в базе нет ответа")
         self._interview_answer_llm.setChecked(config.interview.answer_llm)
         self._interview_context_llm = ToggleSwitch("LLM: отслеживать контекст беседы (живая тема)")
@@ -261,10 +253,6 @@ class SettingsDialog(QDialog):
         self._interview_answer_stream.setChecked(config.interview.answer_stream)
         self._interview_answer_cache = ToggleSwitch("LLM: кэшировать повторные ответы")
         self._interview_answer_cache.setChecked(config.interview.answer_cache)
-        self._interview_speculative = ToggleSwitch(
-            "LLM: спекулятивные ответы (эксперимент: ответ до подтверждения вопроса)"
-        )
-        self._interview_speculative.setChecked(config.interview.speculative_answers)
 
         form = QFormLayout()
         form.addRow(self._section("Аудио"))
@@ -307,13 +295,11 @@ class SettingsDialog(QDialog):
 
         form.addRow(self._section("Ассистент интервью"))
         form.addRow("", self._row(self._interview_enabled, _HELP["interview.enabled"]))
-        form.addRow("", self._row(self._interview_subject_llm, _HELP["interview.subject_llm"]))
         form.addRow("", self._row(self._interview_answer_llm, _HELP["interview.answer_llm"]))
         form.addRow("", self._row(self._interview_context_llm, _HELP["interview.context_tracker_llm"]))
         form.addRow("", self._row(self._interview_llm_primary, _HELP["interview.llm_primary"]))
         form.addRow("", self._row(self._interview_answer_stream, _HELP["interview.answer_stream"]))
         form.addRow("", self._row(self._interview_answer_cache, _HELP["interview.answer_cache"]))
-        form.addRow("", self._row(self._interview_speculative, _HELP["interview.speculative_answers"]))
 
         # Specialization profile (persona prompts + glossary hint)
         from mockingbird.profiles.loader import load_profiles
@@ -379,13 +365,11 @@ class SettingsDialog(QDialog):
         # --- Tab 4: Интервью ---
         interview_form = QFormLayout()
         interview_form.addRow("", self._row(self._interview_enabled, _HELP["interview.enabled"]))
-        interview_form.addRow("", self._row(self._interview_subject_llm, _HELP["interview.subject_llm"]))
         interview_form.addRow("", self._row(self._interview_answer_llm, _HELP["interview.answer_llm"]))
         interview_form.addRow("", self._row(self._interview_context_llm, _HELP["interview.context_tracker_llm"]))
         interview_form.addRow("", self._row(self._interview_llm_primary, _HELP["interview.llm_primary"]))
         interview_form.addRow("", self._row(self._interview_answer_stream, _HELP["interview.answer_stream"]))
         interview_form.addRow("", self._row(self._interview_answer_cache, _HELP["interview.answer_cache"]))
-        interview_form.addRow("", self._row(self._interview_speculative, _HELP["interview.speculative_answers"]))
         tabs.addTab(self._wrap_scroll(interview_form), "Интервью")
 
         # --- Tab 5: Внешний вид ---
@@ -855,13 +839,11 @@ class SettingsDialog(QDialog):
         glossary = self._glossary.text().strip()
         self.config.terms.glossary_path = glossary or None
         self.config.interview.enabled = self._interview_enabled.isChecked()
-        self.config.interview.subject_llm = self._interview_subject_llm.isChecked()
         self.config.interview.answer_llm = self._interview_answer_llm.isChecked()
         self.config.interview.context_tracker_llm = self._interview_context_llm.isChecked()
         self.config.interview.llm_primary = self._interview_llm_primary.isChecked()
         self.config.interview.answer_stream = self._interview_answer_stream.isChecked()
         self.config.interview.answer_cache = self._interview_answer_cache.isChecked()
-        self.config.interview.speculative_answers = self._interview_speculative.isChecked()
         pid = self._profile_combo.currentData()
         if pid:
             self.config.profile_id = pid

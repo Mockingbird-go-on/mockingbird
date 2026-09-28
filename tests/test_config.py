@@ -11,7 +11,7 @@ def test_defaults():
     assert c.stt.end_ahead is True
     assert c.vad.min_silence_ms == 400
     assert c.vad.stop_hint_delay_ms == 180
-    assert c.terms.llm_primary is True
+    assert c.terms.llm_primary is False
     assert c.terms.context_segments == 8
     assert c.whisper.model_size == "large-v3-turbo"
     assert c.whisper.beam_size == 1
@@ -23,10 +23,9 @@ def test_defaults():
     assert c.storage.log_dir.endswith("logs")
     assert c.interview.enabled is True
     assert c.interview.min_match_score == 0.25
-    assert c.interview.subject_llm is True
     assert c.interview.answer_llm is True
     assert c.interview.max_next == 5
-    assert c.interview.context_tracker_llm is True
+    assert c.interview.context_tracker_llm is False
     assert c.interview.context_refresh_s == 5.0
     assert c.interview.context_window_segments == 10
     assert c.interview.llm_primary is True
@@ -43,7 +42,6 @@ def test_defaults():
 def test_bool_env_overrides(monkeypatch):
     monkeypatch.setenv("MOCKINGBIRD_TOPICS_ENABLED", "false")
     monkeypatch.setenv("MOCKINGBIRD_INTERVIEW_ENABLED", "true")
-    monkeypatch.setenv("MOCKINGBIRD_INTERVIEW_SUBJECT_LLM", "false")
     monkeypatch.setenv("MOCKINGBIRD_INTERVIEW_ANSWER_LLM", "false")
     monkeypatch.setenv("MOCKINGBIRD_INTERVIEW_MAX_NEXT", "3")
     monkeypatch.setenv("MOCKINGBIRD_INTERVIEW_CONTEXT_TRACKER_LLM", "false")
@@ -58,7 +56,6 @@ def test_bool_env_overrides(monkeypatch):
     monkeypatch.setenv("MOCKINGBIRD_WINDOW_WIDTH", "1600")
     c = cfg.load_config()
     assert c.interview.enabled is True
-    assert c.interview.subject_llm is False
     assert c.interview.answer_llm is False
     assert c.interview.max_next == 3
     assert c.interview.context_tracker_llm is False

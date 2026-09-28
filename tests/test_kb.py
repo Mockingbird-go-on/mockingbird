@@ -296,7 +296,7 @@ def test_is_question_comparison_nested_in_shift():
     assert not is_question("я знаю чем это отличается")
 
 
-# -- Tier 2/3: non-question fallback + LLM rescue ---------------------------
+# -- Tier 2: non-question topical fallback ------------------------------------
 
 
 def test_engine_topical_fallback_opens_topic():
@@ -327,117 +327,6 @@ def test_engine_topical_fallback_skips_shift():
     engine._process(_final("давай поговорим про k8s"))
     previews = [v for v in answers if v.preview]
     assert len(previews) == 1  # только от трекера, не от fallback
-
-
-class _FakeRescueLlm:
-    available = True
-
-    def __init__(self, result):
-        self._result = result
-        self.calls = []
-
-    def analyze_dialog_context(self, utterance, history=""):
-        self.calls.append((utterance, history))
-        return self._result
-
-    def answer_question(self, question, context="", mode="technical", previous_qa=""):
-        return None
-
-
-class _FakeDialog:
-    def __init__(self, result):
-        self._result = result
-
-    def resolve(self, utterance):
-        return self._result
-
-
-def test_question_rescue_promotes_llm_question():
-    """LLM классифицирует не-вопрос как question → полный путь."""
-    from mockingbird.kb.dialog_context import DialogContextManager
-
-    llm = _FakeRescueLlm({"type": "question", "resolved_query": "как настроить docker",
-                          "answer_mode": "technical", "confidence": 0.9})
-    dialog = DialogContextManager(llm=llm)
-    # обходим _question_rescue_available: подставим заглушку с analyze_dialog_context
-    engine = InterviewEngine(_matcher(), InterviewConfig(), llm=llm, dialog_context=dialog)
-    engine._dialog = dialog
-    questions = []
-    engine.on_question = questions.append
-    answers = []
-    engine.on_answer = answers.append
-    engine._process(_final("как настроить докер"))
-    engine._rescue_question_worker("как настроить докер", _final("как настроить докер"), engine._generation)
-    assert any(a.topic == "docker" for a in answers if not a.preview)
-
-
-def test_question_rescue_ignores_fallback_source():
-    """fallback-источник (без LLM) не превращает утверждение в вопрос."""
-    from mockingbird.kb.dialog_context import DialogContextManager
-
-    llm = _FakeRescueLlm({})
-    dialog = DialogContextManager(llm=llm)
-    engine = InterviewEngine(_matcher(), InterviewConfig(), llm=llm, dialog_context=dialog)
-    engine._dialog = dialog
-    answers = []
-    engine.on_answer = answers.append
-    engine._rescue_question_worker("как настроить докер", _final("как настроить докер"), engine._generation)
-    assert answers == []
-
-
-def test_question_rescue_ignores_other_type():
-    """LLM сказал type=other → не превращаем в вопрос."""
-    from mockingbird.kb.dialog_context import DialogContextManager
-
-    llm = _FakeRescueLlm({"type": "other", "resolved_query": "", "answer_mode": "technical",
-                          "confidence": 0.9})
-    dialog = DialogContextManager(llm=llm)
-    engine = InterviewEngine(_matcher(), InterviewConfig(), llm=llm, dialog_context=dialog)
-    engine._dialog = dialog
-    answers = []
-    engine.on_answer = answers.append
-    engine._rescue_question_worker("я пошёл домой", _final("я пошёл домой"), engine._generation)
-    assert answers == []
-
-
-class _StubDialog:
-    def add_utterance(self, text, speaker="them"):
-        pass
-
-    def history_text(self):
-        return ""
-
-
-def test_shift_utterance_still_runs_rescue():
-    """Shift-реплика не глотает вложенный вопрос: rescue запускается.
-
-    Раньше is_shift делал ранний return до Tier 3, из-за чего «поговорим про
-    X, чем Pod отличается от Y» терялся целиком. Теперь rescue обязан
-    запускаться и для shift-фраз (topical-fallback при этом подавлен).
-    """
-    from unittest.mock import patch
-
-    engine = InterviewEngine(_matcher(), InterviewConfig())
-    engine._dialog = _StubDialog()  # dialog present → rescue branch reachable
-    started = []
-
-    def fake_thread(*a, **kw):
-        started.append(kw.get("target"))
-
-        class _T:
-            def start(self):
-                pass
-
-            def is_alive(self):
-                return False
-
-        return _T()
-
-    with patch.object(engine, "_question_rescue_available", return_value=True), patch(
-        "mockingbird.kb.interview_engine.threading.Thread", side_effect=fake_thread
-    ):
-        engine._process(_final("давай поговорим про kubernetes а потом сравним"))
-    assert started, "rescue thread must be launched for a shift utterance"
 
 
 def test_is_broad():
@@ -585,89 +474,13 @@ def test_engine_context_collects_blocks():
     assert engine._context.blocks("kubernetes")
 
 
-# -- interview engine: LLM subject rescue ------------------------------------
-
-
-class _FakeSubjectLlm:
-    available = True
-
-    def __init__(self, subjects):
-        self.subjects = subjects
-        self.calls = []
-
-    def extract_subject_keywords(self, text, context=""):
-        self.calls.append((text, context))
-        return self.subjects
-
-    def answer_question(self, question, context="", mode="technical", previous_qa=""):
-        return None
-
-
-def test_engine_llm_rescue_on_weak_query():
-    llm = _FakeSubjectLlm(["kubernetes"])
-    engine = InterviewEngine(_matcher(), InterviewConfig(), llm=llm)
-    view = engine._build_view("ну про тот самый инструмент помнишь")
-    assert view is not None
-    assert view.topic in ("kubernetes", "cloud")  # expanded KB
-    assert not view.miss
-    assert llm.calls == [("ну про тот самый инструмент помнишь", "")]
-
-
 def test_engine_miss_without_llm_stays_weak():
     engine = InterviewEngine(_matcher(), InterviewConfig())
     view = engine._build_view("ну про тот самый инструмент помнишь")
     assert view is None
 
 
-def test_engine_llm_rescue_overrides_active_topic():
-    llm = _FakeSubjectLlm(["kubernetes"])
-    engine = InterviewEngine(_matcher(), InterviewConfig(), llm=llm)
-    engine._context.note_answer("docker", ["entrypoint"])
-    view = engine._build_view("расскажи поподробнее про эту тему")
-    assert view is not None
-    assert view.topic in ("kubernetes", "cloud")  # expanded KB
-    assert not view.miss
 
-
-def test_engine_llm_rescue_flag_off():
-    llm = _FakeSubjectLlm(["kubernetes"])
-    engine = InterviewEngine(_matcher(), InterviewConfig(subject_llm=False), llm=llm)
-    engine._context.note_answer("docker", ["entrypoint"])
-    view = engine._build_view("расскажи поподробнее про эту тему")
-    assert view is not None
-    assert view.topic == "docker"
-    assert view.miss is True
-    assert llm.calls == []
-
-
-def test_engine_subject_rescue_async_upgrades_view():
-    llm = _FakeSubjectLlm(["kubernetes"])
-    engine = InterviewEngine(
-        _matcher(),
-        InterviewConfig(),
-        llm=llm,
-    )
-    out = []
-    engine.on_answer = out.append
-    engine.start()
-    query = "расскажи про тот инструмент"
-    try:
-        engine._process(_final(query))
-        deadline = time.monotonic() + 3.0
-        while (
-            not (len(out) >= 2 and out[-1].topic == "kubernetes")
-            and time.monotonic() < deadline
-        ):
-            time.sleep(0.01)
-    finally:
-        engine.stop()
-    assert llm.calls, "subject rescue was not scheduled"
-    assert llm.calls[0][0] == query
-    # the weak query emits a placeholder first, then the upgraded strong view
-    assert len(out) >= 2
-    assert out[-1].topic in ("kubernetes", "cloud")  # expanded KB
-    assert not out[-1].miss
-    assert out[-1].matched_query == query
 
 
 def test_engine_broad_subject_kept_in_question():
@@ -1177,7 +990,6 @@ def _partial(text, segment_id="seg1"):
 
 def _partial_engine(llm=None, **overrides):
     overrides.setdefault("use_partials", True)
-    overrides.setdefault("subject_llm", False)
     return InterviewEngine(_matcher(), InterviewConfig(**overrides), llm=llm)
 
 

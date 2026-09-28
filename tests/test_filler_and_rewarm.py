@@ -1,10 +1,12 @@
-"""Speculative-answer filler gate + idle CUDA re-warm (2026-09-27 field cases).
+"""Idle CUDA re-warm during a session (2026-09-27 field case).
 
-Field case 1: «Раз, два,» started a speculative LLM stream that squatted the
-question queue for 5.8 s while the real question waited behind it.
-Field case 2: after a 7-minute pause the first decode paid 9.9 s (idle GPU
-clocks / autotune re-pay) — the engine now re-warms on idle timeouts during
-an active session.
+After a 7-minute pause the first decode paid 9.9 s (idle GPU clocks /
+autotune re-pay) — the engine now re-warms on idle timeouts during an
+active session.
+
+The filler-gate half of this file was removed together with the speculative
+answer machinery (2026-09-28 pipeline simplification): there is no
+speculative stream left to guard.
 """
 from __future__ import annotations
 
@@ -12,41 +14,6 @@ import queue as _queue
 import threading
 
 import numpy as np
-
-from mockingbird.kb.interview_engine import _is_filler_utterance
-
-
-# -- filler gate ---------------------------------------------------------------
-
-def test_filler_positive():
-    assert _is_filler_utterance("Раз, два,")
-    assert _is_filler_utterance("раз два три")
-    assert _is_filler_utterance("ну")
-    assert _is_filler_utterance("так")
-    assert _is_filler_utterance("")  # nothing at all — never a question
-
-
-def test_filler_negative_real_questions():
-    assert not _is_filler_utterance("что такое Zabbix")
-    assert not _is_filler_utterance("Что такое IaC?")  # short but a question
-    assert not _is_filler_utterance("расскажи про мониторинг")  # imperative
-    assert not _is_filler_utterance("раз два три как считаешь")  # >=4 words
-
-
-def test_filler_negative_statements():
-    assert not _is_filler_utterance("мы использовали docker")  # real content
-    assert not _is_filler_utterance("настраивал zabbix в проде")
-
-
-def test_speculative_start_guarded_by_filler():
-    """The speculative call-site gates on _is_filler_utterance."""
-    import inspect
-
-    from mockingbird.kb import interview_engine as ie
-
-    src = inspect.getsource(ie.InterviewEngine._process_immediate_inner)
-    assert "_is_filler_utterance" in src
-
 
 # -- idle re-warm ---------------------------------------------------------------
 
