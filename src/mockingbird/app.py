@@ -989,36 +989,6 @@ class App:
         self._harvest_answer_terms(msg.text)
         self.signals.save_segment_request.emit(msg)
         self.signals.final.emit(msg)
-        # LLM post-correction of long finals (>= 60 words): runs in a daemon
-        # thread so the STT worker never blocks. The corrected text updates
-        # the stored segment + history; the question pipeline already ran on
-        # the original (long finals are rarely single questions anyway).
-        if (
-            self.llm is not None
-            and getattr(self.llm, "available", False)
-            and len(msg.text.split()) >= 60
-        ):
-            threading.Thread(
-                target=self._correct_transcript_worker,
-                args=(msg.text, msg.segment_id),
-                daemon=True,
-                name="llm-transcript-fix",
-            ).start()
-
-    def _correct_transcript_worker(self, text: str, segment_id: str) -> None:
-        try:
-            fixed = self.llm.correct_transcript(text)
-        except Exception:  # noqa: BLE001
-            return
-        if not fixed or fixed == text:
-            return
-        log.info(
-            "llm-transcript-fix: seg=%s %d chars corrected", segment_id, len(text)
-        )
-        try:
-            self.store.update_segment_text(segment_id, fixed)
-        except Exception:
-            log.debug("transcript-fix: segment update failed", exc_info=True)
 
     def _on_save_segment(self, msg: FinalTranscript) -> None:
         """GUI-thread slot: persist the finalised segment to SQLite."""
@@ -1142,7 +1112,6 @@ class App:
             "llm.model",
             "terms.glossary_path",
             "interview.enabled",
-            "interview.subject_llm",
             "interview.answer_llm",
             "interview.context_tracker_llm",
             "interview.llm_primary",

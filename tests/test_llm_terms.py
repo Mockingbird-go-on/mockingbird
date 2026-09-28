@@ -75,7 +75,7 @@ def test_explainer_llm_primary_emits_analysis():
         analysis=[{"term": "Kubernetes", "explanation": "оркестратор"},
                   {"term": "ArgoCD", "explanation": "gitops-инструмент"}],
     )
-    explainer = TermExplainer(Glossary.load(), _FakeCache(), llm, TermsConfig())
+    explainer = TermExplainer(Glossary.load(), _FakeCache(), llm, TermsConfig(llm_primary=True))
     out = _emitted(explainer, _final("Мы сегодня подробно обсуждали развёртывание и пайплайны."))
     assert {t.term for t in out} == {"Kubernetes", "ArgoCD"}
     assert all(t.source == protocol.TermSource.LLM for t in out)
@@ -87,7 +87,7 @@ def test_explainer_llm_primary_dedupes_across_segments():
         available=True,
         analysis=[{"term": "Kubernetes", "explanation": "оркестратор"}],
     )
-    explainer = TermExplainer(Glossary.load(), _FakeCache(), llm, TermsConfig())
+    explainer = TermExplainer(Glossary.load(), _FakeCache(), llm, TermsConfig(llm_primary=True))
     out = _emitted(explainer, _final("первый сегмент достаточно длинный для анализа"))
     assert len(out) == 1
     out2 = _emitted(explainer, _final("второй сегмент тоже достаточно длинный для анализа"))
@@ -96,7 +96,7 @@ def test_explainer_llm_primary_dedupes_across_segments():
 
 def test_explainer_falls_back_to_glossary_when_llm_unavailable():
     llm = _FakeLlm(available=False)
-    explainer = TermExplainer(Glossary.load(), _FakeCache(), llm, TermsConfig())
+    explainer = TermExplainer(Glossary.load(), _FakeCache(), llm, TermsConfig(llm_primary=True))
     out = _emitted(explainer, _final("Деплой через k8s прошёл успешно."))
     assert any(t.term == "Kubernetes" for t in out)
     assert any(t.source == protocol.TermSource.GLOSSARY for t in out)
@@ -104,7 +104,7 @@ def test_explainer_falls_back_to_glossary_when_llm_unavailable():
 
 def test_explainer_falls_back_when_llm_empty():
     llm = _FakeLlm(available=True, analysis=[])
-    explainer = TermExplainer(Glossary.load(), _FakeCache(), llm, TermsConfig())
+    explainer = TermExplainer(Glossary.load(), _FakeCache(), llm, TermsConfig(llm_primary=True))
     out = _emitted(explainer, _final("Деплой через k8s прошёл успешно."))
     assert any(t.term == "Kubernetes" for t in out)
 
@@ -114,7 +114,7 @@ def test_explainer_accumulates_context():
         available=True,
         analysis=[{"term": "Kubernetes", "explanation": "оркестратор"}],
     )
-    explainer = TermExplainer(Glossary.load(), _FakeCache(), llm, TermsConfig())
+    explainer = TermExplainer(Glossary.load(), _FakeCache(), llm, TermsConfig(llm_primary=True))
     _emitted(explainer, _final("первый сегмент"))
     texts = list(explainer._context)
     assert len(texts) == 1
@@ -130,7 +130,7 @@ def test_session_terms_accumulate():
         available=True,
         analysis=[{"term": "Airflow", "explanation": "пайплайны"}],
     )
-    explainer = TermExplainer(Glossary.load(), _FakeCache(), llm, TermsConfig())
+    explainer = TermExplainer(Glossary.load(), _FakeCache(), llm, TermsConfig(llm_primary=True))
     # Text must exceed TermsConfig.llm_min_chars (40) — shorter finals skip
     # the LLM analysis and go straight to the free glossary pass.
     _emitted(explainer, _final("мы долго обсуждали airflow в продовой инфраструктуре"))
@@ -158,7 +158,7 @@ def test_session_terms_reset():
         available=True,
         analysis=[{"term": "Airflow", "explanation": "пайплайны"}],
     )
-    explainer = TermExplainer(Glossary.load(), _FakeCache(), llm, TermsConfig())
+    explainer = TermExplainer(Glossary.load(), _FakeCache(), llm, TermsConfig(llm_primary=True))
     _emitted(explainer, _final("мы долго обсуждали airflow в продовой инфраструктуре"))
     assert explainer.session_terms
     explainer.reset_session()

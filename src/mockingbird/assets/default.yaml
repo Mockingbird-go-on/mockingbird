@@ -42,7 +42,7 @@ llm:
 terms:
   explanation_language: ru
   llm_fallback: true
-  llm_primary: true
+  llm_primary: false
   context_segments: 8
   cache_ttl_days: 30
   max_terms_per_segment: 5
@@ -55,13 +55,11 @@ interview:
   max_blocks: 6
   use_partials: true
   partial_stability_rounds: 2
-  speculative_answers: true
   highlight: true
   cooldown_s: 20.0
-  subject_llm: true
   answer_llm: true
   max_next: 5
-  context_tracker_llm: true
+  context_tracker_llm: false
   context_refresh_s: 5.0
   context_window_segments: 10
   llm_primary: true

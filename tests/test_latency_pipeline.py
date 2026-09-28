@@ -141,33 +141,3 @@ def test_drain_background_bounded_timeout():
     assert 0.3 <= waited <= 1.5, waited  # bounded wait, then proceeds
 
 
-# -- B2 -----------------------------------------------------------------------
-
-
-def test_subject_rescue_skipped_for_selfsufficient_question():
-    from mockingbird.config import InterviewConfig
-    from mockingbird.kb.interview_engine import InterviewEngine
-    from mockingbird.kb.matcher import KbMatcher
-
-    matcher = MagicMock(spec=KbMatcher)
-    matcher.match.return_value = []
-    matcher.topic_by_id.return_value = None
-    index = MagicMock()
-    index.significant_terms.return_value = []
-    matcher._index = index
-    engine = InterviewEngine(matcher, InterviewConfig(min_match_score=99.0))
-
-    threads_before = threading.active_count()
-    # Self-sufficient "what is X" — the rescue adds nothing, must be skipped.
-    engine._schedule_subject_rescue("расскажи, что такое Zabix?", "…")
-    time.sleep(0.25)
-    assert threading.active_count() == threads_before, "rescue fired for a self-sufficient question"
-
-    # A context-dependent question still gets the rescue (subject resolution).
-    engine._schedule_subject_rescue("расскажи про тот инструмент", "…")
-    time.sleep(0.25)
-    # The rescue thread is short-lived; absence of an exception + no
-    # long-lived thread is what matters. Just ensure it did NOT skip:
-    # (call the guard directly — deterministic)
-    import re as _re
-    assert not _re.search(r"что такое|что за ", "расскажи про тот инструмент".lower())

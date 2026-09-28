@@ -105,65 +105,6 @@ def test_fast_flush_with_provisional_query():
     assert eng._pending_fast_flush(seg) is True
 
 
-# ── B2: speculative answers ─────────────────────────────────────────
-
-def test_speculative_answers_default_off():
-    # 2026-09-27: flipped ON by default (see test_latency_knobs.py).
-    from mockingbird.config import load_config
-
-    cfg = load_config()
-    assert cfg.interview.speculative_answers is True
-
-
-def test_speculative_cancel_emits_cancelled_message():
-    import threading
-
-    from mockingbird.kb import interview_engine as ie
-    from mockingbird.protocol import LlmAnswer
-
-    eng = object.__new__(ie.InterviewEngine)
-    eng._spec_cancel = threading.Event()
-    eng._spec_query = "длинная реплика без маркеров вопроса"
-    emitted: list[LlmAnswer] = []
-    eng.on_llm_answer = emitted.append
-    ie_threading = threading  # noqa: F841 — clarity
-    eng._cancel_speculative("other")
-    assert eng._spec_cancel is None
-    assert eng._spec_query == ""
-    assert len(emitted) == 1
-    assert emitted[0].cancelled is True
-    assert emitted[0].done is True
-
-
-def test_cancel_event_stops_llm_stream():
-    """LlmClient.answer_question_stream must stop yielding once the cancel
-    event is set (B2 teardown path)."""
-    import threading
-    import types
-
-    from mockingbird.llm.client import LlmClient
-    from mockingbird.config import LlmConfig
-
-    client = LlmClient(LlmConfig(base_url="http://x", api_key="k", model="m"))
-    cancel = threading.Event()
-
-    def fake_stream(system, user, gen):
-        for i in range(100):
-            yield f"tok{i}"
-
-    client._hedged_answer_stream = fake_stream  # type: ignore[method-assign]
-    client._ensure = lambda: types.SimpleNamespace()  # type: ignore[method-assign]
-    client._enter_stream = lambda: None  # type: ignore[method-assign]
-    client._exit_stream = lambda: None  # type: ignore[method-assign]
-
-    got: list[str] = []
-    for delta in client.answer_question_stream("q", cancel_event=cancel):
-        got.append(delta)
-        if len(got) == 3:
-            cancel.set()
-    assert len(got) == 3  # stopped right after cancellation
-
-
 # ── A4: harvest after fan-out ───────────────────────────────────────
 
 def test_harvest_runs_after_interview_fanout():

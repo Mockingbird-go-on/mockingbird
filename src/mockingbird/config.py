@@ -98,7 +98,7 @@ class LlmConfig(BaseModel):
 class TermsConfig(BaseModel):
     explanation_language: str = "ru"
     llm_fallback: bool = True
-    llm_primary: bool = True
+    llm_primary: bool = False  # LLM term analysis OFF by default (glossary only)
     context_segments: int = 8
     cache_ttl_days: int = 30
     max_terms_per_segment: int = 5
@@ -121,10 +121,9 @@ class InterviewConfig(BaseModel):
     question_isolation: bool = True
     context_window: int = 12
     context_boost: float = 0.5
-    subject_llm: bool = True
     answer_llm: bool = True
     max_next: int = 5
-    context_tracker_llm: bool = True
+    context_tracker_llm: bool = False
     context_refresh_s: float = 5.0
     context_window_segments: int = 10
     llm_primary: bool = True
@@ -132,14 +131,6 @@ class InterviewConfig(BaseModel):
     answer_stream: bool = True
     answer_cache: bool = True
     answer_restart_min_similarity: float = 0.7
-    # Speculative answers: on marker-miss utterances with a topical signal,
-    # start streaming an answer on the raw text IMMEDIATELY while the Tier-3
-    # LLM rescue classifies in parallel. If the rescue says "not a question",
-    # the in-flight stream is cancelled. Costs tokens on statements. The
-    # restart-vs-cancel accounting landed (audit 2026-09-26) and the partial
-    # early-start path is stable, so ON by default (2026-09-27): the LLM
-    # request leaves while the interviewer is still finishing the question.
-    speculative_answers: bool = True
 
 
 class WindowConfig(BaseModel):
@@ -227,10 +218,8 @@ ENV_OVERRIDES: dict[str, tuple[str, str]] = {
     "MOCKINGBIRD_INTERVIEW_PARTIAL_STABILITY_ROUNDS": ("interview", "partial_stability_rounds"),
     "MOCKINGBIRD_INTERVIEW_HIGHLIGHT": ("interview", "highlight"),
     "MOCKINGBIRD_INTERVIEW_QUESTION_ISOLATION": ("interview", "question_isolation"),
-    "MOCKINGBIRD_INTERVIEW_SPECULATIVE_ANSWERS": ("interview", "speculative_answers"),
     "MOCKINGBIRD_INTERVIEW_CONTEXT_WINDOW": ("interview", "context_window"),
     "MOCKINGBIRD_INTERVIEW_CONTEXT_BOOST": ("interview", "context_boost"),
-    "MOCKINGBIRD_INTERVIEW_SUBJECT_LLM": ("interview", "subject_llm"),
     "MOCKINGBIRD_INTERVIEW_ANSWER_LLM": ("interview", "answer_llm"),
     "MOCKINGBIRD_INTERVIEW_MAX_NEXT": ("interview", "max_next"),
     "MOCKINGBIRD_INTERVIEW_CONTEXT_TRACKER_LLM": ("interview", "context_tracker_llm"),
@@ -289,13 +278,11 @@ _PERSISTED_SETTINGS: dict[str, tuple[str, str, bool]] = {
     "llm.failover_hedge_s": ("llm", "failover_hedge_s", False),
     "terms.glossary_path": ("terms", "glossary_path", True),
     "interview.enabled": ("interview", "enabled", False),
-    "interview.subject_llm": ("interview", "subject_llm", False),
     "interview.answer_llm": ("interview", "answer_llm", False),
     "interview.context_tracker_llm": ("interview", "context_tracker_llm", False),
     "interview.llm_primary": ("interview", "llm_primary", False),
     "interview.answer_stream": ("interview", "answer_stream", False),
     "interview.answer_cache": ("interview", "answer_cache", False),
-    "interview.speculative_answers": ("interview", "speculative_answers", False),
     "kgen.books_dir": ("kgen", "books_dir", True),
     "kgen.out_dir": ("kgen", "out_dir", True),
     "window.hide_from_capture": ("window", "hide_from_capture", False),

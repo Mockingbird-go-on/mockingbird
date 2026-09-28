@@ -126,24 +126,6 @@ _FILLER_WORDS = frozenset(
 )
 
 
-def _is_filler_utterance(text: str) -> bool:
-    """True for short counting/interjection-only utterances (spec-gate)."""
-    t = (text or "").strip().lower()
-    if not t:
-        return True
-    words = [w.strip(".,!?…;:«»\"'") for w in t.split()]
-    words = [w for w in words if w]
-    if not words or len(words) >= 4:
-        return False
-    # All-filler short utterance: even punctuated («раз, два?» = «ну?»),
-    # it is a counting/filler start, never a real interview question.
-    if all(w in _FILLER_WORDS for w in words):
-        return True
-    # Non-filler words: not a filler unless it fails the question shape
-    # (the generic path handles real questions — this gate never blocks them).
-    return False
-
-
 # A segment STARTING with a connective («и DevOps.», «или деплой?») is the
 # tail of a question whose beginning the VAD clipped or split off — it must
 # be glued to the last processed utterance and re-asked as one question.
@@ -347,19 +329,8 @@ class InterviewEngine:
         self._last_final_ts = 0.0
         self._answer_cache = _AnswerCache()
         self._generation = 0
-        # K5 ordering guard: the subject-rescue thread (fast LLM) must not
-        # emit its upgraded view BEFORE the worker emits the base view for
-        # the same final — the base placeholder would then clobber the
-        # upgrade on the panel. Cleared before the base build, set after
-        # _emit_view; the rescue waits (bounded) for it.
-        self._base_view_done = threading.Event()
         self._current_answer_mode: str = "technical"
         self._mode_lock = threading.Lock()
-        # Speculative answers (B2): cancellation event for the in-flight
-        # speculative stream started on the raw utterance while the Tier-3
-        # rescue classifies. Set when the rescue says "not a question".
-        self._spec_cancel: threading.Event | None = None
-        self._spec_query: str = ""
         self._subject_cache: dict[str, list[str]] = {}
         self._tracker = context_tracker or ContextTracker(
             matcher,
@@ -623,18 +594,9 @@ class InterviewEngine:
         self._process_immediate(msg)
 
     def _process_immediate(self, msg: protocol.FinalTranscript) -> None:
-        """Process a final transcript without deferral (bypasses accumulation).
-
-        Wrapped for base-view ordering (see _base_view_done): the subject
-        rescue must never emit before the worker's own view for this final.
-        """
         if not self._cfg.enabled or not msg.text:
             return
-        self._base_view_done.clear()
-        try:
-            self._process_immediate_inner(msg)
-        finally:
-            self._base_view_done.set()
+        self._process_immediate_inner(msg)
 
     def _process_immediate_inner(self, msg: protocol.FinalTranscript) -> None:
         text = msg.text.strip()
@@ -661,43 +623,19 @@ class InterviewEngine:
                 if view is not None:
                     self._emit_view(view, text, text, msg)
                 return
-            # Tier 2/3 fallback: not a detected question. Topic-shift
+            # Tier 2 fallback: not a detected question. Topic-shift
             # statements («давай поговорим про k8s») suppress only the topical
-            # fallback (the context tracker already previews them) — but the
-            # Tier 3 LLM rescue still runs, because a real utterance can glue
-            # a topic shift AND a nested question together («поговорим про
-            # kubernetes, чем Pod отличается от деплоя»). Otherwise, if the
-            # utterance carries a STRONG topical signal (an exact KB topic
-            # id/title/keyword), open that topic's theory view WITHOUT an LLM
-            # answer (marked preview so it does not pollute history).
+            # fallback (the context tracker already previews them). Otherwise,
+            # if the utterance carries a STRONG topical signal (an exact KB
+            # topic id/title/keyword), open that topic's theory view WITHOUT an
+            # LLM answer (marked preview so it does not pollute history).
+            # Tier 3 (LLM question-rescue + speculative answers) was REMOVED
+            # (2026-09-28, pipeline simplification): background LLM calls are
+            # gone; the rule-based detector + implicit-question path above
+            # carry all real questions.
             is_shift = detector.is_shift(text)
             if not is_shift and self._strong_topic(text) is not None:
                 self._emit_topical_fallback(text, msg)
-            if (
-                self._dialog is not None
-                and self._question_rescue_available()
-                and has_topical_signal(text)
-            ):
-                # Speculative answers (B2, opt-in): start streaming an answer
-                # on the raw utterance NOW — the Tier-3 rescue classifies in
-                # parallel; if it says "not a question", the stream is
-                # cancelled (see _rescue_question_worker).
-                # Filler gate (2026-09-27): counting/interjection utterances
-                # («раз, два,») never start a stream — they would squat the
-                # question queue while the real question waits behind.
-                if (
-                    self._cfg.speculative_answers
-                    and not getattr(self._llm, "is_streaming", False)
-                    and not _is_filler_utterance(text)
-                ):
-                    self._start_speculative_answer(text, msg)
-                gen = self._generation
-                threading.Thread(
-                    target=self._rescue_question_worker,
-                    args=(text, msg, gen),
-                    daemon=True,
-                    name="interview-question-rescue",
-                ).start()
             return
         query = detector.last_question(text) or text
         with self._mode_lock:
@@ -720,16 +658,6 @@ class InterviewEngine:
         view, match_query = self._rematch_on_utterance(view, match_query, text, query)
         if view is not None:
             self._emit_view(view, query, match_query, msg)
-        # Launch async resolve (non-blocking). When the resolved query/mode
-        # differs, the upgraded view is re-emitted.
-        if self._dialog is not None:
-            gen = self._generation
-            threading.Thread(
-                target=self._async_resolve_and_upgrade,
-                args=(query, match_query, answer_mode, msg, gen),
-                daemon=True,
-                name="interview-dialog-resolve",
-            ).start()
 
     # Best-block score below which a non-miss match on a clipped fragment is
     # considered weak (wrong topic): proper matches score 40+, clipped-tail
@@ -852,63 +780,6 @@ class InterviewEngine:
             self._maybe_answer_llm(
                 view, match_query, mode=current_mode,
                 utterance=(msg.text or "").strip(),
-            )
-
-    def _async_resolve_and_upgrade(
-        self, query: str, raw_match_query: str, raw_mode: str, msg: protocol.FinalTranscript, generation: int
-    ) -> None:
-        """Resolve the utterance via the dialog LLM off the worker thread.
-
-        If the resolved query or answer mode differs from the raw fast-path
-        values, rebuild the view and update the KB context. However, if the
-        main LLM answer is already streaming (or has completed), we do NOT
-        re-emit the answer or restart the LLM — that would create a duplicate
-        history entry and a stuck 'forming answer...' placeholder. The
-        upgraded blocks still reach the UI via the context tracker / tree.
-        """
-        try:
-            resolved = self._dialog.resolve(query)
-        except Exception:  # noqa: BLE001
-            log.exception("dialog resolve failed")
-            return
-        # Stale guard: if the user moved on, drop the result.
-        if generation != self._generation:
-            return
-        rq = (resolved.get("resolved_query") or "").strip()
-        mode = resolved.get("answer_mode", "technical")
-        new_match = rq or raw_match_query
-        # Only upgrade if something materially changed.
-        if new_match == raw_match_query and mode == raw_mode:
-            return
-        log.info(
-            "dialog-resolve: query=%r raw=%r resolved=%r mode=%s",
-            query[:60], raw_match_query[:60], new_match[:60], mode,
-        )
-        with self._mode_lock:
-            self._current_answer_mode = mode
-        upgraded = self._build_best_view(new_match, mode)
-        if upgraded is None:
-            return
-        # Update KB context and tracker WITHOUT re-emitting the answer view.
-        # The original fast-path view is already on screen and the LLM answer
-        # is either streaming or done — re-emitting would create a duplicate
-        # history entry and clobber the streaming pane.
-        self._cache_view(query, upgraded)
-        if self._tracker is not None and upgraded.topic and upgraded.topic != "general":
-            self._last_preview_topic = upgraded.topic
-            self._tracker.shift_to(upgraded.topic)
-        self._context.note_answer(
-            upgraded.topic, self._matcher._index.significant_terms(new_match)
-        )
-        for block in upgraded.blocks:
-            self._context.add_block(
-                topic_id=upgraded.topic,
-                title=upgraded.title,
-                section=block.section,
-                question=block.question,
-                answer=block.answer,
-                related=block.related,
-                score=block.score,
             )
 
     def _stability_rounds(self, text: str) -> int:
@@ -1127,36 +998,6 @@ class InterviewEngine:
                 min_score=self._cfg.min_match_score,
                 prior=prior,
             )
-            if not matches or not matches[0][4]:
-                if self._llm_rescue_available():
-                    if self._thread is not None:
-                        # Live path: rescue runs on a separate thread so the
-                        # LLM round-trip never blocks the interview worker.
-                        self._schedule_subject_rescue(query, display)
-                    else:
-                        try:
-                            subjects = self._llm.extract_subject_keywords(
-                                query, context=self._context_summary()
-                            )
-                        except Exception:  # noqa: BLE001
-                            # Advisory enrichment must never kill the view
-                            # build — the worker's except would silently
-                            # drop the whole question.
-                            log.exception(
-                                "subject-rescue keywords failed (query=%r)", query[:60]
-                            )
-                            subjects = []
-                        if subjects:
-                            alt_query = " ".join(subjects)
-                            alt = self._matcher.match(
-                                alt_query,
-                                limit=self._cfg.max_blocks,
-                                min_score=self._cfg.min_match_score,
-                                prior=prior,
-                            )
-                            if alt and alt[0][4]:
-                                query = alt_query
-                                matches = alt
             if (not matches or not matches[0][4]) and self._tracker is not None:
                 resolved = self._tracker.resolve(query)
                 if resolved:
@@ -1256,97 +1097,6 @@ class InterviewEngine:
             matched_query=display,
             blocks=blocks,
             best_score=top_score,
-        )
-
-    def _schedule_subject_rescue(self, query: str, display: str) -> None:
-        """Rescue a weak subject match on a daemon thread (live path).
-
-        The LLM keyword extraction can take seconds; it runs off the worker so
-        the next transcript is processed immediately. The upgraded view is
-        re-emitted when it arrives. Skipped while the main answer is streaming
-        so the two LLM calls do not compete for the endpoint.
-        """
-        if getattr(self._llm, "is_streaming", False):
-            return
-        # B2 (2026-09-27): self-sufficient "what is X" questions do not need
-        # the subject rescue — their KB view adds nothing to the answer (the
-        # LLM answers from its own expertise) while the rescue POST occupies
-        # a provider slot ahead of it (field trace: llm_wait=8.8s with a
-        # useless rescue in flight on «что такое Zabix»). Context-dependent
-        # questions («расскажи про тот инструмент») still get the rescue —
-        # it resolves their subject.
-        try:
-            if re.search(r"что такое|что за |расскажи,? что такое", query.lower()):
-                return
-        except Exception:  # noqa: BLE001
-            pass
-        threading.Thread(
-            target=self._subject_rescue_worker,
-            args=(query, display, self._generation),
-            daemon=True,
-            name="interview-subject-rescue",
-        ).start()
-
-    def _subject_rescue_worker(self, query: str, display: str, generation: int) -> None:
-        """Async half of the subject rescue: extract keywords, re-match, upgrade."""
-        if generation != self._generation:
-            return
-        # LRU cache for subject extraction — a repeated weak match for the
-        # same query reuses the cached keywords without an LLM call.
-        key = _query_key(query)
-        if key in self._subject_cache:
-            subjects = self._subject_cache[key]
-        else:
-            try:
-                subjects = self._llm.extract_subject_keywords(
-                    query, context=self._context_summary()
-                )
-            except Exception:  # noqa: BLE001
-                log.exception("LLM subject rescue failed")
-                return
-            self._subject_cache[key] = subjects
-            while len(self._subject_cache) > 16:
-                self._subject_cache.pop(next(iter(self._subject_cache)))
-        if not subjects:
-            return
-        prior = self._context.prior() if self._context else {}
-        alt_query = " ".join(subjects)
-        try:
-            alt = self._matcher.match(
-                alt_query,
-                limit=self._cfg.max_blocks,
-                min_score=self._cfg.min_match_score,
-                prior=prior,
-            )
-        except Exception:  # noqa: BLE001
-            log.exception("subject rescue re-match failed")
-            return
-        if not alt or not alt[0][4]:
-            return
-        if generation != self._generation:
-            return
-        view = self._view_from_matches(alt, alt_query, display)
-        if view is None:
-            return
-        self._cache_view(query, view)
-        # The async rescue can land while the primary answer is already
-        # streaming (it was scheduled before the stream started). Emitting a
-        # new view here would reset the answer pane and change
-        # ``_pending_llm_query``, dropping the in-flight answer. Keep the
-        # upgraded view in the cache but do not clobber the live stream.
-        if getattr(self._llm, "is_streaming", False):
-            return
-        # K5 ordering: wait (bounded) for the worker's own view of this final
-        # to be emitted first — a fast rescue LLM could otherwise land BEFORE
-        # the deferred base placeholder and be clobbered by it on the panel.
-        self._base_view_done.wait(timeout=1.0)
-        self._emit_answer(view)
-
-    def _llm_rescue_available(self) -> bool:
-        return bool(
-            self._cfg.subject_llm
-            and self._llm is not None
-            and self._llm.available
         )
 
     def _llm_answer_available(self) -> bool:
@@ -1500,138 +1250,6 @@ class InterviewEngine:
                 return topic
         return None
 
-    def _question_rescue_available(self) -> bool:
-        """Whether the Tier 3 LLM question-rescue can run."""
-        return (
-            self._dialog is not None
-            and self._llm is not None
-            and getattr(self._llm, "available", False)
-            and hasattr(self._llm, "analyze_dialog_context")
-        )
-
-    def _rescue_question_worker(self, text: str, msg: protocol.FinalTranscript, generation: int) -> None:
-        """Tier 3: ask the dialog LLM whether a non-detected utterance is a question.
-
-        Runs on a daemon thread and yields to the answer stream via the LLM
-        client's single-flight gate. Only an explicit LLM ``type`` of
-        ``question``/``topic_shift`` (with a real ``resolved_query``) promotes
-        the utterance to the full question path; the ``fallback`` source is
-        ignored so a missing/busy LLM never falsely re-processes a statement.
-        """
-        if generation != self._generation:
-            self._cancel_speculative("generation")
-            return
-        # Guard: an answer stream is running. Under speculative answers the
-        # running stream IS ours (started before this worker) — continue so
-        # we can cancel/promote it; without the flag the stream belongs to a
-        # PREVIOUS question. Dropping the rescue there silently lost this
-        # question forever (audit 2026-09-26, risk: «rescue during a foreign
-        # stream») — instead we WAIT (bounded) for that stream to finish and
-        # classify afterwards: the question queue is serial anyway, so the
-        # answer for THIS question could not have started earlier.
-        if getattr(self._llm, "is_streaming", False) and not self._spec_cancel:
-            deadline = time.monotonic() + 60.0
-            while (
-                getattr(self._llm, "is_streaming", False)
-                and not self._spec_cancel
-                and generation == self._generation
-                and time.monotonic() < deadline
-            ):
-                time.sleep(0.25)
-            if generation != self._generation:
-                self._cancel_speculative("generation")
-                return
-            if getattr(self._llm, "is_streaming", False) and not self._spec_cancel:
-                log.info(
-                    "question-rescue: gave up after 60s of foreign answer stream "
-                    "(query=%r)", text[:60],
-                )
-                return
-            log.info(
-                "question-rescue: foreign answer stream finished — classifying now "
-                "(query=%r)", text[:60],
-            )
-        try:
-            resolved = self._dialog.resolve(text)
-        except Exception:  # noqa: BLE001
-            log.exception("question rescue: dialog resolve failed")
-            return
-        if generation != self._generation:
-            self._cancel_speculative("generation")
-            return
-        if resolved.get("source") != "llm":
-            # Unknown/busy classification: a speculative stream (if any) is
-            # left to finish — better a possibly-unneeded answer than none.
-            return
-        rtype = resolved.get("type", "")
-        if rtype not in {"question", "topic_shift"}:
-            self._cancel_speculative(rtype or "other")
-            return
-        rq = (resolved.get("resolved_query") or "").strip()
-        if not rq:
-            return
-        log.info(
-            "question-rescue: LLM classified non-detected utterance as %s query=%r",
-            rtype, rq[:80],
-        )
-        with self._mode_lock:
-            self._current_answer_mode = resolved.get("answer_mode", "technical")
-            current_mode = self._current_answer_mode
-        # Emit the question so the panel latches the pending query, paints
-        # the question header and arms its 15 s watchdog — without this the
-        # rescue path only sent a KnowledgeView and the panel could discard
-        # the answer stream on a query mismatch (audit 2026-09-26).
-        if self._emitted_question != rq:
-            self._emitted_question = rq
-            self._emit_question(rq, msg)
-            self._ledger.record(
-                "final", id=msg.segment_id, utter_len=len(text.split()),
-                qlen=len(rq.split()), mode=current_mode, rescued=True,
-            )
-        view = self._build_best_view(rq, current_mode)
-        if view is None:
-            self._cancel_speculative("no-view")
-            return
-        self._spec_cancel = None
-        self._spec_query = ""
-        self._emit_view(view, rq, rq, msg)
-
-    def _start_speculative_answer(self, text: str, msg: protocol.FinalTranscript) -> None:
-        """B2: stream an answer on the raw marker-miss utterance immediately.
-
-        The Tier-3 rescue runs in parallel; on a "not a question" verdict it
-        cancels this stream via the cancellation event (checked between
-        streamed deltas in LlmClient.answer_question_stream). On a positive
-        verdict the normal _emit_view path takes over (its restart logic
-        replaces this stream if the resolved query differs).
-        """
-        view = self._build_best_view(text, "technical")
-        if view is None or not view.topic:
-            return
-        cancel = threading.Event()
-        self._spec_cancel = cancel
-        self._spec_query = text
-        log.info(
-            "speculative-answer: streaming on raw utterance while rescue classifies (%r)",
-            text[:80],
-        )
-        self._maybe_answer_llm(view, text, force=True, utterance=text, _spec_cancel=cancel)
-
-    def _cancel_speculative(self, reason: str) -> None:
-        """Cancel the in-flight speculative stream and reset the pane."""
-        cancel = self._spec_cancel
-        self._spec_cancel = None
-        query = self._spec_query
-        self._spec_query = ""
-        if cancel is None or not query:
-            return
-        log.info("speculative-answer: cancelled (reason=%s)", reason)
-        cancel.set()
-        if self.on_llm_answer:
-            self.on_llm_answer(
-                protocol.LlmAnswer(query=query, done=True, cancelled=True)
-            )
-
     def _nearest_topic(self, query: str):
         terms = self._matcher._index.significant_terms(query)
         for term in terms:
@@ -1677,7 +1295,7 @@ class InterviewEngine:
 
     def _maybe_answer_llm(
         self, view: protocol.KnowledgeView, query: str, force: bool = False, mode: str = "technical",
-        utterance: str = "", _spec_cancel: threading.Event | None = None,
+        utterance: str = "",
     ) -> None:
         """Schedule an LLM answer in parallel with the KB view.
 
@@ -1782,7 +1400,6 @@ class InterviewEngine:
                     seg_id=seg_id,
                     utterance=utterance,
                     kb_fallback=kb_fallback,
-                    spec_cancel=_spec_cancel,
                 )
             except Exception:  # noqa: BLE001
                 # A crash BEFORE the worker's own try-block (advisory
@@ -1946,7 +1563,6 @@ class InterviewEngine:
         skip_prev_qa: bool = False,
         utterance: str = "",
         kb_fallback: str = "",
-        spec_cancel: threading.Event | None = None,
     ) -> None:
         """Stream the LLM answer to the cockpit in real time.
 
@@ -2064,7 +1680,6 @@ class InterviewEngine:
             try:
                 for delta in self._llm.answer_question_stream(
                     query, context, mode=mode, previous_qa=prev_qa,
-                    cancel_event=spec_cancel,
                 ):
                     if not delta:
                         continue
@@ -2094,11 +1709,6 @@ class InterviewEngine:
             needs_retry = (
                 not answer or stream_failed or len(answer) < _LLM_MIN_ANSWER_CHARS
             )
-            if spec_cancel is not None and spec_cancel.is_set():
-                # Cancelled speculative stream — do NOT retry or paint a
-                # failure notice; the cancel message already reset the pane.
-                needs_retry = False
-                answer = ""
             if needs_retry:
                 log.warning(
                     "llm: broken stream (len=%d, failed=%s) — retrying once",
@@ -2141,7 +1751,7 @@ class InterviewEngine:
                     query[:80], mode, context[-300:],
                     "yes" if prev_qa else "no",
                 )
-            cancelled = spec_cancel is not None and spec_cancel.is_set()
+            cancelled = False
             if self._cfg.answer_cache and not cancelled:
                 self._answer_cache.put(key, answer)
             if answer and not cancelled:

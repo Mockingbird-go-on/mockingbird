@@ -1322,53 +1322,6 @@ class LlmClient:
             log.warning("LLM extract_subject failed: %s", exc)
             return []
 
-    def correct_transcript(self, transcript: str) -> str | None:
-        """Fix mangled technical terms in a LONG final transcript.
-
-        Post-STT correction for utterances the phonetic matcher cannot fix
-        (context-dependent spellings, split terms). The LLM must return the
-        SAME text with only term spellings fixed — no rephrasing. Yields to
-        the answer stream; returns None on any failure (caller keeps the
-        original text). Only worth calling on long finals (>= 60 words):
-        short ones are cheap to re-ask and rarely carry split terms.
-        """
-        client = self._ensure()
-        if client is None:
-            return None
-        if not self._yield_to_answer_stream():
-            log.info("llm: correct_transcript skipped — answer stream busy")
-            return None
-        try:
-            with self._bg_slot():
-                response = client.chat.completions.create(
-                    model=self._cfg.model,
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": (
-                                "Исправь ТОЛЬКО написание технических терминов в "
-                                "расшифровке речи (STT). Не меняй слова, порядок и "
-                                "формулировки — только орфографию терминов "
-                                "(например «хелмчарт» → «Helm chart», «кубернетес» → "
-                                "«Kubernetes»). Верни исправленный текст целиком, "
-                                "без комментариев.\n\n" + transcript
-                            ),
-                        }
-                    ],
-                    temperature=0.0,
-                    max_tokens=2048,
-                )
-            fixed = (response.choices[0].message.content or "").strip()
-            # Guard: the answer must be roughly the same length as the input —
-            # a rephrased/summarized response is a protocol violation, keep
-            # the original.
-            if not fixed or abs(len(fixed) - len(transcript)) > len(transcript) * 0.2:
-                return None
-            return fixed
-        except Exception as exc:  # noqa: BLE001
-            log.warning("LLM correct_transcript failed: %s", exc)
-            return None
-
     def analyze_context(
         self,
         transcript: str,
