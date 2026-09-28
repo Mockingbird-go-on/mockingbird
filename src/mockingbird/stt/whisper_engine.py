@@ -1838,6 +1838,15 @@ class WhisperEngine:
             segment_id = self._segment_id
         if len(audio) < int(self._sr * 0.5):
             return
+        # Short-buffer hallucination guard (field case 2026-09-28 13:03:56):
+        # 0.8 s of near-silence + a 45-word hot-words prompt sent whisper
+        # into a 9.6 s CJK hallucination («書 К Bä te…»), tripling the
+        # whole answer latency. Below ~1.2 s the next audio block is at most
+        # ~200 ms away — waiting is always cheaper than the hallucination
+        # risk. The guard only affects the SPECULATIVE (early) pass; the
+        # finalize path still decodes everything.
+        if len(audio) < int(self._sr * 1.2):
+            return
         if len(audio) == self._decoded_audio_len:
             log.debug("whisper: stop_hint skipped — no new audio since last decode")
             return
