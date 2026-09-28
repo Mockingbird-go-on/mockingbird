@@ -721,14 +721,14 @@ def test_long_buffer_speculative_decodes_only_tail():
 
 
 def test_trailing_latin_nonsense_guard():
-    from mockingbird.stt.whisper_engine import _has_trailing_latin_nonsense as f
+    from mockingbird.stt.whisper_engine import _strip_trailing_latin_nonsense as f
     from mockingbird.terms.glossary import Glossary
 
     m = Glossary.load()._matcher
-    assert f("Расскажи мне, пожалуйста, что твой Mindfuls", m)
-    assert not f("расскажи про деплой в Kubernetes", m)   # known term
-    assert not f("Что такое Docker и зачем он нужен?", m)  # punctuation
-    assert not f("как настроить GitLab CI", m)             # known short term
+    assert f("Расскажи мне, пожалуйста, что твой Mindfuls", m) == "Расскажи мне, пожалуйста, что твой"
+    assert f("расскажи про деплой в Kubernetes", m).endswith("Kubernetes")   # known term
+    assert f("Что такое Docker и зачем он нужен?", m).endswith("?")  # punctuation
+    assert f("как настроить GitLab CI", m).endswith("GitLab CI")     # known short term
 
 
 def test_vad_keeps_short_quiet_tail():

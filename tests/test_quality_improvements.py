@@ -207,18 +207,42 @@ def test_fuzzy_fix_latin_partial_empty():
 
 
 def test_trailing_latin_nonsense_fuzzy_known_term():
-    from mockingbird.stt.whisper_engine import _has_trailing_latin_nonsense
+    from mockingbird.stt.whisper_engine import _strip_trailing_latin_nonsense
 
     matcher = _StubMatcher({"zabbix": "Zabbix"})
-    # «Zabix» resolves fuzzily → NOT suppressed.
-    assert _has_trailing_latin_nonsense("Расскажи, что такое Zabix", matcher) is False
+    # «Zabix» resolves fuzzily → token kept.
+    assert _strip_trailing_latin_nonsense("Расскажи, что такое Zabix", matcher).endswith("Zabix")
 
 
-def test_trailing_latin_nonsense_still_suppresses_invented():
-    from mockingbird.stt.whisper_engine import _has_trailing_latin_nonsense
+def test_trailing_latin_nonsense_still_clips_invented():
+    from mockingbird.stt.whisper_engine import _strip_trailing_latin_nonsense
 
     matcher = _StubMatcher({"zabbix": "Zabbix"})
-    assert _has_trailing_latin_nonsense("в чем связь между Agile и Mindfuls", matcher) is True
+    out = _strip_trailing_latin_nonsense("в чем связь между Agile и Mindfuls", matcher)
+    assert out == "в чем связь между Agile и"
+
+
+def test_trailing_latin_clip_keeps_question_body():
+    """Field case 2026-09-28 14:13: a clipped-tail token must not kill the
+    whole final. «Poda» (1 edit from «Pod») is KEPT — the question survives
+    with a slightly mangled term; only truly invented tokens («Mindfuls»,
+    «Radians» — far from every known term) are clipped."""
+    from mockingbird.stt.whisper_engine import _strip_trailing_latin_nonsense
+
+    matcher = _StubMatcher({"pod": "Pod", "kubernetes": "Kubernetes"})
+    out = _strip_trailing_latin_nonsense(
+        "давай про Kubernetes, расскажи, что такое Poda", matcher
+    )
+    assert "Kubernetes" in out
+    assert out.endswith("Poda")  # fuzzy-rescued: kept, question intact
+
+    class _Raw:
+        def __init__(s, surfs):
+            s._surfaces = surfs
+
+    raw = _Raw(["pod", "kubernetes", "zabbix", "docker"])
+    assert _strip_trailing_latin_nonsense("расскажи что то про Mindfuls", raw) == "расскажи что то про"
+    assert _strip_trailing_latin_nonsense("что такое Radians", raw) == "что такое"
 
 
 # -- 7. phonetic neighbours ---------------------------------------------------
