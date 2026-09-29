@@ -5,7 +5,8 @@ Triggered from main.py when llm.base_url or llm.api_key is not configured.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QThread, QTimer, Signal
+from PySide6.QtCore import Qt, QEvent, QThread, QTimer, Signal
+from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -647,6 +648,20 @@ class OnboardingWizard(QDialog):
         """Re-validate nav when LLM fields change."""
         if self._step == 1:
             self._update_nav()
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        """Treat Return/Enter inside any QLineEdit as «Next».
+
+        Without this, QDialog's default behaviour turns Enter on a child
+        input into accept() (closing the wizard) — the user is dropped
+        back to the Welcome step on the next show. Esc still rejects.
+        """
+        if (event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
+                and isinstance(self.focusWidget(), QLineEdit)):
+            self._go_next()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     # -- Apply settings ----------------------------------------------------
 
