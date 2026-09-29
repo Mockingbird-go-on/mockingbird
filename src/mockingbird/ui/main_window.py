@@ -383,7 +383,11 @@ class MainWindow(QMainWindow):
         if self._model_dl is None:
             from mockingbird.ui.model_download_dialog import ModelDownloadDialog
 
-            self._model_dl = ModelDownloadDialog(parent=None)
+            # Pass `self` as parent so the overlay is owned by the main
+            # window — it stays on top of Mockingbird without going above
+            # unrelated applications (no more stealing focus over a
+            # browser the user switched to mid-download).
+            self._model_dl = ModelDownloadDialog(parent=self)
             self._model_dl.cancelled.connect(self._on_model_dl_cancel)
             self._model_dl.set_model_name(
                 f"Модель: {self._app.config.whisper.model_size}"
