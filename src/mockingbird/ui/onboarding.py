@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QRadioButton,
     QStackedWidget,
+    QStyle,
     QVBoxLayout,
     QWidget,
 )
@@ -79,6 +80,38 @@ class OnboardingWizard(QDialog):
             self._mark_invalid(self._llm_key)
         else:
             self._mark_valid(self._llm_key)
+
+    def _set_test_result(self, text: str, level: str = "info") -> None:
+        """Update the LLM-check status row with text + native icon.
+
+        level ∈ {"info", "success", "error", "muted", "none"}.
+        «none» clears the row. Only success/error render an icon.
+        """
+        colors = {
+            "info": "#8a99a8",
+            "success": "#3DDC84",
+            "error": "#FF5148",
+            "muted": "#8a99a8",
+        }
+        icons = {
+            "success": QStyle.StandardPixmap.SP_DialogApplyButton,
+            "error": QStyle.StandardPixmap.SP_MessageBoxCritical,
+        }
+        if level == "none" or not text:
+            self._test_result_icon.setVisible(False)
+            self._test_result.setText("")
+            self._test_result.setStyleSheet("")
+            return
+        color = colors.get(level, "#8a99a8")
+        self._test_result.setText(text)
+        self._test_result.setStyleSheet(f"color: {color};")
+        if level in icons:
+            style = self.style()
+            pixmap = style.standardIcon(icons[level]).pixmap(16, 16)
+            self._test_result_icon.setPixmap(pixmap)
+            self._test_result_icon.setVisible(True)
+        else:
+            self._test_result_icon.setVisible(False)
 
     # -- UI construction ---------------------------------------------------
 
@@ -231,10 +264,19 @@ class OnboardingWizard(QDialog):
         form.addRow("Модель:", self._llm_model)
         layout.addLayout(form)
 
-        # Строка с результатом проверки (будет показываться во время проверки и при ошибке)
+        # Строка с результатом проверки (иконка + текст, нативный вид)
+        self._test_result_row = QHBoxLayout()
+        self._test_result_row.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._test_result_icon = QLabel("")
+        self._test_result_icon.setFixedSize(20, 20)
+        self._test_result_icon.setVisible(False)
         self._test_result = QLabel("")
         self._test_result.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(self._test_result)
+        self._test_result_row.addWidget(self._test_result_icon)
+        self._test_result_row.addWidget(self._test_result)
+        self._test_result_row.addStretch(1)
+        self._test_result_row.addStretch(1)
+        layout.addLayout(self._test_result_row)
         
         # Круглый лоадер (индетерминированный прогресс-бар)
         from PySide6.QtWidgets import QProgressBar
@@ -291,14 +333,12 @@ class OnboardingWizard(QDialog):
             self._exit_llm_check_state()
             if ok:
                 # Успех — показываем статус, затем переходим на следующий шаг
-                self._test_result.setText("✅ Подключение успешно")
-                self._test_result.setStyleSheet("color: #3DDC84;")
+                self._set_test_result("Подключение успешно", "success")
                 # Небольшая пауза, чтобы пользователь увидел статус успеха
                 QTimer.singleShot(900, self._advance_after_llm_check)
             else:
                 # Ошибка — показываем сообщение, остаёмся на шаге LLM
-                self._test_result.setText(msg)
-                self._test_result.setStyleSheet("color: #FF5148;")
+                self._set_test_result(msg, "error")
 
         self._test_worker.done.connect(_on_done)
         self._test_worker.start()
@@ -314,8 +354,7 @@ class OnboardingWizard(QDialog):
         def _on_deadline():
             if self._llm_check_in_progress:  # проверка всё ещё идёт
                 self._exit_llm_check_state()
-                self._test_result.setText("❌ Превышено время ожидания (30 с)")
-                self._test_result.setStyleSheet("color: #FF5148;")
+                self._set_test_result("Превышено время ожидания (30 с)", "error")
 
         deadline.timeout.connect(_on_deadline)
         deadline.start(30000)
@@ -323,17 +362,15 @@ class OnboardingWizard(QDialog):
 
     def _advance_after_llm_check(self) -> None:
         """Переход на следующий шаг после успешной проверки LLM."""
-        self._test_result.setText("")
-        self._test_result.setStyleSheet("")
+        self._set_test_result("", "none")
         self._step += 1
         self._stack.setCurrentIndex(self._step)
         self._update_nav()
-    
+
     def _enter_llm_check_state(self) -> None:
         """Переводит навигацию в режим проверки LLM."""
         self._llm_check_in_progress = True
-        self._test_result.setText("Проверка подключения...")
-        self._test_result.setStyleSheet("color: #8a99a8;")
+        self._set_test_result("Проверка подключения...", "info")
         self._loader.show()
         # Блокируем кнопку «Назад»
         self._back_btn.setEnabled(False)
@@ -362,8 +399,7 @@ class OnboardingWizard(QDialog):
             if hasattr(self, "_test_deadline"):
                 self._test_deadline.stop()
             self._exit_llm_check_state()
-            self._test_result.setText("Проверка отменена")
-            self._test_result.setStyleSheet("color: #8a99a8;")
+            self._set_test_result("Проверка отменена", "muted")
             # Переход к следующему шагу (сохраняя введённые данные)
             self._step += 1
             self._stack.setCurrentIndex(self._step)
@@ -592,12 +628,20 @@ class OnboardingWizard(QDialog):
             self._update_nav()
 
     def _skip_step(self) -> None:
-        if self._step < len(self._pages) - 1:
-            # Если проверка LLM идёт — отменяем её
-            if self._step == 1 and self._llm_check_in_progress:
-                self._cancel_llm_check()
-                return
-            self._go_next()
+        if self._step >= len(self._pages) - 1:
+            return
+        # Если проверка LLM идёт — отменяем её
+        if self._step == 1 and self._llm_check_in_progress:
+            self._cancel_llm_check()
+            return
+        # На шаге LLM с пустыми полями «Пропустить» обходит проверку
+        # и переходит к следующему шагу — пользователь явно выбрал пропуск.
+        if self._step == 1 and not self._llm_url.text().strip() and not self._llm_key.text().strip():
+            self._step += 1
+            self._stack.setCurrentIndex(self._step)
+            self._update_nav()
+            return
+        self._go_next()
 
     def _on_llm_changed(self) -> None:
         """Re-validate nav when LLM fields change."""
