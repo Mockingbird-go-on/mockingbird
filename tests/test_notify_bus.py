@@ -157,6 +157,23 @@ def test_model_load_failed_uses_bus():
     assert "QMessageBox" not in fn, "load-failed must go through the bus"
 
 
+def test_start_session_failure_uses_bus():
+    """Session-start failure must go through the NotificationBus, not a bare
+    QMessageBox. Two parallel dialog stacks overlap and freeze the GUI
+    (observed 2026-09-26 when the model-load-failed dialog and a stale
+    QMessageBox were both queued)."""
+    src = _src(os.path.join("ui", "main_window.py"))
+    fn = src[src.index("def _on_start"):src.index("def _on_stop")]
+    if fn.count('"""') >= 2:
+        first = fn.index('"""')
+        second = fn.index('"""', first + 3)
+        fn = fn[:first] + fn[second + 3:]
+    assert "notify_bus.error" in fn, \
+        "_on_start failure path must use notify_bus (single FIFO with model-load-failed)"
+    assert "QMessageBox" not in fn, \
+        "_on_start must NOT call QMessageBox directly — overlaps the bus"
+
+
 def test_download_overlay_respects_modal_active():
     src = _src(os.path.join("ui", "model_download_dialog.py"))
     fn = src[

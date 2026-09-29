@@ -140,6 +140,23 @@ def test_save_settings_roundtrip(app_instance, tmp_path):
     assert url == "http://test/v1"
 
 
+def test_save_settings_invalidates_vision_cache(app_instance):
+    """Changing the LLM model/base_url must drop the cached vision probe so
+    the screenshot button reflects the new model's capability."""
+    # Seed the cache with a stale "True" entry for the OLD (url, model).
+    app_instance.llm._vision_cache[("http://old/v1", "old-model")] = True
+    assert ("http://old/v1", "old-model") in app_instance.llm._vision_cache
+
+    # User changes LLM in the settings dialog — config is mutated BEFORE
+    # save_settings() is invoked (see ui/main_window.py _on_settings).
+    app_instance.config.llm.base_url = "http://new/v1"
+    app_instance.config.llm.model = "new-model"
+    app_instance.save_settings()
+
+    # The cache must be cleared so the next probe reflects the NEW (url, model).
+    assert app_instance.llm._vision_cache == {}
+
+
 def test_save_settings_persists_window_flags(app_instance):
     app_instance.config.window.hide_from_capture = True
     app_instance.save_settings()

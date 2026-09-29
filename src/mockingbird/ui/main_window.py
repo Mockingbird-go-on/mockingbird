@@ -336,11 +336,12 @@ class MainWindow(QMainWindow):
             self._app.start_session()
         except Exception as exc:  # noqa: BLE001
             log.exception("start failed")
-            # Явное модальное уведомление: статусбар легко не заметить.
-            from PySide6.QtWidgets import QMessageBox
+            # Go through NotificationBus — same FIFO as model-load-failed,
+            # vision probe, etc. Bare QMessageBox overlaps with the bus and
+            # can stack dialogs on top of each other (2026-09-26 incident).
+            from mockingbird.ui.notify import bus as notify_bus
 
-            QMessageBox.warning(
-                self,
+            notify_bus.error(
                 "Не удалось начать сессию",
                 str(exc),
             )
