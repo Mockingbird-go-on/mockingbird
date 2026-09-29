@@ -419,12 +419,8 @@ def _progress_tqdm_class(reporter: _DownloadReporter):
 
     The bar is never rendered to a console: the built Windows .exe runs with
     console=False, so sys.stderr may be None and tqdm would crash while trying
-    to write to it. We force ``disable=True``; progress reaches the GUI
+    to write to it. We force a throwaway buffer; progress reaches the GUI
     through the reporter callback only.
-
-    Must inherit from tqdm because ``tqdm.contrib.concurrent.thread_map``
-    calls ``cls.get_lock()`` (class method) — a plain class breaks with
-    ``AttributeError: type object '_ProgressTqdm' has no attribute 'get_lock'``.
     """
     from tqdm.auto import tqdm
 
@@ -439,14 +435,11 @@ def _progress_tqdm_class(reporter: _DownloadReporter):
             self._mute = bool(_re.match(r"Fetching \d+ files?", desc))
             if not self._mute:
                 reporter.new_file(kwargs.get("total") or 0, desc)
-            kwargs["disable"] = True
+            kwargs["file"] = kwargs.get("file") or io.StringIO()
             super().__init__(*args, **kwargs)
 
         def update(self, n=1):
-            try:
-                super().update(n)
-            except Exception:
-                pass
+            super().update(n)
             if not self._mute:
                 self._reporter.update(n)
 
@@ -758,6 +751,26 @@ _MODEL_RELEASE_ASSETS = {
     "Systran/faster-whisper-medium": "Mockingbird-whisper-medium-model.zip",
     "deepdml/faster-whisper-large-v3-turbo-ct2": "Mockingbird-whisper-large-v3-turbo-model.zip",
 }
+
+# Asset names in the s3.cloud.ru public bucket. Short, version-independent
+# names — the bucket hosts one zip per model size, refreshed by the
+# `scripts/build_model_pack.sh` upload step. Primary source for the runtime
+# download; the GitHub release above is the fallback.
+_S3_ASSETS = {
+    "Systran/faster-whisper-tiny": "tiny.zip",
+    "Systran/faster-whisper-base": "base.zip",
+    "Systran/faster-whisper-small": "small.zip",
+    "Systran/faster-whisper-medium": "medium.zip",
+    "deepdml/faster-whisper-large-v3-turbo-ct2": "large-v3-turbo.zip",
+}
+# Cloud.ru requires the bucket to be addressed via its global name
+# (mockingbird.s3.cloud.ru) for anonymous downloads — the bare
+# s3.cloud.ru/mockingbird endpoint demands SigV4 on every GET. The
+# global name is set in the bucket settings via the Cloud.ru UI
+# ("Edit" → Global bucket name / Domain name). This URL is the
+# PRIMARY runtime source for whisper model downloads, with GitHub
+# Releases as fallback-1 and huggingface_hub as fallback-2.
+_S3_BASE = "https://mockingbird.s3.cloud.ru/models"
 _CHUNK = 1 << 20  # 1 MiB
 
 # Approximate unpacked model sizes (bytes) used for the pre-download disk
@@ -799,6 +812,10 @@ def _github_model_url(repo_id: str) -> str:
         f"https://github.com/{_MODEL_RELEASE_REPO}/"
         f"releases/download/{_MODEL_RELEASE_TAG}/{_MODEL_RELEASE_ASSETS[repo_id]}"
     )
+
+
+def _s3_model_url(repo_id: str) -> str:
+    return f"{_S3_BASE}/{_S3_ASSETS[repo_id]}"
 
 
 def _replace_dir_robust(fresh: Path, target: Path, attempts: int = 3) -> bool:
@@ -864,12 +881,101 @@ def _download_from_github(
             progress_cb(message, percent)
 
     _report("Подключение к GitHub (релиз моделей)…", 0.0)
+    try:
+        req = urllib.request.Request(url, method="GET")
+        # Follow the redirect to objects.githubusercontent.com ourselves so
+        # we can stream with progress + cancel (urlopen follows redirects but
+        # hides the intermediate response; a direct urlopen is fine too).
+        resp = urllib.request.urlopen(req, timeout=30)
+    except Exception as exc:  # noqa: BLE001
+        log.info("whisper: GitHub model release unavailable (%s) — falling back to HuggingFace", exc)
+        return None
+
+    total = float(resp.headers.get("Content-Length") or 0)
     zip_path = root / ".github-model-pack.zip"
     root.mkdir(parents=True, exist_ok=True)
+    if total > 0:
+        # zip + unpacked snapshot coexist during installation → ~2x needed.
+        _ensure_free_space(str(root), total * 2.0, "загрузки модели распознавания")
+    done = 0.0
+    try:
+        with open(zip_path, "wb") as f:
+            while True:
+                if cancel_event is not None and cancel_event.is_set():
+                    raise RuntimeError("whisper model download cancelled by user")
+                chunk = resp.read(_CHUNK)
+                if not chunk:
+                    break
+                f.write(chunk)
+                done += len(chunk)
+                if total > 0:
+                    pct = min(99.0, done / total * 100.0)
+                    _report(
+                        f"Скачивание model-pack.zip: {done / 1e6:.0f} из {total / 1e6:.0f} МБ",
+                        pct,
+                    )
+                else:
+                    _report(f"Скачивание model-pack.zip: {done / 1e6:.0f} МБ", -1.0)
+    except Exception:
+        try:
+            zip_path.unlink()
+        except OSError:
+            pass
+        raise
 
-    # Download with up to 2 retries on truncated transfers — Windows AV /
-    # corporate proxies occasionally cut the connection mid-stream without
-    # raising (the socket just returns 0 bytes). 0-byte chunks indicate EOF.
+    log.info(
+        "whisper: GitHub model pack downloaded: %.0f MB (expected %.0f MB)",
+        done / 1e6, total / 1e6,
+    )
+    _report("Распаковка модели…", -1.0)
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            zf.extractall(root)
+    except Exception as exc:  # noqa: BLE001
+        log.exception("whisper: model pack unpack failed")
+        try:
+            zip_path.unlink()
+        except OSError:
+            pass
+        return None
+    finally:
+        try:
+            zip_path.unlink()
+        except OSError:
+            pass
+
+    snapshot = _resolve_unpacked_snapshot(root, repo_id)
+    if snapshot is not None:
+        log.info("whisper: model installed from GitHub release: %s", snapshot)
+    return snapshot
+
+
+def _download_from_s3(
+    cfg: WhisperConfig, repo_id: str, download_root: str,
+    progress_cb=None, cancel_event=None,
+) -> str | None:
+    """Fetch the model pack zip from the s3.cloud.ru public bucket.
+
+    Same layout as the GitHub-release zip (``cache/models--<slug>/{refs,snapshots}``)
+    produced by scripts/build_model_pack.sh — the runtime treats them as
+    interchangeable. Returns the resolved snapshot path or None when the
+    bucket is unreachable (the caller falls back to GitHub, then HF).
+    """
+    import urllib.request
+    import zipfile
+
+    url = _s3_model_url(repo_id)
+    root = Path(download_root)
+    log.info("whisper: trying model pack from s3.cloud.ru: %s", url)
+
+    def _report(message: str, percent: float) -> None:
+        if progress_cb is not None:
+            progress_cb(message, percent)
+
+    _report("Подключение к s3.cloud.ru (CDN моделей)…", 0.0)
+    zip_path = root / ".s3-model-pack.zip"
+    root.mkdir(parents=True, exist_ok=True)
+
     total = 0.0
     done = 0.0
     max_attempts = 3
@@ -878,13 +984,10 @@ def _download_from_github(
             raise RuntimeError("whisper model download cancelled by user")
         try:
             req = urllib.request.Request(url, method="GET")
-            # Follow the redirect to objects.githubusercontent.com ourselves so
-            # we can stream with progress + cancel (urlopen follows redirects but
-            # hides the intermediate response; a direct urlopen is fine too).
             resp = urllib.request.urlopen(req, timeout=30)
         except Exception as exc:  # noqa: BLE001
             log.info(
-                "whisper: GitHub model release unavailable (%s) — falling back to HuggingFace",
+                "whisper: s3.cloud.ru unavailable (%s) — falling back to GitHub",
                 exc,
             )
             return None
@@ -918,12 +1021,9 @@ def _download_from_github(
                 pass
             raise
 
-        # A short read (Content-Length says 1.5 GB, we got 34 MB) usually means
-        # the proxy/AV silently dropped the connection — the loop exited cleanly
-        # without an exception. Detect this BEFORE unpacking.
         if total > 0 and (total - done) > 10 * 1024 * 1024:
             log.warning(
-                "whisper: GitHub model pack truncated: got %.0f MB, expected %.0f MB "
+                "whisper: s3.cloud.ru model pack truncated: got %.0f MB, expected %.0f MB "
                 "(attempt %d/%d)",
                 done / 1e6, total / 1e6, attempt + 1, max_attempts,
             )
@@ -938,7 +1038,7 @@ def _download_from_github(
         break
 
     log.info(
-        "whisper: GitHub model pack downloaded: %.0f MB (expected %.0f MB)",
+        "whisper: s3.cloud.ru model pack downloaded: %.0f MB (expected %.0f MB)",
         done / 1e6, total / 1e6,
     )
     _report("Распаковка модели…", -1.0)
@@ -946,7 +1046,7 @@ def _download_from_github(
         with zipfile.ZipFile(zip_path) as zf:
             zf.extractall(root)
     except Exception as exc:  # noqa: BLE001
-        log.exception("whisper: model pack unpack failed")
+        log.exception("whisper: s3 model pack unpack failed")
         try:
             zip_path.unlink()
         except OSError:
@@ -958,23 +1058,21 @@ def _download_from_github(
         except OSError:
             pass
 
-    # The pack contains cache/models--<slug>; move it under the root.
+    return _resolve_unpacked_snapshot(root, repo_id)
+
+
+def _resolve_unpacked_snapshot(root: Path, repo_id: str) -> str | None:
+    """Move the unpacked ``cache/models--<slug>`` to root and return the snapshot.
+
+    Shared between _download_from_github and _download_from_s3 — the zip
+    layout is identical (cache/<repo-dir>/{refs,snapshots,trees}).
+    """
     pack_cache = root / "cache"
     if pack_cache.is_dir():
         for entry in pack_cache.iterdir():
             target = root / entry.name
             if target.exists():
-                # A leftover (possibly locked/partial) directory from a
-                # previous corrupt-cache cleanup must not silently swallow
-                # the freshly unpacked pack: rmtree(ignore_errors) can leave
-                # locked files behind on Windows (AV scan), and the old
-                # "skip if exists" logic then dropped refs/main in cache/ →
-                # "unexpected layout" after a full 1.5 GB download.
                 if not _replace_dir_robust(entry, target):
-                    # Last resort: the fresh pack dir stays under cache/ —
-                    # resolve_model_path's caller only needs a VALID SNAPSHOT
-                    # PATH, it does not care which parent holds it. Leave it
-                    # in place; the layout check below also accepts it.
                     log.warning(
                         "whisper: stale model dir %s is locked — keeping the "
                         "fresh pack under %s", target, entry,
@@ -995,29 +1093,30 @@ def _download_from_github(
         snaps = base / slug / "snapshots"
         if not (refs.is_file() and snaps.is_dir()):
             continue
-        commit = refs.read_text(encoding="utf-8").strip()
-        snapshot = snaps / commit
-        if not snapshot.is_dir():
-            log.error("whisper: pack refs point to missing snapshot %s", snapshot)
-            return None
-        if base != root:
-            log.warning(
-                "whisper: model resolved from pack dir under cache/ (stale "
-                "root dir is locked; it will be replaced on a later run)"
+        commits = sorted(p for p in snaps.iterdir() if p.is_dir())
+        if not commits:
+            continue
+        snap = commits[-1]
+        # Sanity: required files must exist (model.bin may have been excluded
+        # from the pack by accident — better fail now than at decode time).
+        if not (snap / "model.bin").is_file() or not (snap / "config.json").is_file():
+            log.error(
+                "whisper: snapshot at %s is missing model.bin or config.json",
+                snap,
             )
-        log.info("whisper: model installed from GitHub release: %s", snapshot)
-        return str(snapshot)
-    # Diagnostics: what actually landed under the root (the silent
-    # "skip if exists" move bug left refs/ stranded under cache/).
+            return None
+        return str(snap)
+    # No snapshot found — dump the layout for the log.
     try:
-        listing = [p.name for p in root.iterdir()]
-        cache_listing = (
-            [p.name for p in (root / "cache").iterdir()] if (root / "cache").is_dir() else None
-        )
+        listing = "\n".join(sorted(p.name for p in root.iterdir()))
     except OSError:
-        listing = cache_listing = None
+        listing = None
+    try:
+        cache_listing = "\n".join(sorted(p.name for p in (root / "cache").iterdir()))
+    except OSError:
+        cache_listing = None
     log.error(
-        "whisper: GitHub model pack has unexpected layout under %s "
+        "whisper: model pack has unexpected layout under %s "
         "(root=%s, cache=%s)", root, listing, cache_listing,
     )
     return None
@@ -1091,7 +1190,36 @@ def resolve_model_path(cfg: WhisperConfig, progress_cb=None, cancel_event=None) 
             "завершения или нажмите «Отмена» перед повтором."
         )
 
-    # ---- primary source: OUR GitHub release (models tag) ---------------------
+    # ---- primary source: s3.cloud.ru public bucket --------------------------
+    # s3.cloud.ru is our own bucket under our control — faster CDN than
+    # huggingface.co from Russian / CIS networks and not subject to GitHub's
+    # 2 GiB asset cap. Falls back to GitHub, then huggingface_hub.
+    if repo_id in _S3_ASSETS:
+        try:
+            s3_path = _download_from_s3(
+                cfg, repo_id, download_root,
+                progress_cb=progress_cb, cancel_event=cancel_event,
+            )
+            if s3_path is not None:
+                problem = _model_dir_problem(s3_path)
+                if problem is None:
+                    return s3_path
+                log.error(
+                    "whisper: s3-installed model at %s is corrupted (%s) — "
+                    "falling back to GitHub",
+                    s3_path, problem,
+                )
+                _remove_snapshot(s3_path)
+        except Exception as exc:  # noqa: BLE001
+            if cancel_event is not None and cancel_event.is_set():
+                raise
+            if "Недостаточно места" in str(exc):
+                raise
+            log.warning(
+                "whisper: s3.cloud.ru download failed (%s) — trying GitHub", exc,
+            )
+
+    # ---- secondary source: OUR GitHub release (models tag) ------------------
     # huggingface.co's CDN proved unreachable from frozen Windows builds on
     # some machines (transfer stalls at 0 bytes while the API works);
     # github.com release assets are under our control and reliable. Falls
