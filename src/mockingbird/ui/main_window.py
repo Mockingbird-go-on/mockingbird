@@ -178,6 +178,10 @@ class MainWindow(QMainWindow):
         self._shot_btn.clicked.connect(self._on_screenshot)
         if not getattr(self._app.config, "screenshot", None) or not self._app.config.screenshot.enabled:
             self._shot_btn.hide()
+        # Sync the button state with the cached probe result (if any) so a
+        # vision-capable / text-only model is reflected without waiting for
+        # the next probe.
+        self._refresh_screenshot_button()
         self._timer_label = QLabel("00:00")
         self._timer_label.setObjectName("sessionTimer")
         self._timer_label.setStyleSheet(
@@ -299,9 +303,33 @@ class MainWindow(QMainWindow):
 
     def _on_vision_probe_result(self, ok) -> None:
         self._vision_state = bool(ok)
+        self._refresh_screenshot_button()
         dlg = getattr(self, "_shot_dlg", None)
         if dlg is not None and dlg.isVisible():
             dlg._set_vision(self._vision_state)
+
+    def _refresh_screenshot_button(self) -> None:
+        """Reflect the cached vision-probe result in the screenshot button.
+
+        When the configured LLM does not support image inputs the button is
+        disabled and the tooltip explains why; otherwise it stays active.
+        The probe is launched from _on_start (and lazily on first use); until
+        the result lands the button keeps its default state.
+        """
+        if not hasattr(self, "_shot_btn"):
+            return
+        if self._vision_state is False:
+            self._shot_btn.setEnabled(False)
+            self._shot_btn.setToolTip(
+                "Скриншот-вопрос недоступен: текущая LLM не поддерживает изображения.\n"
+                "Измените модель в «Настройки»."
+            )
+        else:
+            self._shot_btn.setEnabled(True)
+            self._shot_btn.setToolTip(
+                "Скриншот-вопрос (Ctrl+Shift+S)\n"
+                "Выделите область экрана и задайте вопрос"
+            )
 
     def _on_start(self) -> None:
         try:
@@ -320,6 +348,13 @@ class MainWindow(QMainWindow):
             return
         self._set_running(True)
         self._log_label.setText(self._log_path_text(session=self._app.session_id))
+        # Run the vision-capability probe in the background after the session
+        # starts. The result lands on _on_vision_probe_result, which updates
+        # the screenshot button (greyed-out + tooltip when the model is
+        # text-only). The probe is cheap (1×1 PNG, ~5-token reply) and the
+        # result is cached per (base_url, model) by LlmClient.probe_vision.
+        if self._vision_state is None:
+            self._app.check_vision_async()
 
     def _on_stop(self) -> None:
         """Stop the session without freezing the GUI.
