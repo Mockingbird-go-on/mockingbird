@@ -41,6 +41,7 @@ class OnboardingWizard(QDialog):
         self._hide_from_capture = False
         self.setWindowTitle("Добро пожаловать в Mockingbird")
         self.resize(620, 500)
+        self._llm_check_in_progress = False  # флаг идущей проверки LLM
         self._build_ui()
         # Accent frame (brand red) — the wizard must read as the focal point
         # of the screen (2026-09-26 design pass).
@@ -180,6 +181,46 @@ class OnboardingWizard(QDialog):
         form.setSpacing(10)
         self._llm_url = QLineEdit(self.config.llm.base_url or "")
         self._llm_url.setPlaceholderText("https://api.openai.com/v1")
+        # Автоподставление https:// при ручном вводе и защита от дублирования при копипасте
+        def _ensure_https(text: str) -> str:
+            stripped = text.strip()
+            if not stripped:
+                return ""
+            # Уже начинается с http:// или https:// — ничего не менять
+            if stripped.startswith(('http://', 'https://')):
+                return stripped
+            # Добавить https:// если нет
+            return 'https://' + stripped
+        
+        def _on_url_changed():
+            # Чтобы не зациклиться, блокируем сигнал
+            self._llm_url.blockSignals(True)
+            current = self._llm_url.text()
+            # Запоминаем позицию курсора перед изменением
+            cursor_pos = self._llm_url.cursorPosition()
+            
+            # Если текст пустой или уже начинается с https?:// — не трогаем
+            if current and not current.startswith(('http://', 'https://')):
+                # Проверяем, не является ли это частью копипаста с уже имеющимся https://
+                # Например, пользователь выделил "https://api.deepseek.com" и вставил — менять не нужно
+                # Но если он начал печатать "api.deepseek.com" — добавить префикс
+                # Используем флаг, чтобы избежать дублирования при вставке через clipboard
+                if not hasattr(self, '_url_processing'):
+                    self._url_processing = True
+                    fixed = _ensure_https(current)
+                    if fixed != current:
+                        self._llm_url.setText(fixed)
+                        # Восстанавливаем позицию курсора с учётом добавленных символов
+                        self._llm_url.setCursorPosition(cursor_pos + len('https://'))
+                    self._url_processing = False
+            
+            self._llm_url.blockSignals(False)
+        
+        # Срабатывает при изменении текста (ввод с клавиатуры, вставка)
+        self._llm_url.textChanged.connect(_on_url_changed)
+        # Также при потере фокуса — финальная проверка
+        self._llm_url.editingFinished.connect(_on_url_changed)
+        
         self._llm_key = QLineEdit(self.config.llm.api_key or "")
         self._llm_key.setPlaceholderText("sk-...")
         self._llm_key.setEchoMode(QLineEdit.EchoMode.Password)
@@ -190,31 +231,34 @@ class OnboardingWizard(QDialog):
         form.addRow("Модель:", self._llm_model)
         layout.addLayout(form)
 
-        test_row = QHBoxLayout()
-        self._test_btn = QPushButton("Проверить подключение")
+        # Строка с результатом проверки (будет показываться во время проверки и при ошибке)
         self._test_result = QLabel("")
-        self._test_btn.clicked.connect(self._test_llm)
-        test_row.addWidget(self._test_btn)
-        test_row.addWidget(self._test_result, stretch=1)
-        layout.addLayout(test_row)
+        self._test_result.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self._test_result)
+        
+        # Круглый лоадер (индетерминированный прогресс-бар)
+        from PySide6.QtWidgets import QProgressBar
+        self._loader = QProgressBar()
+        self._loader.setRange(0, 0)  # индетерминированный режим
+        self._loader.setTextVisible(False)
+        self._loader.setFixedHeight(4)
+        self._loader.hide()
+        layout.addWidget(self._loader)
+        
         layout.addStretch(1)
         return page
 
-    def _test_llm(self) -> None:
+    def _perform_llm_check(self) -> None:
+        """Запускает проверку подключения LLM и возвращает результат через сигнал."""
         url = self._llm_url.text().strip()
         key = self._llm_key.text().strip()
         model = self._llm_model.text().strip() or "gpt-4o-mini"
         if not url or not key:
-            self._test_result.setText("⚠ Укажите URL и ключ")
-            self._test_result.setStyleSheet("color: #FF5148;")
+            # Это не должно происходить, так как кнопка "Далее" отключена при пустых полях
             return
-        self._test_result.setText("Проверка...")
-        self._test_result.setStyleSheet("color: #8a99a8;")
-        self._test_btn.setEnabled(False)
+        
+        self._enter_llm_check_state()
 
-        # Never run the network call on the GUI thread — with a slow/dead
-        # endpoint the wizard would freeze for the whole LLM timeout (~20 s).
-        # Same QThread pattern as the settings dialog's connection check.
         class _TestWorker(QThread):
             done = Signal(str, bool)
 
@@ -244,9 +288,17 @@ class OnboardingWizard(QDialog):
         self._test_worker = _TestWorker()
 
         def _on_done(msg: str, ok: bool):
-            self._test_result.setText(msg)
-            self._test_result.setStyleSheet("color: #3DDC84;" if ok else "color: #FF5148;")
-            self._test_btn.setEnabled(True)
+            self._exit_llm_check_state()
+            if ok:
+                # Успех — показываем статус, затем переходим на следующий шаг
+                self._test_result.setText("✅ Подключение успешно")
+                self._test_result.setStyleSheet("color: #3DDC84;")
+                # Небольшая пауза, чтобы пользователь увидел статус успеха
+                QTimer.singleShot(900, self._advance_after_llm_check)
+            else:
+                # Ошибка — показываем сообщение, остаёмся на шаге LLM
+                self._test_result.setText(msg)
+                self._test_result.setStyleSheet("color: #FF5148;")
 
         self._test_worker.done.connect(_on_done)
         self._test_worker.start()
@@ -260,14 +312,68 @@ class OnboardingWizard(QDialog):
         deadline.setSingleShot(True)
 
         def _on_deadline():
-            if not self._test_btn.isEnabled():
+            if self._llm_check_in_progress:  # проверка всё ещё идёт
+                self._exit_llm_check_state()
                 self._test_result.setText("❌ Превышено время ожидания (30 с)")
                 self._test_result.setStyleSheet("color: #FF5148;")
-                self._test_btn.setEnabled(True)
 
         deadline.timeout.connect(_on_deadline)
         deadline.start(30000)
         self._test_deadline = deadline
+
+    def _advance_after_llm_check(self) -> None:
+        """Переход на следующий шаг после успешной проверки LLM."""
+        self._test_result.setText("")
+        self._test_result.setStyleSheet("")
+        self._step += 1
+        self._stack.setCurrentIndex(self._step)
+        self._update_nav()
+    
+    def _enter_llm_check_state(self) -> None:
+        """Переводит навигацию в режим проверки LLM."""
+        self._llm_check_in_progress = True
+        self._test_result.setText("Проверка подключения...")
+        self._test_result.setStyleSheet("color: #8a99a8;")
+        self._loader.show()
+        # Блокируем кнопку «Назад»
+        self._back_btn.setEnabled(False)
+        # Кнопка «Далее» становится «Отмена проверки»
+        self._next_btn.setText("Отмена проверки")
+        self._next_btn.setEnabled(True)
+        # Кнопка «Пропустить» остаётся активной (позволяет отменить проверку и перейти дальше)
+        self._skip_btn.setEnabled(True)
+
+    def _exit_llm_check_state(self) -> None:
+        """Выход из режима проверки LLM (успех/отмена/ошибка)."""
+        self._llm_check_in_progress = False
+        self._loader.hide()
+        self._next_btn.setText("Далее →")
+        self._back_btn.setEnabled(self._step > 0)
+        self._skip_btn.setEnabled(True)
+
+    def _cancel_llm_check(self) -> None:
+        """Отменяет текущую проверку LLM и переходит на следующий шаг."""
+        if self._llm_check_in_progress:
+            self._llm_check_in_progress = False
+            # Остановить воркер и таймер
+            if hasattr(self, "_test_worker"):
+                self._test_worker.quit()
+                self._test_worker.wait()
+            if hasattr(self, "_test_deadline"):
+                self._test_deadline.stop()
+            self._exit_llm_check_state()
+            self._test_result.setText("Проверка отменена")
+            self._test_result.setStyleSheet("color: #8a99a8;")
+            # Переход к следующему шагу (сохраняя введённые данные)
+            self._step += 1
+            self._stack.setCurrentIndex(self._step)
+            self._update_nav()
+
+    def _unblock_nav(self) -> None:
+        """Восстанавливает доступ к навигационным кнопкам после проверки."""
+        self._back_btn.setEnabled(self._step > 0)
+        self._next_btn.setEnabled(True)
+        self._skip_btn.setVisible(self._step > 0 and self._step < len(self._pages) - 1)
 
     # -- Step 2: Audio -----------------------------------------------------
 
@@ -455,6 +561,13 @@ class OnboardingWizard(QDialog):
 
     def _go_next(self) -> None:
         if self._step < len(self._pages) - 1:
+            # Если проверка LLM уже идёт — отменяем её и переходим дальше
+            if self._step == 1 and self._llm_check_in_progress:
+                self._cancel_llm_check()
+                return
+            if self._step == 1:  # Шаг LLM — проверка подключения перед переходом
+                self._perform_llm_check()
+                return  # переход произойдёт в _on_done при успехе
             self._step += 1
             self._stack.setCurrentIndex(self._step)
             self._update_nav()
@@ -464,12 +577,26 @@ class OnboardingWizard(QDialog):
 
     def _go_back(self) -> None:
         if self._step > 0:
+            # Если проверка LLM идёт — отменяем её перед возвратом
+            if self._step == 1 and self._llm_check_in_progress:
+                self._cancel_llm_check()
+                # Отмена проверки уже перешла на следующий шаг (в _cancel_llm_check)
+                # Нужно вернуться на предыдущий шаг, но мы уже на шаге 2 => уменьшаем step на 1
+                if self._step > 0:
+                    self._step -= 1
+                    self._stack.setCurrentIndex(self._step)
+                    self._update_nav()
+                return
             self._step -= 1
             self._stack.setCurrentIndex(self._step)
             self._update_nav()
 
     def _skip_step(self) -> None:
         if self._step < len(self._pages) - 1:
+            # Если проверка LLM идёт — отменяем её
+            if self._step == 1 and self._llm_check_in_progress:
+                self._cancel_llm_check()
+                return
             self._go_next()
 
     def _on_llm_changed(self) -> None:

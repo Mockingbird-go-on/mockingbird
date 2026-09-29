@@ -492,6 +492,9 @@ class InterviewPanel(QWidget):
         self._regenerate_callback = regenerate_callback
         self._concept_callback = concept_callback
         self._llm_primary = llm_primary
+        # ``llm_available`` may be a bool (tests / static callers) or a callable
+        # (MainWindow passes a lambda so the panel sees a just-onboarded LLM —
+        # the value was captured BEFORE the wizard mutated the config).
         self._llm_available = llm_available
         # Truth source for "an answer is being generated right now" (engine's
         # is_streaming/answer-pending state). More reliable than the panel's
@@ -576,14 +579,17 @@ class InterviewPanel(QWidget):
         header_layout = QVBoxLayout(header)
         header_layout.setContentsMargins(0, 0, 0, 0)
         header_layout.setSpacing(4)
-        question_row = QHBoxLayout()
-        question_row.setSpacing(8)
-        question_row.addWidget(self._question)
-        question_row.addWidget(self._context_icon)
-        question_row.addStretch(1)
-        header_layout.addLayout(question_row)
+        # Big question header removed (2026-09-28): it occupied a whole row
+        # above the live transcript and the user only needs the live strip.
+        # ``_question`` is kept (hidden) so history/regenerate paths that
+        # call setText() keep working without touching the visible layout.
+        self._question.setVisible(False)
+        live_row = QHBoxLayout()
+        live_row.setSpacing(8)
+        live_row.addWidget(self._live, stretch=1)
+        live_row.addWidget(self._context_icon)
+        header_layout.addLayout(live_row)
         header_layout.addLayout(self._chips_row)
-        header_layout.addWidget(self._live)
         self._header = header
 
         # === Layout ===
@@ -615,6 +621,22 @@ class InterviewPanel(QWidget):
         self._main_layout = layout
 
     # -- events ------------------------------------------------------------
+
+    def _llm_available_now(self) -> bool:
+        """Resolve the LLM-available flag, supporting a dynamic callable.
+
+        MainWindow passes a lambda (``lambda: bool(self._app.llm.available)``)
+        so the panel reflects an LLM configured during onboarding — the panel
+        is constructed BEFORE the wizard runs, so a captured bool would stay
+        False and silently disable regenerate / concept answers forever.
+        """
+        avail = self._llm_available
+        if callable(avail):
+            try:
+                return bool(avail())
+            except Exception:  # noqa: BLE001
+                return False
+        return bool(avail)
 
     def _set_question_placeholder(self, on: bool) -> None:
         """Paint the question header as muted placeholder or active text."""
@@ -648,7 +670,7 @@ class InterviewPanel(QWidget):
         self._llm_answer_text = ""
         self._question.setText(detected.text)
         self._set_question_placeholder(False)
-        if self._llm_primary and self._llm_available:
+        if self._llm_primary and self._llm_available_now():
             self._answer_llm.browser().setHtml(_themed_html(
                 f"<p style='color:{theme.TEXT_SECONDARY};'>{html.escape(_LLM_PLACEHOLDER)}</p>"
             ))
@@ -945,7 +967,7 @@ class InterviewPanel(QWidget):
         self._answer_llm.set_current_query(query)
         self._reset_llm_stream()
         self._llm_answer_text = ""
-        if self._llm_primary and self._llm_available:
+        if self._llm_primary and self._llm_available_now():
             self._answer_llm.browser().setHtml(_themed_html(
                 f"<p style='color:{theme.TEXT_SECONDARY};'>{_html.escape(_LLM_PLACEHOLDER)}</p>"
             ))
@@ -1032,7 +1054,7 @@ class InterviewPanel(QWidget):
         # exact block, we show the "forming answer…" placeholder while the
         # model generates a rich, expanded answer — the KB block stays
         # available in the topic tree for manual browsing (click → popover).
-        if not view.preview and self._llm_primary and self._llm_available:
+        if not view.preview and self._llm_primary and self._llm_available_now():
             self._llm_answer_from_kb = False
             self._llm_answer_text = ""
             self._answer_llm.browser().setHtml(_themed_html(
@@ -1169,7 +1191,7 @@ class InterviewPanel(QWidget):
 
     def _on_regenerate(self, query: str) -> None:
         """Handle regenerate button click."""
-        if not self._llm_primary or not self._llm_available:
+        if not self._llm_primary or not self._llm_available_now():
             return
         
         # Use current query if provided, otherwise use pending query
@@ -1234,7 +1256,7 @@ class InterviewPanel(QWidget):
         as a new entry in the history sidebar.
         """
         term = (term or "").strip()
-        if not term or not self._llm_primary or not self._llm_available:
+        if not term or not self._llm_primary or not self._llm_available_now():
             return
         if self._concept_callback is None:
             return
