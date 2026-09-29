@@ -1112,6 +1112,14 @@ class App:
             if isinstance(value, bool):
                 value = "1" if value else "0"
             self.store.set_setting(key, value if value is not None else "")
+        # Vision-capability probe is cached per (base_url, model) on the LLM
+        # client. The settings dialog writes new llm.base_url / llm.model
+        # directly to self.config BEFORE save_settings runs, so the cached
+        # entry is now stale — the screenshot button would show the old
+        # vision capability until the next process restart. Clear it so the
+        # next probe reflects the new LLM.
+        if hasattr(self, "llm"):
+            self.llm.invalidate_vision_cache()
         log.info("settings saved")
 
     def install_log_handler(self) -> None:

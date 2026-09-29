@@ -349,3 +349,32 @@ def test_pack_move_source_contains_replace_logic():
     # swallow the pack — the snapshot also resolves from cache/ fallback.
     assert "_replace_dir_robust" in text
     assert "for base in (root, root / \"cache\")" in text
+
+
+def test_faulthandler_dump_cancelled_in_finally():
+    """The CLI diagnostic tool (``--download-model``) arms faulthandler and
+    must cancel the watchdog from a finally block — otherwise the next
+    normal launch inherits the thread-dump scheduler and writes spurious
+    traces to its own log file.
+
+    The finally clause must guard against the ``faulthandler`` symbol not
+    being bound yet (early failure before the ``import faulthandler``
+    line) so the cleanup never raises ``NameError``.
+    """
+    import re
+    from pathlib import Path
+
+    main_text = Path(__file__).resolve().parents[1] / "src" / "mockingbird" / "main.py"
+    src = main_text.read_text(encoding="utf-8")
+
+    # Slice the body of _download_model_cli.
+    start = src.index("def _download_model_cli")
+    # The function ends at the next "def " at the same indent level.
+    m = re.search(r"^def ", src[start + 1:], re.M)
+    fn = src[start : start + 1 + m.start()] if m else src[start:]
+
+    # The finally block must call cancel_dump_traceback_later (possibly via
+    # an existence guard — the latter is needed if anything before the
+    # `import faulthandler` line can fail, e.g. permission error on log_path).
+    assert "cancel_dump_traceback_later" in fn
+    assert "faulthandler.cancel_dump_traceback_later" in fn

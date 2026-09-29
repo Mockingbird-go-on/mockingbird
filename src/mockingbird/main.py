@@ -266,7 +266,12 @@ def _download_model_cli() -> int:
         print(f"FAILED: {exc}")
         return 1
     finally:
-        faulthandler.cancel_dump_traceback_later()
+        # faulthandler.dump_traceback_later() is armed above; if we got here
+        # before the import succeeded (e.g. a permission error on log_path
+        # before line 207) the symbol isn't bound yet — guard with hasattr
+        # so the finally clause never raises NameError on the cleanup path.
+        if "faulthandler" in globals():
+            faulthandler.cancel_dump_traceback_later()
         fh.flush()
         fh.close()
 

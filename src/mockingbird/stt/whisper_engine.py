@@ -1413,6 +1413,16 @@ def resolve_model_path(cfg: WhisperConfig, progress_cb=None, cancel_event=None) 
             restore_xet()
     finally:
         flight_lock.release()
+        # Clean up the per-repo lock entry to avoid a slow-growing dict of
+        # unowned threading.Lock objects after the user cycles through
+        # several model sizes in a single session. Use pop() under the
+        # module-level guard so a concurrent resolve_model_path on the
+        # same repo doesn't observe a missing key and recreate the lock
+        # mid-release.
+        with _RESOLVE_LOCKS_GUARD:
+            existing = _RESOLVE_LOCKS.get(repo_id)
+            if existing is flight_lock:
+                _RESOLVE_LOCKS.pop(repo_id, None)
     problem = _model_dir_problem(path)
     if problem is not None:
         raise RuntimeError(f"downloaded whisper model at {path} is corrupted: {problem}")
