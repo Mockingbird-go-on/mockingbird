@@ -166,7 +166,9 @@ def test_download_overlay_respects_modal_active():
     # 2026-09-27: the overlay stays visible even while the app is inactive
     # (user request) — no activeWindow() gating may remain.
     assert "activeWindow" not in fn
-    assert "self.raise_()" in fn
+    # 2026-09-29: the overlay is a child window of the main window, so raise_()
+    # is no longer needed and would steal focus when called every 300 ms.
+    assert "self.raise_()" not in fn
 
 
 def test_onboarding_has_accent_marks():
