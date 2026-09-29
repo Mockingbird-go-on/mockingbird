@@ -503,7 +503,6 @@ class InterviewPanel(QWidget):
         self._current_query = ""
         self._pending_llm_query = ""
         self._browsing_history = False
-        self._covered_topics: dict[str, str] = {}
         self._llm_answer_cache: dict[str, str] = {}
         self._llm_html_cache: dict[str, str] = {}
         self._llm_timer = QTimer(self)
@@ -541,20 +540,9 @@ class InterviewPanel(QWidget):
         self._context_line.setStyleSheet(f"color:{theme.TEXT_SECONDARY};font-size:12px;")
         self._context_line.setVisible(False)  # folded into the context tooltip
 
-        # Compact info glyph next to the question: the full context line,
-        # breadcrumb and session-topic chips live in its tooltip instead of
-        # occupying header rows.
-        self._context_icon = QLabel()
-        self._context_icon.setFixedSize(18, 18)
-        self._context_icon.setScaledContents(False)
-        self._context_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._context_icon.setVisible(False)
-        self._context_icon.setCursor(Qt.CursorShape.WhatsThisCursor)
-        self._update_context_icon()
-
-        self._chips_row = QHBoxLayout()
-        self._chips_row.setSpacing(6)
-        self._chips_row_folded = True  # chips only feed the context tooltip
+        # Context glyph + topic chips removed (2026-09-29): the info icon
+        # next to the live strip showed breadcrumb / context line / session
+        # topics only on hover — they were dead weight in the common case.
 
         self._live = QLabel("")
         self._live.setWordWrap(True)
@@ -587,9 +575,7 @@ class InterviewPanel(QWidget):
         live_row = QHBoxLayout()
         live_row.setSpacing(8)
         live_row.addWidget(self._live, stretch=1)
-        live_row.addWidget(self._context_icon)
         header_layout.addLayout(live_row)
-        header_layout.addLayout(self._chips_row)
         self._header = header
 
         # === Layout ===
@@ -717,7 +703,6 @@ class InterviewPanel(QWidget):
             f"color:{theme.TEXT_SECONDARY};font-size:12px;"
         )
         self._render_live()
-        self._update_chips(self._view)
         if self._llm_answer_text:
             self._render_llm_answer()
         elif self._view is not None:
@@ -730,34 +715,6 @@ class InterviewPanel(QWidget):
 
     def on_answer(self, view: protocol.KnowledgeView) -> None:
         self._render_view(view, record=True)
-
-    def _update_context_icon(self) -> None:
-        """Re-render the context glyph and rebuild the combined tooltip."""
-        from mockingbird.ui.icons import icon as lucide_icon
-
-        self._context_icon.setPixmap(
-            lucide_icon(
-                "info", size=16, color=theme.current.text_secondary
-            ).pixmap(16, 16)
-        )
-        tooltip_parts: list[str] = []
-        bc = self._breadcrumb.text()
-        if bc:
-            tooltip_parts.append(bc)
-        ctx = self._context_line.text()
-        if ctx:
-            # Strip the rich-text markup (<b>/<i>) — tooltips are plain text.
-            plain = re.sub(r"<[^>]+>", "", ctx)
-            tooltip_parts.append(plain)
-        topics = ", ".join(self._covered_topics.values())
-        if topics:
-            tooltip_parts.append(f"Темы сессии: {topics}")
-        if tooltip_parts:
-            self._context_icon.setToolTip("\n".join(tooltip_parts))
-            self._context_icon.setVisible(True)
-        else:
-            self._context_icon.setToolTip("")
-            self._context_icon.setVisible(False)
 
     def on_context(self, state: protocol.DiscussionState) -> None:
         """Context info (topic, summary, active question) — shown in tooltip."""
@@ -773,7 +730,6 @@ class InterviewPanel(QWidget):
         else:
             prefix = "Переход" if state.shifted else "Контекст"
             self._context_line.setText(f"{prefix}: " + " · ".join(parts))
-        self._update_context_icon()
 
     def on_llm_answer(self, msg) -> None:
         """Render the exact-question LLM answer into the primary pane.
@@ -996,7 +952,6 @@ class InterviewPanel(QWidget):
         self._question.setText(view.matched_query or view.title or view.topic)
         self._set_question_placeholder(False)
         self._breadcrumb.setText(view.title or view.topic)
-        self._update_chips(view)
         self._render_kb_pane(view)
         self._render_primary(view)
         if view.preview or view.partial:
@@ -1100,33 +1055,6 @@ class InterviewPanel(QWidget):
             f"<p>{render_answer(block.answer, block.highlight)}</p>"
         )
 
-    # -- chips -------------------------------------------------------------
-
-    def _update_chips(self, view: protocol.KnowledgeView | None) -> None:
-        if view is not None and view.topic:
-            self._covered_topics.setdefault(view.topic, view.title or view.topic)
-        # Chips are folded into the context tooltip (space saving): the row
-        # stays empty; only the icon tooltip lists the covered topics.
-        while self._chips_row.count():
-            item = self._chips_row.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
-        if self._covered_topics and not self._chips_row_folded:
-            caption = QLabel("Темы сессии:")
-            caption.setStyleSheet(f"color:{theme.TEXT_SECONDARY};")
-            self._chips_row.addWidget(caption)
-            for topic_id, title in self._covered_topics.items():
-                chip = QLabel(title)
-                chip.setStyleSheet(
-                    "border-radius:10px; padding:2px 10px; color:white; background:"
-                    + theme.TOPIC_COLORS[abs(hash(topic_id)) % len(theme.TOPIC_COLORS)]
-                    + "; font-size:11px;"
-                )
-                self._chips_row.addWidget(chip)
-            self._chips_row.addStretch(1)
-        self._update_context_icon()
-
     # -- history -----------------------------------------------------------
 
     def _on_history_click(self, query: str) -> None:
@@ -1229,7 +1157,6 @@ class InterviewPanel(QWidget):
                 self._question.setText(view.matched_query or view.title or view.topic)
                 self._set_question_placeholder(False)
                 self._breadcrumb.setText(view.title or view.topic)
-                self._update_chips(view)
                 self._render_kb_pane(view)
                 # Record the (re-asked/edited) question in history.
                 self._history.add_entry(
@@ -1276,7 +1203,6 @@ class InterviewPanel(QWidget):
         self._question.setText(query)
         self._set_question_placeholder(False)
         self._breadcrumb.setText(query)
-        self._update_chips(None)
 
         # Reset stream state and show the forming-answer placeholder.
         self._reset_llm_stream()
