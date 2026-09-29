@@ -92,7 +92,7 @@ class MainWindow(QMainWindow):
             regenerate_callback=self._app.interview.regenerate_answer,
             concept_callback=self._app.interview.ask_concept,
             llm_primary=self._app.config.interview.llm_primary,
-            llm_available=self._app.llm.available,
+            llm_available=lambda: bool(self._app.llm.available),
             llm_busy=lambda: bool(getattr(self._app.llm, "is_streaming", False)),
         )
         self._tabs.addTab(self._interview, "Интервью")
@@ -252,6 +252,7 @@ class MainWindow(QMainWindow):
         )
         self._mute_btn.setIcon(self._mute_icon(self._app.muted))
         self._settings_btn.setIcon(lucide_icon("settings-2"))
+        self._shot_btn.setIcon(lucide_icon("camera"))
 
     def _apply_theme(self, name: str) -> None:
         theme.apply_theme(QApplication.instance(), name)

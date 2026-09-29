@@ -217,22 +217,26 @@ def _download_model_cli() -> int:
     # the model.bin redirect target differs from the API host.
     try:
         import time as _time
-
-        import requests as _rq
+        from urllib.request import urlopen, Request
 
         _t0 = _time.monotonic()
-        _r = _rq.get(
-            "https://huggingface.co/deepdml/faster-whisper-large-v3-turbo-ct2"
-            "/resolve/4df90f75321148c3a29a9e2351b7ddf8f5b115a8/model.bin",
-            allow_redirects=True, timeout=(5, 15), stream=True,
-            headers={"Range": "bytes=0-1000000"},
+        _r = urlopen(
+            Request(
+                "https://huggingface.co/deepdml/faster-whisper-large-v3-turbo-ct2"
+                "/resolve/4df90f75321148c3a29a9e2351b7ddf8f5b115a8/model.bin",
+                headers={"Range": "bytes=0-1000000"},
+            ),
+            timeout=(5, 15),
         )
         _n = 0
-        for _c in _r.iter_content(65536):
+        while True:
+            _c = _r.read(65536)
+            if not _c:
+                break
             _n += len(_c)
             if _n >= 1000000:
                 break
-        print(f"cdn probe: status={_r.status_code} bytes={_n} in {_time.monotonic() - _t0:.1f}s")
+        print(f"cdn probe: bytes={_n} in {_time.monotonic() - _t0:.1f}s")
     except Exception as _e:  # noqa: BLE001
         print(f"cdn probe FAILED: {_e!r}")
 

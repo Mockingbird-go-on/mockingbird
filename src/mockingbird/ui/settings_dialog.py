@@ -66,7 +66,7 @@ _LLM_PROVIDERS: list[tuple[str, str, str, list[str]]] = [
         "deepseek",
         "DeepSeek",
         "https://api.deepseek.com/v1",
-        ["deepseek-chat", "deepseek-reasoner"],
+        ["deepseek-flash", "deepseek-v4-pro", "deepseek-chat", "deepseek-reasoner"],
     ),
     (
         "groq",

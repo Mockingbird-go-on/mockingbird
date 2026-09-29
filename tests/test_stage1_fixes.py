@@ -293,8 +293,8 @@ def test_onboarding_llm_check_runs_in_qthread():
     # explain_term outside the QThread's run()
     import re
 
-    body = re.search(r"def _test_llm.*?(\n    # -- Step 2: Audio)", src, re.S)
-    assert body, "onboarding _test_llm not found"
+    body = re.search(r"def _perform_llm_check.*?(\n    # -- Step 2: Audio)", src, re.S)
+    assert body, "onboarding _perform_llm_check not found"
     outside_run = re.sub(r"class _TestWorker.*?(?=def _on_done)", "", body.group(1), flags=re.S)
     assert "explain_term" not in outside_run, (
         "explain_term must not run synchronously in the button slot"

@@ -408,7 +408,7 @@ class _DownloadReporter:
 
 
 def _progress_tqdm_class(reporter: _DownloadReporter):
-    """Build a tqdm subclass for snapshot_download's ``tqdm_class``.
+    """Build a tqdm-compatible class for snapshot_download's ``tqdm_class``.
 
     On older hub versions this class receives the per-file bars (real byte
     progress); on hub >= 1.x it only gets the aggregate «Fetching N files»
@@ -421,27 +421,28 @@ def _progress_tqdm_class(reporter: _DownloadReporter):
     console=False, so sys.stderr may be None and tqdm would crash while trying
     to write to it. We force a throwaway buffer; progress reaches the GUI
     through the reporter callback only.
-    """
-    from tqdm.auto import tqdm
 
-    class _ProgressTqdm(tqdm):
+    Previously used tqdm.auto as a base class. Replaced with a plain class
+    (~2 MB pip-graph saving) since only 3 methods are needed.
+    """
+    import re as _re
+
+    class _ProgressTqdm:
         _mute = False
 
         def __init__(self, *args, **kwargs):
             self._reporter = reporter
             desc = kwargs.get("desc") or ""
-            import re as _re
-
             self._mute = bool(_re.match(r"Fetching \d+ files?", desc))
             if not self._mute:
                 reporter.new_file(kwargs.get("total") or 0, desc)
-            kwargs["file"] = kwargs.get("file") or io.StringIO()
-            super().__init__(*args, **kwargs)
 
         def update(self, n=1):
-            super().update(n)
             if not self._mute:
                 self._reporter.update(n)
+
+        def close(self):
+            pass
 
     return _ProgressTqdm
 

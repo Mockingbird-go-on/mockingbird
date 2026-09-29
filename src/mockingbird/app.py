@@ -21,6 +21,7 @@ from mockingbird.kb.index import KbIndex
 from mockingbird.kb.loader import load_topics
 from mockingbird.kb.matcher import KbMatcher
 from mockingbird.llm.client import LlmClient
+from mockingbird import protocol
 from mockingbird.protocol import FinalTranscript
 from mockingbird.storage.db import SQLiteStore
 from mockingbird.stt.factory import create_stt_engine
@@ -482,8 +483,7 @@ class App:
     def _play_ready_sound(self) -> None:
         """Play a short notification sound when the audio pipeline is ready.
 
-        Uses winsound (Windows native, no Qt plugins needed) on Windows.
-        Falls back to QMediaPlayer on other platforms.
+        Uses QMediaPlayer (Qt Multimedia) on all platforms.
         """
         import os
         import sys
@@ -507,19 +507,7 @@ class App:
             log.debug("ready-sound: sound.mp3 not found, skipping")
             return
 
-        # Windows: winsound.PlaySound is the most reliable — no Qt plugins,
-        # no codec dependencies, works in frozen exe. SND_FILENAME | SND_ASYNC.
-        if sys.platform == "win32":
-            try:
-                import winsound
-
-                winsound.PlaySound(sound_path, winsound.SND_FILENAME | winsound.SND_ASYNC)
-                log.info("ready-sound: played %s (winsound)", os.path.basename(sound_path))
-                return
-            except Exception:
-                log.debug("ready-sound: winsound failed", exc_info=True)
-
-        # Fallback: QMediaPlayer (needs Qt Multimedia plugins in the bundle).
+        # QMediaPlayer: Qt Multimedia handles WAV on all platforms including frozen exe.
         try:
             from PySide6.QtCore import QUrl
             from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
