@@ -304,9 +304,24 @@ def test_kb_pane_holds_during_inflight_answer():
     assert not panel._answer_llm.browser.called, "pane must be untouched in flight"
     assert panel._llm_answer_text == "старый ответ"
 
-    # After the watchdog expired (no in-flight request) the notice is fine.
+    # After the watchdog expired (no in-flight request) the notice is fine,
+    # but a preview view still leaves the pane untouched (a context-tracker
+    # peek landing after the question pane went idle is not a failure).
     panel._llm_watchdog.isActive.return_value = False
     panel._render_primary(_V())
+    assert not panel._answer_llm.browser.called
+
+    # A non-preview (final) view with the watchdog expired is the real failure
+    # path and must surface «Ответ ИИ недоступен».
+    class _Final:
+        preview = False
+        blocks = []
+        partial = False
+        llm_answered = False
+        llm_answer = ""
+        matched_query = ""
+
+    panel._render_primary(_Final())
     assert panel._answer_llm.browser.called
 
 
