@@ -337,8 +337,8 @@ class MainWindow(QMainWindow):
         except Exception as exc:  # noqa: BLE001
             log.exception("start failed")
             # Go through NotificationBus — same FIFO as model-load-failed,
-            # vision probe, etc. Bare QMessageBox overlaps with the bus and
-            # can stack dialogs on top of each other (2026-09-26 incident).
+            # vision probe, etc. A direct modal dialog would stack on top of
+            # the bus and freeze the GUI (2026-09-26 incident).
             from mockingbird.ui.notify import bus as notify_bus
 
             notify_bus.error(
