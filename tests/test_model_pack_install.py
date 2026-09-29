@@ -82,5 +82,8 @@ def test_layout_check_accepts_cache_fallback(tmp_path, monkeypatch):
     # source contract instead.
     import inspect
 
-    src = inspect.getsource(we._download_from_github)
+    # The fallback search over (root, root / "cache") now lives in the shared
+    # `_resolve_unpacked_snapshot` helper (used by both the GitHub and S3
+    # source paths since 2026-09-29).
+    src = inspect.getsource(we._resolve_unpacked_snapshot)
     assert "for base in (root, root / \"cache\")" in src
