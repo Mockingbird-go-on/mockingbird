@@ -408,7 +408,7 @@ class _DownloadReporter:
 
 
 def _progress_tqdm_class(reporter: _DownloadReporter):
-    """Build a tqdm-compatible class for snapshot_download's ``tqdm_class``.
+    """Build a tqdm subclass for snapshot_download's ``tqdm_class``.
 
     On older hub versions this class receives the per-file bars (real byte
     progress); on hub >= 1.x it only gets the aggregate «Fetching N files»
@@ -419,30 +419,36 @@ def _progress_tqdm_class(reporter: _DownloadReporter):
 
     The bar is never rendered to a console: the built Windows .exe runs with
     console=False, so sys.stderr may be None and tqdm would crash while trying
-    to write to it. We force a throwaway buffer; progress reaches the GUI
+    to write to it. We force ``disable=True``; progress reaches the GUI
     through the reporter callback only.
 
-    Previously used tqdm.auto as a base class. Replaced with a plain class
-    (~2 MB pip-graph saving) since only 3 methods are needed.
+    Must inherit from tqdm because ``tqdm.contrib.concurrent.thread_map``
+    calls ``cls.get_lock()`` (class method) — a plain class breaks with
+    ``AttributeError: type object '_ProgressTqdm' has no attribute 'get_lock'``.
     """
-    import re as _re
+    from tqdm.auto import tqdm
 
-    class _ProgressTqdm:
+    class _ProgressTqdm(tqdm):
         _mute = False
 
         def __init__(self, *args, **kwargs):
             self._reporter = reporter
             desc = kwargs.get("desc") or ""
+            import re as _re
+
             self._mute = bool(_re.match(r"Fetching \d+ files?", desc))
             if not self._mute:
                 reporter.new_file(kwargs.get("total") or 0, desc)
+            kwargs["disable"] = True
+            super().__init__(*args, **kwargs)
 
         def update(self, n=1):
+            try:
+                super().update(n)
+            except Exception:
+                pass
             if not self._mute:
                 self._reporter.update(n)
-
-        def close(self):
-            pass
 
     return _ProgressTqdm
 
@@ -858,47 +864,78 @@ def _download_from_github(
             progress_cb(message, percent)
 
     _report("Подключение к GitHub (релиз моделей)…", 0.0)
-    try:
-        req = urllib.request.Request(url, method="GET")
-        # Follow the redirect to objects.githubusercontent.com ourselves so
-        # we can stream with progress + cancel (urlopen follows redirects but
-        # hides the intermediate response; a direct urlopen is fine too).
-        resp = urllib.request.urlopen(req, timeout=30)
-    except Exception as exc:  # noqa: BLE001
-        log.info("whisper: GitHub model release unavailable (%s) — falling back to HuggingFace", exc)
-        return None
-
-    total = float(resp.headers.get("Content-Length") or 0)
     zip_path = root / ".github-model-pack.zip"
     root.mkdir(parents=True, exist_ok=True)
-    if total > 0:
-        # zip + unpacked snapshot coexist during installation → ~2x needed.
-        _ensure_free_space(str(root), total * 2.0, "загрузки модели распознавания")
+
+    # Download with up to 2 retries on truncated transfers — Windows AV /
+    # corporate proxies occasionally cut the connection mid-stream without
+    # raising (the socket just returns 0 bytes). 0-byte chunks indicate EOF.
+    total = 0.0
     done = 0.0
-    try:
-        with open(zip_path, "wb") as f:
-            while True:
-                if cancel_event is not None and cancel_event.is_set():
-                    raise RuntimeError("whisper model download cancelled by user")
-                chunk = resp.read(_CHUNK)
-                if not chunk:
-                    break
-                f.write(chunk)
-                done += len(chunk)
-                if total > 0:
-                    pct = min(99.0, done / total * 100.0)
-                    _report(
-                        f"Скачивание model-pack.zip: {done / 1e6:.0f} из {total / 1e6:.0f} МБ",
-                        pct,
-                    )
-                else:
-                    _report(f"Скачивание model-pack.zip: {done / 1e6:.0f} МБ", -1.0)
-    except Exception:
+    max_attempts = 3
+    for attempt in range(max_attempts):
+        if cancel_event is not None and cancel_event.is_set():
+            raise RuntimeError("whisper model download cancelled by user")
         try:
-            zip_path.unlink()
-        except OSError:
-            pass
-        raise
+            req = urllib.request.Request(url, method="GET")
+            # Follow the redirect to objects.githubusercontent.com ourselves so
+            # we can stream with progress + cancel (urlopen follows redirects but
+            # hides the intermediate response; a direct urlopen is fine too).
+            resp = urllib.request.urlopen(req, timeout=30)
+        except Exception as exc:  # noqa: BLE001
+            log.info(
+                "whisper: GitHub model release unavailable (%s) — falling back to HuggingFace",
+                exc,
+            )
+            return None
+
+        total = float(resp.headers.get("Content-Length") or 0)
+        if total > 0:
+            _ensure_free_space(str(root), total * 2.0, "загрузки модели распознавания")
+        done = 0.0
+        try:
+            with open(zip_path, "wb") as f:
+                while True:
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise RuntimeError("whisper model download cancelled by user")
+                    chunk = resp.read(_CHUNK)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    done += len(chunk)
+                    if total > 0:
+                        pct = min(99.0, done / total * 100.0)
+                        _report(
+                            f"Скачивание model-pack.zip: {done / 1e6:.0f} из {total / 1e6:.0f} МБ",
+                            pct,
+                        )
+                    else:
+                        _report(f"Скачивание model-pack.zip: {done / 1e6:.0f} МБ", -1.0)
+        except Exception:
+            try:
+                zip_path.unlink()
+            except OSError:
+                pass
+            raise
+
+        # A short read (Content-Length says 1.5 GB, we got 34 MB) usually means
+        # the proxy/AV silently dropped the connection — the loop exited cleanly
+        # without an exception. Detect this BEFORE unpacking.
+        if total > 0 and (total - done) > 10 * 1024 * 1024:
+            log.warning(
+                "whisper: GitHub model pack truncated: got %.0f MB, expected %.0f MB "
+                "(attempt %d/%d)",
+                done / 1e6, total / 1e6, attempt + 1, max_attempts,
+            )
+            try:
+                zip_path.unlink()
+            except OSError:
+                pass
+            if attempt + 1 < max_attempts:
+                time.sleep(1.5 * (attempt + 1))
+                continue
+            return None
+        break
 
     log.info(
         "whisper: GitHub model pack downloaded: %.0f MB (expected %.0f MB)",
