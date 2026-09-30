@@ -9,6 +9,7 @@ from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import QWidget
 
 from mockingbird.ui import theme
+from mockingbird.i18n import t
 
 
 def _resolve_logo() -> QPixmap | None:
@@ -115,7 +116,7 @@ class LoaderSplash(QWidget):
         bg.setAlpha(230)
         painter.setBrush(bg)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawRoundedRect(rect, 20, 20)
+        painter.drawRoundedRect(rect, 10, 10)
 
         # Spinner ring (background track) — sized so the logo fits inside.
         cx, cy, r = 140, 110, 42
@@ -168,5 +169,5 @@ class LoaderSplash(QWidget):
         painter.drawText(
             QRectF(20, 175, 240, 30),
             Qt.AlignmentFlag.AlignCenter,
-            "Загрузка…",
+            t("Загрузка…"),
         )

@@ -383,6 +383,9 @@ def load_config() -> Config:
     if (stt_data.get("backend") or "").lower() == "gigaam":
         stt_data["backend"] = "whisper"
     cfg = Config(**data)
+    # Migration: fix incorrect model name deepseek_flash -> deepseek-flash
+    if cfg.llm.model and cfg.llm.model.strip() == "deepseek_flash":
+        cfg.llm.model = "deepseek-flash"
     base = app_dir()
     if not cfg.storage.db_path:
         cfg.storage.db_path = str(base / "mockingbird.db")

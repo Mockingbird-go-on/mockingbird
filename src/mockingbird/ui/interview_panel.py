@@ -40,6 +40,7 @@ from mockingbird.kb.highlight import (
 )
 from mockingbird.ui.history_sidebar import HistorySidebar
 from mockingbird.ui import theme
+from mockingbird.i18n import t
 
 _QUESTION_FONT_SIZE = 18
 _ANSWER_FONT_SIZE = 15
@@ -48,8 +49,8 @@ _ANSWER_MIN_HEIGHT = 160
 _ANSWER_LLM_MIN_HEIGHT = 360
 
 _BOLD_RE = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
-_PLACEHOLDER = "Слушаю вопрос… вопросы и ответы из базы знаний появятся здесь."
-_LLM_PLACEHOLDER = "Формирую ответ ИИ…"
+_PLACEHOLDER = t("Слушаю вопрос… вопросы и ответы из базы знаний появятся здесь.")
+_LLM_PLACEHOLDER = t("Формирую ответ ИИ…")
 
 _MD_HEAD_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 _MD_UL_RE = re.compile(r"^\s*[-*]\s+(.*)$")
@@ -389,14 +390,14 @@ class _AnswerPane(QWidget):
         self._title.setStyleSheet("font-weight:bold;")
         
         self._regenerate_btn = _SpinningToolButton()
-        self._regenerate_btn.setToolTip("Перегенерировать ответ")
+        self._regenerate_btn.setToolTip(t("Перегенерировать ответ"))
         self._regenerate_btn.setIconSize(QSize(17, 17))
         self._regenerate_btn.setFixedSize(28, 26)
         self._regenerate_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._regenerate_btn.setStyleSheet(f"""
             QToolButton {{
                 border: 1px solid {theme.current.border};
-                border-radius: 6px;
+                border-radius: 3px;
                 background: {theme.current.card};
                 padding: 3px;
             }}
@@ -555,10 +556,10 @@ class InterviewPanel(QWidget):
         tfont.setPointSize(_TRANSCRIPT_FONT_SIZE)
         self._live.setFont(tfont)
 
-        self._answer_llm = _AnswerPane("Ответ ИИ", min_height=_ANSWER_LLM_MIN_HEIGHT, show_regenerate=True)
+        self._answer_llm = _AnswerPane(t("Ответ ИИ"), min_height=_ANSWER_LLM_MIN_HEIGHT, show_regenerate=True)
         self._answer_llm.regenerate_triggered.connect(self._on_regenerate)
         self._answer_llm.term_clicked.connect(self._on_term_clicked)
-        self._answer_kb = _AnswerPane("Из базы знаний", show_regenerate=False)
+        self._answer_kb = _AnswerPane(t("Из базы знаний"), show_regenerate=False)
 
         self._history = HistorySidebar()
         self._history.question_clicked.connect(self._on_history_click)
@@ -590,7 +591,7 @@ class InterviewPanel(QWidget):
         history_layout = QVBoxLayout(history_pane)
         history_layout.setContentsMargins(0, 0, 0, 0)
         history_layout.setSpacing(4)
-        history_layout.addWidget(QLabel("История"))
+        history_layout.addWidget(QLabel(t("История")))
         history_layout.addWidget(self._history, stretch=1)
         self._history_pane = history_pane
 
@@ -731,7 +732,7 @@ class InterviewPanel(QWidget):
         if not parts:
             self._context_line.clear()
         else:
-            prefix = "Переход" if state.shifted else "Контекст"
+            prefix = t("Переход") if state.shifted else t("Контекст")
             self._context_line.setText(f"{prefix}: " + " · ".join(parts))
 
     def on_llm_answer(self, msg) -> None:
@@ -776,7 +777,7 @@ class InterviewPanel(QWidget):
                 if not self._browsing_history and not self._llm_answer_text:
                     self._answer_llm.browser().setHtml(_themed_html(
                         f"<p style='color:{theme.TEXT_SECONDARY};'>"
-                        "Скажите вопрос — ответ появится здесь.</p>"
+                        + t("Скажите вопрос — ответ появится здесь.") + "</p>"
                     ))
                 return
             self._llm_timer.stop()
@@ -807,8 +808,9 @@ class InterviewPanel(QWidget):
                     self._render_llm_answer()
                 else:
                     self._answer_llm.browser().setHtml(_themed_html(
-                        f"<p style='color:{theme.TEXT_SECONDARY};'>Ответ ИИ недоступен. "
-                        "Блоки из базы знаний доступны в дереве тем ниже.</p>"
+                        f"<p style='color:{theme.TEXT_SECONDARY};'>"
+                        + t("Ответ ИИ недоступен. Блоки из базы знаний доступны ниже.")
+                        + "</p>"
                     ))
             return
         # Streaming deltas: only paint when in live mode.
@@ -818,7 +820,7 @@ class InterviewPanel(QWidget):
             # (users hit ⟳ thinking the pane hung). Replaced by the stream
             # itself as soon as the retry delivers its first delta.
             self._llm_timer.stop()
-            self._llm_stream_text = "⏳ Модель вернула пустой ответ — переспрашиваю…"
+            self._llm_stream_text = t("⏳ Модель вернула пустой ответ — переспрашиваю…")
             self._flush_llm()
             return
         if not self._browsing_history and msg.delta:
@@ -883,7 +885,7 @@ class InterviewPanel(QWidget):
         if self._llm_answer_from_kb:
             prefix = (
                 f"<p style='color:{theme.TEXT_SECONDARY};font-size:11px;'>"
-                "из базы знаний</p>"
+                + t("из базы знаний") + "</p>"
             )
             browser.setHtml(_themed_html(prefix + body))
         else:
@@ -973,25 +975,27 @@ class InterviewPanel(QWidget):
 
     def _render_kb_pane(self, view: protocol.KnowledgeView) -> None:
         if not view.blocks:
-            self._answer_kb.browser().setHtml(_themed_html("Нет совпадений в базе знаний."))
+            self._answer_kb.browser().setHtml(_themed_html(t("Нет совпадений в базе знаний.")))
             return
         if view.miss:
             first = view.blocks[0]
             if view.llm_answered:
                 theory = view.blocks[1] if len(view.blocks) > 1 else None
+                miss_html = t("Точного ответа в базе нет.")
                 html_parts = [
-                    "<p><b>Точного ответа в базе нет.</b> Ближайшая тема: "
-                    f"<b>{html.escape(view.title)}</b>.</p>"
+                    f"<p><b>{miss_html}</b> "
+                    + t("Ближайшая тема:") + f" <b>{html.escape(view.title)}</b>.</p>"
                 ]
                 if theory is not None:
                     html_parts.append(self._block_html(theory))
                 self._answer_kb.browser().setHtml(_themed_html("".join(html_parts)))
                 return
             related = ", ".join(first.related[:4]) if first.related else "—"
+            miss_html = t("Точного ответа в базе нет.")
             self._answer_kb.browser().setHtml(_themed_html(
-                "<p><b>Точного ответа в базе нет.</b> Ближайшая тема: "
-                f"<b>{html.escape(view.title)}</b>.</p>"
-                f"<p>Возможно спросят про: {html.escape(related)}</p>"
+                f"<p><b>{miss_html}</b> "
+                + t("Ближайшая тема:") + f" <b>{html.escape(view.title)}</b>.</p>"
+                f"<p>" + t("Возможно спросят про: {related}", related=html.escape(related)) + "</p>"
                 f"<hr/>{self._block_html(first)}"
             ))
             return
@@ -1048,12 +1052,13 @@ class InterviewPanel(QWidget):
         self._llm_answer_text = ""
         if view.blocks:
             self._answer_llm.browser().setHtml(_themed_html(
-                f"<p style='color:{theme.TEXT_SECONDARY};'>Ответ ИИ недоступен. "
-                "Блоки из базы знаний доступны в дереве тем ниже.</p>"
+                f"<p style='color:{theme.TEXT_SECONDARY};'>"
+                + t("Ответ ИИ недоступен. Блоки из базы знаний доступны ниже.") + "</p>"
             ))
         else:
             self._answer_llm.browser().setHtml(_themed_html(
-                f"<p style='color:{theme.TEXT_SECONDARY};'>Ответ ИИ недоступен.</p>"
+                f"<p style='color:{theme.TEXT_SECONDARY};'>"
+                + t("Ответ ИИ недоступен.") + "</p>"
             ))
 
     def _block_html(self, block: protocol.AnswerBlock) -> str:
@@ -1109,8 +1114,9 @@ class InterviewPanel(QWidget):
         self._llm_timer.stop()
         if not self._llm_answer_text and not self._llm_stream_text:
             self._answer_llm.browser().setHtml(_themed_html(
-                f"<p style='color:{theme.TEXT_SECONDARY};'>Ответ ИИ задерживается. "
-                "Если он не появится — нажмите ⟳ для перегенерации.</p>"
+                f"<p style='color:{theme.TEXT_SECONDARY};'>"
+                + t("Ответ ИИ задерживается. Если он не появится — нажмите ⟳ для перегенерации.")
+                + "</p>"
             ))
         elif self._llm_stream_text:
             # A partial stream stalled mid-answer without a done message:
@@ -1123,7 +1129,7 @@ class InterviewPanel(QWidget):
             # then duplicate under a normal answer).
             self._llm_stream_truncated = True
             self._llm_stream_text += (
-                "\n\n⏳ Ответ оборвался — нажмите ⟳ для перегенерации."
+                "\n\n" + t("⏳ Ответ оборвался — нажмите ⟳ для перегенерации.")
             )
             self._flush_llm()
 
@@ -1147,7 +1153,7 @@ class InterviewPanel(QWidget):
         
         # Clear the current answer and show regeneration placeholder
         self._answer_llm.browser().setHtml(_themed_html(
-            f"<p style='color:{theme.TEXT_SECONDARY};'>Перегенерация ответа...</p>"
+            f"<p style='color:{theme.TEXT_SECONDARY};'>" + t("Перегенерация ответа...") + "</p>"
         ))
         
         # Clear UI cache
@@ -1200,7 +1206,7 @@ class InterviewPanel(QWidget):
             return
         if self._concept_callback is None:
             return
-        query = f"Что такое {term}?"
+        query = t("Что такое {term}?", term=term)
 
         # Switch to live mode and register the new question as pending so
         # that on_llm_answer matches the concept response.

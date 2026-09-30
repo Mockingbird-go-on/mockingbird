@@ -11,16 +11,39 @@ from mockingbird.config import WhisperConfig
 from mockingbird.stt import whisper_engine as we
 
 
+@pytest.fixture(autouse=True)
+def _no_s3_for_github_tests(monkeypatch):
+    """These tests exercise the GitHub mirror specifically. The runtime
+    source order is s3.cloud.ru → GitHub → huggingface_hub since 2026-09-29
+    (PRIMARY source switched from GitHub to the project-owned s3 bucket);
+    without this fixture a successful S3 download would return before
+    GitHub is even tried, and the GitHub-specific assertions would not
+    match anything.
+
+    Also zeroes ``_MODEL_SIZE_HINTS`` so the ``_ensure_free_space`` precheck
+    doesn't fail on small tmpfs (the turbo hint is 3.6 GB). The check itself
+    is verified by ``test_ensure_free_space_*`` in test_model_download.py.
+    """
+    monkeypatch.setattr(we, "_S3_ASSETS", {})
+    monkeypatch.setattr(we, "_MODEL_SIZE_HINTS", {})
+
+
 def _cfg(tmp_path, model_size="large-v3-turbo"):
     return WhisperConfig(model_size=model_size, model_dir=str(tmp_path))
 
 
 def _pack_bytes(commit="c" * 40) -> bytes:
-    """Build an in-memory model pack zip: cache/models--slug/{refs,snapshots}."""
+    """Build an in-memory model pack zip: cache/models--slug/{refs,snapshots}.
+
+    The pack must include ``model.bin`` — the runtime rejects any snapshot
+    whose ``model.bin`` or ``config.json`` is missing (see
+    ``_resolve_unpacked_snapshot``), so the fixture mirrors a real release.
+    """
     slug = "models--deepdml--faster-whisper-large-v3-turbo-ct2"
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr(f"cache/{slug}/refs/main", commit)
+        zf.writestr(f"cache/{slug}/snapshots/{commit}/model.bin", b"\x00" * 16)
         zf.writestr(f"cache/{slug}/snapshots/{commit}/config.json", "{}")
         zf.writestr(f"cache/{slug}/snapshots/{commit}/tokenizer.json", "{}")
         zf.writestr("README.txt", "pack")
@@ -117,6 +140,23 @@ def test_github_download_small_model(tmp_path, monkeypatch):
         return _FakeResp(data)
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    # The runtime first probes the local HF cache (local_files_only=True);
+    # mirror the real behaviour by raising there so the GitHub path gets a
+    # chance to run. If the GitHub pack's layout doesn't match the requested
+    # size (this fixture builds a turbo slug regardless of size), the runtime
+    # then falls back to a real huggingface_hub download — hand it a fake
+    # snapshot directory so the test stays hermetic instead of hitting the
+    # real network.
+    tiny_snapshot = tmp_path / "tiny-snapshot"
+    tiny_snapshot.mkdir()
+    (tiny_snapshot / "config.json").write_text("{}")
+
+    def fake_hf(repo_id=None, **kwargs):
+        if kwargs.get("local_files_only"):
+            raise FileNotFoundError("not in local cache")
+        return str(tiny_snapshot)
+
+    monkeypatch.setattr("huggingface_hub.snapshot_download", fake_hf)
     we.resolve_model_path(_cfg(tmp_path, "tiny"))
     assert any("Mockingbird-whisper-tiny-model.zip" in u for u in seen_urls)
 

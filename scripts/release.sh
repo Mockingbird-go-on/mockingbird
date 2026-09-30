@@ -137,6 +137,28 @@ else
   echo "  (no model pack — skipping '$MODELS_TAG' release)"
 fi
 
+# --- 2b. upload model pack to s3.cloud.ru (PRIMARY runtime source) -----------
+# The runtime prefers the public bucket over GitHub Releases. Skip silently
+# when awscli or S3_ENDPOINT_URL is missing.
+if [[ -f "$MODEL_ZIP" ]] && command -v aws >/dev/null 2>&1 \
+        && [[ -n "${S3_ENDPOINT_URL:-}" ]]; then
+    S3_BUCKET="${S3_BUCKET:-mockingbird}"
+    # $MODEL_ZIP is "installer/Mockingbird-whisper-<size>-model.zip"; derive
+    # the short S3 key from <size>.
+    MODEL_SIZE_FROM_ZIP="$(basename "$MODEL_ZIP" | sed -E 's/^Mockingbird-whisper-(.+)-model\.zip$/\1/')"
+    S3_KEY="${S3_KEY:-models/$MODEL_SIZE_FROM_ZIP.zip}"
+    echo ""
+    echo "  uploading model pack to s3://$S3_BUCKET/$S3_KEY …"
+    if aws s3 cp "$MODEL_ZIP" "s3://$S3_BUCKET/$S3_KEY" \
+            --endpoint-url "$S3_ENDPOINT_URL" \
+            --acl public-read \
+            --only-show-errors; then
+        echo "  ok:   s3://$S3_BUCKET/$S3_KEY"
+    else
+        echo "  WARNING: S3 upload failed (GitHub release still succeeded)"
+    fi
+fi
+
 # --- 3. render release notes -------------------------------------------------
 NOTES="build/release_notes-$VERSION.md"
 mkdir -p build

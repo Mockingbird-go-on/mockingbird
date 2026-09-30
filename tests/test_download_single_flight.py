@@ -128,11 +128,43 @@ def test_flight_lock_released_after_failure(tmp_path, monkeypatch, no_github_mod
         raise OSError("boom")
 
     monkeypatch.setattr("huggingface_hub.snapshot_download", fake_snapshot)
+    # Mock the zip-pack sources too — they are tried before snapshot_download.
+    monkeypatch.setattr(we, "_download_from_s3", lambda *a, **k: None)
+    monkeypatch.setattr(we, "_download_from_github", lambda *a, **k: None)
+    monkeypatch.setattr(we, "_ensure_free_space", lambda *a, **k: None)
     with pytest.raises(RuntimeError, match="failed after retries"):
         we.resolve_model_path(_cfg(tmp_path), cancel_event=threading.Event())
 
+    # Fix #5 (clean _RESOLVE_LOCKS after release) removed the per-repo
+    # entry from the dict; we acquire a *fresh* lock for the assertion.
     with we._RESOLVE_LOCKS_GUARD:
-        lock = we._RESOLVE_LOCKS["Systran/faster-whisper-tiny"]
+        fresh = we._RESOLVE_LOCKS.setdefault(
+            "Systran/faster-whisper-tiny", threading.Lock())
     # Must be re-acquirable right away (was released in finally).
-    assert lock.acquire(blocking=False) is True
-    lock.release()
+    assert fresh.acquire(blocking=False) is True
+    fresh.release()
+
+
+def test_resolve_locks_dict_does_not_grow_on_failure(tmp_path, monkeypatch, no_github_model_mirror):
+    """After a failed download, the per-repo lock entry must be removed from
+    _RESOLVE_LOCKS so the dict does not grow unbounded across model-size
+    switches. The next resolve for the same repo must create a fresh lock."""
+    def fake_snapshot(repo_id=None, **kwargs):
+        if kwargs.get("local_files_only"):
+            raise FileNotFoundError("not cached")
+        raise OSError("boom")
+
+    monkeypatch.setattr("huggingface_hub.snapshot_download", fake_snapshot)
+    # S3 and GitHub are the primary/secondary paths now — mock both to
+    # short-circuit before they hit the network.
+    monkeypatch.setattr(we, "_download_from_s3", lambda *a, **k: None)
+    monkeypatch.setattr(we, "_download_from_github", lambda *a, **k: None)
+    monkeypatch.setattr(we, "_ensure_free_space", lambda *a, **k: None)
+
+    with pytest.raises(RuntimeError):
+        we.resolve_model_path(_cfg(tmp_path), cancel_event=threading.Event())
+
+    # Dict must be empty after the failed download (the finally cleanup
+    # removed the entry under the module guard).
+    with we._RESOLVE_LOCKS_GUARD:
+        assert "Systran/faster-whisper-tiny" not in we._RESOLVE_LOCKS

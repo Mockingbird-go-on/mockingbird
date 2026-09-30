@@ -60,7 +60,7 @@ class ModelDownloadDialog(QWidget):
         except Exception:  # noqa: BLE001 — icon must never break the dialog
             pass
         glyph.setFixedSize(20, 20)
-        title = QLabel("Загрузка модели распознавания")
+        title = QLabel(t("Загрузка модели распознавания"))
         title.setObjectName("mddTitle")
         head.addWidget(glyph)
         head.addWidget(title, 1)
@@ -75,13 +75,13 @@ class ModelDownloadDialog(QWidget):
         self._bar.setFixedHeight(8)
         lay.addWidget(self._bar)
 
-        self._detail = QLabel("Подготовка…")
+        self._detail = QLabel(t("Подготовка…"))
         self._detail.setObjectName("mddDetail")
         lay.addWidget(self._detail)
 
         btn_row = QHBoxLayout()
         btn_row.addStretch(1)
-        self._cancel_btn = QPushButton("Отмена")
+        self._cancel_btn = QPushButton(t("Отмена"))
         self._cancel_btn.clicked.connect(self._on_cancel)
         btn_row.addWidget(self._cancel_btn)
         lay.addLayout(btn_row)
@@ -144,7 +144,7 @@ class ModelDownloadDialog(QWidget):
         # UX-4: paint the final 100% BEFORE latching _finalized — set_progress
         # early-returns once the flag is set, so the user never saw the
         # completed bar.
-        self.set_progress("Модель загружена", 100.0)
+        self.set_progress(t("Модель загружена"), 100.0)
         self._finalized = True
         self._download_active = False
         self._active_timer.stop()
@@ -167,7 +167,7 @@ class ModelDownloadDialog(QWidget):
 
     def _on_cancel(self) -> None:
         self._cancel_btn.setEnabled(False)
-        self._detail.setText("Отмена…")
+        self._detail.setText(t("Отмена…"))
         self.cancelled.emit()
         # The abort seam is best-effort: if the underlying transfer ignores
         # the cancel (e.g. hub version without the hook), model_load_cancelled
