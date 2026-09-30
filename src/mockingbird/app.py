@@ -21,6 +21,7 @@ from mockingbird.kb.index import KbIndex
 from mockingbird.kb.loader import load_topics
 from mockingbird.kb.matcher import KbMatcher
 from mockingbird.llm.client import LlmClient
+from mockingbird import protocol
 from mockingbird.protocol import FinalTranscript
 from mockingbird.storage.db import SQLiteStore
 from mockingbird.stt.factory import create_stt_engine
@@ -482,8 +483,7 @@ class App:
     def _play_ready_sound(self) -> None:
         """Play a short notification sound when the audio pipeline is ready.
 
-        Uses winsound (Windows native, no Qt plugins needed) on Windows.
-        Falls back to QMediaPlayer on other platforms.
+        Uses QMediaPlayer (Qt Multimedia) on all platforms.
         """
         import os
         import sys
@@ -507,19 +507,7 @@ class App:
             log.debug("ready-sound: sound.mp3 not found, skipping")
             return
 
-        # Windows: winsound.PlaySound is the most reliable — no Qt plugins,
-        # no codec dependencies, works in frozen exe. SND_FILENAME | SND_ASYNC.
-        if sys.platform == "win32":
-            try:
-                import winsound
-
-                winsound.PlaySound(sound_path, winsound.SND_FILENAME | winsound.SND_ASYNC)
-                log.info("ready-sound: played %s (winsound)", os.path.basename(sound_path))
-                return
-            except Exception:
-                log.debug("ready-sound: winsound failed", exc_info=True)
-
-        # Fallback: QMediaPlayer (needs Qt Multimedia plugins in the bundle).
+        # QMediaPlayer: Qt Multimedia handles WAV on all platforms including frozen exe.
         try:
             from PySide6.QtCore import QUrl
             from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
@@ -649,6 +637,13 @@ class App:
         """Start a capture session."""
         if self.session_id is not None:
             return
+        # UX-12: a Start clicked while the async stop is still draining used
+        # to be a silent no-op (session_id was already None) — the user saw
+        # nothing happen and clicked again. Surface why instead.
+        if self._stop_worker is not None and self._stop_worker.is_alive():
+            log.info("start_session: stop in progress — ignoring Start click")
+            self.signals.status.emit("loading", "остановка предыдущей сессии…")
+            return
         self.session_id = uuid.uuid4().hex[:12]
         self.store.create_session(self.session_id, started_at=time.time(), title=None)
 
@@ -707,11 +702,25 @@ class App:
         freeze the window for up to ~8 s (engine join) inside an already-bad
         user experience (failed start).
         """
+        # R-01: pin the session being rolled back. If the user immediately
+        # presses Start again, start_session() creates a NEW session_id and
+        # this daemon must NOT tear that one down (it used to null
+        # self.session_id and end the fresh session in the DB).
+        sid = self.session_id
         self.signals.status.emit("loading", "stopping")
 
         def _worker() -> None:
             try:
-                self.stop_session()
+                if self.session_id == sid:
+                    self.stop_session()
+                else:
+                    # A new session already took over (fast Start re-click):
+                    # never touch its live state — just close the abandoned
+                    # row so it does not stay half-open in the DB forever.
+                    try:
+                        self.store.end_session(sid, ended_at=time.time())
+                    except Exception:
+                        log.debug("rollback: abandoned session row already closed")
             except Exception:  # noqa: BLE001
                 log.exception("rollback stop_session failed")
 
@@ -751,7 +760,12 @@ class App:
             except Exception:  # noqa: BLE001
                 log.exception("async stop_session failed")
             finally:
-                self._stop_worker = None
+                # R-02: do NOT null self._stop_worker here. shutdown() reads
+                # it to decide whether to wait; nulling from this thread
+                # let shutdown() skip the join and run its own stop_session()
+                # in parallel with this one (double engine.flush, double
+                # store.end_session). The reference is replaced by the next
+                # stop_session_async() call (single caller thread: GUI).
                 if on_done is not None:
                     try:
                         on_done()
@@ -1124,6 +1138,14 @@ class App:
             if isinstance(value, bool):
                 value = "1" if value else "0"
             self.store.set_setting(key, value if value is not None else "")
+        # Vision-capability probe is cached per (base_url, model) on the LLM
+        # client. The settings dialog writes new llm.base_url / llm.model
+        # directly to self.config BEFORE save_settings runs, so the cached
+        # entry is now stale — the screenshot button would show the old
+        # vision capability until the next process restart. Clear it so the
+        # next probe reflects the new LLM.
+        if hasattr(self, "llm"):
+            self.llm.invalidate_vision_cache()
         log.info("settings saved")
 
     def install_log_handler(self) -> None:
