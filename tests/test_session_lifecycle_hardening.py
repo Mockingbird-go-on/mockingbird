@@ -194,6 +194,7 @@ def test_engine_start_drains_stale_queue():
 
     eng = WhisperEngine.__new__(WhisperEngine)
     eng._stopping = False
+    eng._stopping_event = threading.Event()
     eng._thread = None
     eng._queue = queue.Queue()
     eng._queue.put(("audio", None))

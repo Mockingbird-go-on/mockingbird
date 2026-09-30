@@ -79,7 +79,9 @@ def test_start_during_stop_emits_status():
     start = src.index("def start_session")
     body = src[start : src.index("def _rollback_half_open_session", start)]
     assert "_stop_worker is not None and self._stop_worker.is_alive()" in body
-    assert "остановка" in body
+    # "stopping" detail: the UI hides the model-load cancel-cross for it
+    # (it is a session teardown, not a model load).
+    assert 'self.signals.status.emit("loading", "stopping")' in body
 
 
 # -- R-08: reservation released on queue rejection (behavioural) ----------------

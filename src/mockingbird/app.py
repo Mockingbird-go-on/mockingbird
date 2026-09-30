@@ -639,10 +639,12 @@ class App:
             return
         # UX-12: a Start clicked while the async stop is still draining used
         # to be a silent no-op (session_id was already None) — the user saw
-        # nothing happen and clicked again. Surface why instead.
+        # nothing happen and clicked again. Surface why instead. "stopping"
+        # detail keeps the UI's cancel-cross hidden (it is a teardown, not a
+        # model load).
         if self._stop_worker is not None and self._stop_worker.is_alive():
             log.info("start_session: stop in progress — ignoring Start click")
-            self.signals.status.emit("loading", "остановка предыдущей сессии…")
+            self.signals.status.emit("loading", "stopping")
             return
         self.session_id = uuid.uuid4().hex[:12]
         self.store.create_session(self.session_id, started_at=time.time(), title=None)
@@ -1187,6 +1189,15 @@ class App:
             self.capture.stop()
         except Exception:
             log.exception("capture stop failed")
+        # R-20 follow-up: let the worker serve the queued final flush BEFORE
+        # engine.stop() arms _stopping_event — otherwise the last segment of
+        # the session is silently dropped (finalize early-exit).
+        wait_flush = getattr(self.engine, "wait_flush", None)
+        if wait_flush is not None:
+            try:
+                wait_flush(timeout=3.0)
+            except Exception:
+                log.debug("engine wait_flush failed (non-fatal)")
         try:
             self.engine.stop()
         except Exception:
