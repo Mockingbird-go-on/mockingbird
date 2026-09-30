@@ -31,10 +31,13 @@ class ModelDownloadDialog(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        # Frameless child window of the main window. Parent (the main
+        # window) must be supplied by the caller — with a parent the
+        # overlay stays on top of Mockingbird but is Z-ordered normally
+        # with other applications. Without WindowStaysOnTopHint/Tool it
+        # no longer covers the user's browser mid-download.
         self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.Tool
+            Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setFixedWidth(380)
@@ -91,10 +94,10 @@ class ModelDownloadDialog(QWidget):
         self._hide_timer.setSingleShot(True)
         self._hide_timer.timeout.connect(self.hide)
 
-        # Anchor to the main window for positioning. Visibility no longer
-        # follows the main window's activation: the overlay (StaysOnTop)
-        # must remain above it even while the app is inactive — the user
-        # keeps seeing the download progress over whatever else they do.
+        # Anchor to the main window for positioning. Visibility is bound
+        # to the parent window: when Mockingbird is hidden (Alt-Tab to a
+        # browser mid-download) the overlay hides with it instead of
+        # floating over the user's other apps.
         self._main_window: QWidget | None = None
         self._download_active = False
         # Once True (done_ok/done_failed/cancel confirmed) no late progress
@@ -138,11 +141,14 @@ class ModelDownloadDialog(QWidget):
 
         Marks the overlay finalized: progress events can no longer re-show
         it, and it hides on the fade timer regardless of visibility."""
+        # UX-4: paint the final 100% BEFORE latching _finalized — set_progress
+        # early-returns once the flag is set, so the user never saw the
+        # completed bar.
+        self.set_progress("Модель загружена", 100.0)
         self._finalized = True
         self._download_active = False
         self._active_timer.stop()
         self._hide_timer.stop()
-        self.set_progress("Модель загружена", 100.0)
         self._hide_timer.start(1200)
 
     def done_failed(self, error: str) -> None:
@@ -180,11 +186,11 @@ class ModelDownloadDialog(QWidget):
     def _sync_visibility_with_main(self) -> None:
         """Keep the overlay visible while the download is active.
 
-        2026-09-27 (user request): the overlay must stay ABOVE the main
-        window at all times — including when the app itself is INACTIVE
-        (user switched to a browser while the 1.6 GB model downloads).
-        The old hide-on-inactive logic made the download silently invisible.
-        It still yields to a modal NotificationBus dialog (stacking fight).
+        Being a child window of the main window (parent=self) the OS
+        already keeps it above Mockingbird without WindowStaysOnTopHint,
+        and stacking is normal w.r.t. other applications — the user can
+        switch to a browser mid-download without the overlay covering it.
+        The dialog still yields to a modal NotificationBus dialog.
         """
         if not self._download_active:
             return
@@ -195,7 +201,6 @@ class ModelDownloadDialog(QWidget):
             return
         if not self.isVisible():
             self.show()
-        self.raise_()
 
     def show_above(self, window: QWidget) -> None:
         if window is not None:
@@ -209,7 +214,6 @@ class ModelDownloadDialog(QWidget):
                 geo.center().y() - self.height() // 2,
             )
         self.show()
-        self.raise_()
         self._finalized = False
         self._download_active = True
         self._active_timer.start()

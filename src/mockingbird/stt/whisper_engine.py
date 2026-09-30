@@ -735,6 +735,11 @@ def _fuzzy_fix_latin_partial(text: str, matcher) -> str:
 # download of the same repo would block forever on the hub's per-blob
 # filelock while holding its own locks (observed deadlock: warm-start worker
 # #1 stalled mid-transfer, retry spun worker #2, both frozen at 0 bytes).
+# NOTE (R-25): this lock is ALSO the guard that keeps the global
+# _install_cancel_hook patch single-instanced — two parallel patch/restore
+# cycles on huggingface_hub.file_download._get_progress_bar_context would
+# nest wrappers and cross-wire cancel events. Never bypass _RESOLVE_LOCKS
+# around a download.
 _RESOLVE_LOCKS: dict[str, threading.Lock] = {}
 _RESOLVE_LOCKS_GUARD = threading.Lock()
 
@@ -751,6 +756,26 @@ _MODEL_RELEASE_ASSETS = {
     "Systran/faster-whisper-medium": "Mockingbird-whisper-medium-model.zip",
     "deepdml/faster-whisper-large-v3-turbo-ct2": "Mockingbird-whisper-large-v3-turbo-model.zip",
 }
+
+# Asset names in the s3.cloud.ru public bucket. Short, version-independent
+# names — the bucket hosts one zip per model size, refreshed by the
+# `scripts/build_model_pack.sh` upload step. Primary source for the runtime
+# download; the GitHub release above is the fallback.
+_S3_ASSETS = {
+    "Systran/faster-whisper-tiny": "tiny.zip",
+    "Systran/faster-whisper-base": "base.zip",
+    "Systran/faster-whisper-small": "small.zip",
+    "Systran/faster-whisper-medium": "medium.zip",
+    "deepdml/faster-whisper-large-v3-turbo-ct2": "large-v3-turbo.zip",
+}
+# Cloud.ru requires the bucket to be addressed via its global name
+# (mockingbird.s3.cloud.ru) for anonymous downloads — the bare
+# s3.cloud.ru/mockingbird endpoint demands SigV4 on every GET. The
+# global name is set in the bucket settings via the Cloud.ru UI
+# ("Edit" → Global bucket name / Domain name). This URL is the
+# PRIMARY runtime source for whisper model downloads, with GitHub
+# Releases as fallback-1 and huggingface_hub as fallback-2.
+_S3_BASE = "https://mockingbird.s3.cloud.ru/models"
 _CHUNK = 1 << 20  # 1 MiB
 
 # Approximate unpacked model sizes (bytes) used for the pre-download disk
@@ -792,6 +817,10 @@ def _github_model_url(repo_id: str) -> str:
         f"https://github.com/{_MODEL_RELEASE_REPO}/"
         f"releases/download/{_MODEL_RELEASE_TAG}/{_MODEL_RELEASE_ASSETS[repo_id]}"
     )
+
+
+def _s3_model_url(repo_id: str) -> str:
+    return f"{_S3_BASE}/{_S3_ASSETS[repo_id]}"
 
 
 def _replace_dir_robust(fresh: Path, target: Path, attempts: int = 3) -> bool:
@@ -920,23 +949,135 @@ def _download_from_github(
         except OSError:
             pass
 
-    # The pack contains cache/models--<slug>; move it under the root.
+    snapshot = _resolve_unpacked_snapshot(root, repo_id)
+    if snapshot is not None:
+        log.info("whisper: model installed from GitHub release: %s", snapshot)
+    return snapshot
+
+
+def _download_from_s3(
+    cfg: WhisperConfig, repo_id: str, download_root: str,
+    progress_cb=None, cancel_event=None,
+) -> str | None:
+    """Fetch the model pack zip from the s3.cloud.ru public bucket.
+
+    Same layout as the GitHub-release zip (``cache/models--<slug>/{refs,snapshots}``)
+    produced by scripts/build_model_pack.sh — the runtime treats them as
+    interchangeable. Returns the resolved snapshot path or None when the
+    bucket is unreachable (the caller falls back to GitHub, then HF).
+    """
+    import urllib.request
+    import zipfile
+
+    url = _s3_model_url(repo_id)
+    root = Path(download_root)
+    log.info("whisper: trying model pack from s3.cloud.ru: %s", url)
+
+    def _report(message: str, percent: float) -> None:
+        if progress_cb is not None:
+            progress_cb(message, percent)
+
+    _report("Подключение к s3.cloud.ru (CDN моделей)…", 0.0)
+    zip_path = root / ".s3-model-pack.zip"
+    root.mkdir(parents=True, exist_ok=True)
+
+    total = 0.0
+    done = 0.0
+    max_attempts = 3
+    for attempt in range(max_attempts):
+        if cancel_event is not None and cancel_event.is_set():
+            raise RuntimeError("whisper model download cancelled by user")
+        try:
+            req = urllib.request.Request(url, method="GET")
+            resp = urllib.request.urlopen(req, timeout=30)
+        except Exception as exc:  # noqa: BLE001
+            log.info(
+                "whisper: s3.cloud.ru unavailable (%s) — falling back to GitHub",
+                exc,
+            )
+            return None
+
+        total = float(resp.headers.get("Content-Length") or 0)
+        if total > 0:
+            _ensure_free_space(str(root), total * 2.0, "загрузки модели распознавания")
+        done = 0.0
+        try:
+            with open(zip_path, "wb") as f:
+                while True:
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise RuntimeError("whisper model download cancelled by user")
+                    chunk = resp.read(_CHUNK)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    done += len(chunk)
+                    if total > 0:
+                        pct = min(99.0, done / total * 100.0)
+                        _report(
+                            f"Скачивание model-pack.zip: {done / 1e6:.0f} из {total / 1e6:.0f} МБ",
+                            pct,
+                        )
+                    else:
+                        _report(f"Скачивание model-pack.zip: {done / 1e6:.0f} МБ", -1.0)
+        except Exception:
+            try:
+                zip_path.unlink()
+            except OSError:
+                pass
+            raise
+
+        if total > 0 and (total - done) > 10 * 1024 * 1024:
+            log.warning(
+                "whisper: s3.cloud.ru model pack truncated: got %.0f MB, expected %.0f MB "
+                "(attempt %d/%d)",
+                done / 1e6, total / 1e6, attempt + 1, max_attempts,
+            )
+            try:
+                zip_path.unlink()
+            except OSError:
+                pass
+            if attempt + 1 < max_attempts:
+                time.sleep(1.5 * (attempt + 1))
+                continue
+            return None
+        break
+
+    log.info(
+        "whisper: s3.cloud.ru model pack downloaded: %.0f MB (expected %.0f MB)",
+        done / 1e6, total / 1e6,
+    )
+    _report("Распаковка модели…", -1.0)
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            zf.extractall(root)
+    except Exception as exc:  # noqa: BLE001
+        log.exception("whisper: s3 model pack unpack failed")
+        try:
+            zip_path.unlink()
+        except OSError:
+            pass
+        return None
+    finally:
+        try:
+            zip_path.unlink()
+        except OSError:
+            pass
+
+    return _resolve_unpacked_snapshot(root, repo_id)
+
+
+def _resolve_unpacked_snapshot(root: Path, repo_id: str) -> str | None:
+    """Move the unpacked ``cache/models--<slug>`` to root and return the snapshot.
+
+    Shared between _download_from_github and _download_from_s3 — the zip
+    layout is identical (cache/<repo-dir>/{refs,snapshots,trees}).
+    """
     pack_cache = root / "cache"
     if pack_cache.is_dir():
         for entry in pack_cache.iterdir():
             target = root / entry.name
             if target.exists():
-                # A leftover (possibly locked/partial) directory from a
-                # previous corrupt-cache cleanup must not silently swallow
-                # the freshly unpacked pack: rmtree(ignore_errors) can leave
-                # locked files behind on Windows (AV scan), and the old
-                # "skip if exists" logic then dropped refs/main in cache/ →
-                # "unexpected layout" after a full 1.5 GB download.
                 if not _replace_dir_robust(entry, target):
-                    # Last resort: the fresh pack dir stays under cache/ —
-                    # resolve_model_path's caller only needs a VALID SNAPSHOT
-                    # PATH, it does not care which parent holds it. Leave it
-                    # in place; the layout check below also accepts it.
                     log.warning(
                         "whisper: stale model dir %s is locked — keeping the "
                         "fresh pack under %s", target, entry,
@@ -957,29 +1098,30 @@ def _download_from_github(
         snaps = base / slug / "snapshots"
         if not (refs.is_file() and snaps.is_dir()):
             continue
-        commit = refs.read_text(encoding="utf-8").strip()
-        snapshot = snaps / commit
-        if not snapshot.is_dir():
-            log.error("whisper: pack refs point to missing snapshot %s", snapshot)
-            return None
-        if base != root:
-            log.warning(
-                "whisper: model resolved from pack dir under cache/ (stale "
-                "root dir is locked; it will be replaced on a later run)"
+        commits = sorted(p for p in snaps.iterdir() if p.is_dir())
+        if not commits:
+            continue
+        snap = commits[-1]
+        # Sanity: required files must exist (model.bin may have been excluded
+        # from the pack by accident — better fail now than at decode time).
+        if not (snap / "model.bin").is_file() or not (snap / "config.json").is_file():
+            log.error(
+                "whisper: snapshot at %s is missing model.bin or config.json",
+                snap,
             )
-        log.info("whisper: model installed from GitHub release: %s", snapshot)
-        return str(snapshot)
-    # Diagnostics: what actually landed under the root (the silent
-    # "skip if exists" move bug left refs/ stranded under cache/).
+            return None
+        return str(snap)
+    # No snapshot found — dump the layout for the log.
     try:
-        listing = [p.name for p in root.iterdir()]
-        cache_listing = (
-            [p.name for p in (root / "cache").iterdir()] if (root / "cache").is_dir() else None
-        )
+        listing = "\n".join(sorted(p.name for p in root.iterdir()))
     except OSError:
-        listing = cache_listing = None
+        listing = None
+    try:
+        cache_listing = "\n".join(sorted(p.name for p in (root / "cache").iterdir()))
+    except OSError:
+        cache_listing = None
     log.error(
-        "whisper: GitHub model pack has unexpected layout under %s "
+        "whisper: model pack has unexpected layout under %s "
         "(root=%s, cache=%s)", root, listing, cache_listing,
     )
     return None
@@ -1053,7 +1195,36 @@ def resolve_model_path(cfg: WhisperConfig, progress_cb=None, cancel_event=None) 
             "завершения или нажмите «Отмена» перед повтором."
         )
 
-    # ---- primary source: OUR GitHub release (models tag) ---------------------
+    # ---- primary source: s3.cloud.ru public bucket --------------------------
+    # s3.cloud.ru is our own bucket under our control — faster CDN than
+    # huggingface.co from Russian / CIS networks and not subject to GitHub's
+    # 2 GiB asset cap. Falls back to GitHub, then huggingface_hub.
+    if repo_id in _S3_ASSETS:
+        try:
+            s3_path = _download_from_s3(
+                cfg, repo_id, download_root,
+                progress_cb=progress_cb, cancel_event=cancel_event,
+            )
+            if s3_path is not None:
+                problem = _model_dir_problem(s3_path)
+                if problem is None:
+                    return s3_path
+                log.error(
+                    "whisper: s3-installed model at %s is corrupted (%s) — "
+                    "falling back to GitHub",
+                    s3_path, problem,
+                )
+                _remove_snapshot(s3_path)
+        except Exception as exc:  # noqa: BLE001
+            if cancel_event is not None and cancel_event.is_set():
+                raise
+            if "Недостаточно места" in str(exc):
+                raise
+            log.warning(
+                "whisper: s3.cloud.ru download failed (%s) — trying GitHub", exc,
+            )
+
+    # ---- secondary source: OUR GitHub release (models tag) ------------------
     # huggingface.co's CDN proved unreachable from frozen Windows builds on
     # some machines (transfer stalls at 0 bytes while the API works);
     # github.com release assets are under our control and reliable. Falls
@@ -1247,6 +1418,16 @@ def resolve_model_path(cfg: WhisperConfig, progress_cb=None, cancel_event=None) 
             restore_xet()
     finally:
         flight_lock.release()
+        # Clean up the per-repo lock entry to avoid a slow-growing dict of
+        # unowned threading.Lock objects after the user cycles through
+        # several model sizes in a single session. Use pop() under the
+        # module-level guard so a concurrent resolve_model_path on the
+        # same repo doesn't observe a missing key and recreate the lock
+        # mid-release.
+        with _RESOLVE_LOCKS_GUARD:
+            existing = _RESOLVE_LOCKS.get(repo_id)
+            if existing is flight_lock:
+                _RESOLVE_LOCKS.pop(repo_id, None)
     problem = _model_dir_problem(path)
     if problem is not None:
         raise RuntimeError(f"downloaded whisper model at {path} is corrupted: {problem}")
@@ -1266,6 +1447,9 @@ class WhisperEngine:
         # give the final decode GPU priority over cosmetic partial decodes:
         # with RTF > 1 every skipped partial window (~0.85 s GPU) is nearly a
         # second off the question's time-to-answer (A3, 2026-09-27).
+        # R-14: mutated from BOTH the capture thread (increment) and the
+        # worker thread (decrement) — the read-modify-write race under GIL
+        # loses decrements; always touch it under self._lock.
         self._pending_final_cmds = 0
         # Idle re-warm switch: enabled by the app while a capture session is
         # active (see enable_idle_rewarm). Off outside sessions — no point
@@ -1316,6 +1500,15 @@ class WhisperEngine:
         # re-decodes the identical buffer — pure GPU waste (the hold/resume
         # cycle of the chunker re-fires hints after a continuation start).
         self._decoded_audio_len = -1
+        # R-18: segment generation counter. start_segment() bumps it; decode
+        # results carry the generation they were launched for and are dropped
+        # when it no longer matches — a speculative decode launched for the
+        # PREVIOUS question must not paint its text onto the new segment.
+        self._generation_id = 0
+        # R-20: set by stop() so a long _finalize can early-exit instead of
+        # keeping the worker (and start()) blocked for a 5–15 s decode after
+        # the user already pressed Stop.
+        self._stopping_event = threading.Event()
 
         self.on_partial = None
         self.on_final = None
@@ -1408,6 +1601,7 @@ class WhisperEngine:
                 # consumer of the same queue (duplicated/lost finals).
                 return
         self._stopping = False
+        self._stopping_event.clear()
         # Drain stale commands from a previous (failed/dead) session — e.g.
         # audio and _CMD_FLUSH queued before a model-load failure. A new
         # worker must never inherit them: a stale flush corrupts segment
@@ -1422,6 +1616,7 @@ class WhisperEngine:
 
     def stop(self, timeout: float = 8.0) -> None:
         self._stopping = True
+        self._stopping_event.set()  # R-20: let an in-flight _finalize bail out
         self._queue.put((_CMD_STOP, None))
         thread = self._thread
         if thread is not None and thread.is_alive():
@@ -1465,6 +1660,9 @@ class WhisperEngine:
             self._spec_partial_emitted = False
             self._chunk_texts = []
             self._last_partial_text = ""
+            # R-18: invalidate in-flight decodes for the previous segment —
+            # their results (speculative/partial) must not leak into this one.
+            self._generation_id += 1
         return segment_id
 
     def feed(self, audio: np.ndarray) -> None:
@@ -1472,7 +1670,8 @@ class WhisperEngine:
 
     def _put_final(self, cmd: str, payload) -> None:
         """Enqueue a finalization command and mark it pending (A3 priority)."""
-        self._pending_final_cmds += 1
+        with self._lock:
+            self._pending_final_cmds += 1
         self._queue.put((cmd, payload))
 
     @property
@@ -1560,7 +1759,8 @@ class WhisperEngine:
             if cmd == _CMD_STOP:
                 break
             if cmd in (_CMD_END, _CMD_STOP_HINT, _CMD_FLUSH):
-                self._pending_final_cmds = max(0, self._pending_final_cmds - 1)
+                with self._lock:
+                    self._pending_final_cmds = max(0, self._pending_final_cmds - 1)
             if cmd == _CMD_AUDIO:
                 with self._lock:
                     self._rolling = np.concatenate([self._rolling, payload])
@@ -1608,10 +1808,14 @@ class WhisperEngine:
             if self.on_progress:
                 self.on_progress(message, percent)
 
-        # Clear any cancel flag left over from a previous cancelled attempt:
-        # the Event is persistent (never replaced), so a stale set() would
-        # abort this fresh download instantly.
-        self._cancel_download.clear()
+        # R-06/R-22: a cancel that is ALREADY set when a new load starts is
+        # the user's live intent (e.g. clicked during the previous attempt's
+        # teardown, or the retry raced a second Cancel click) — honour it
+        # instead of silently erasing. Only a genuinely stale flag is cleared,
+        # and only via the public helper (never replace the Event object:
+        # download threads capture the exact object at start).
+        if self._cancel_download.is_set():
+            self._raise_if_cancelled()
         report(f"Loading {self._cfg.model_size} whisper model…", -1.0)
         model_path = resolve_model_path(
             self._cfg, progress_cb=report, cancel_event=self._cancel_download
@@ -1686,6 +1890,10 @@ class WhisperEngine:
             if "model.bin" in str(exc) or "Unable to open" in str(exc):
                 log.warning("whisper: model.bin missing/corrupt, re-downloading...")
                 report("Модель повреждена, повторная загрузка…", -1.0)
+                # R-22: honour a Cancel that landed during the failed load
+                # before starting the re-download (same rule as _load_model's
+                # entry guard — the flag is live user intent, not stale).
+                self._raise_if_cancelled()
                 _remove_snapshot(model_path)
                 model_path = resolve_model_path(
                     self._cfg, report, cancel_event=self._cancel_download
@@ -1755,6 +1963,7 @@ class WhisperEngine:
             window = int(self._cfg.window_seconds * self._sr)
             audio = self._rolling[-window:].copy()
             segment_id = self._segment_id
+            generation_id = self._generation_id
         if len(audio) < int(self._sr * 0.5):
             return
         self._decoding = True
@@ -1762,6 +1971,10 @@ class WhisperEngine:
             text, _confidence, duration = self._transcribe(
                 audio, kind="partial", beam_size=self._cfg.beam_size
             )
+            if generation_id != self._generation_id:
+                # R-18: a new segment started while this decode ran — the
+                # text belongs to the previous question, drop it.
+                return
             self._last_decode = time.monotonic()
             if text:
                 self._last_partial_text = text
@@ -1856,6 +2069,7 @@ class WhisperEngine:
                 return
             audio = self._rolling.copy()
             segment_id = self._segment_id
+            generation_id = self._generation_id
         if len(audio) < int(self._sr * 0.5):
             return
         # Short-buffer hallucination guard (field case 2026-09-28 13:03:56):
@@ -1884,6 +2098,10 @@ class WhisperEngine:
                     tail, kind="speculative", beam_size=self._cfg.final_beam_size
                 )
                 self._decoded_audio_len = len(audio)
+                if generation_id != self._generation_id:
+                    # R-18: segment changed mid-decode — speculative result
+                    # is stale, do not latch it into _speculative.
+                    return
                 prefix = " ".join(self._chunk_texts).strip()
                 if text:
                     text = merge_chunk_texts([prefix, text]) if prefix else text
@@ -1921,6 +2139,10 @@ class WhisperEngine:
             # short buffers — otherwise every re-fired hint re-decodes the
             # same 2-second tail.
             self._decoded_audio_len = len(audio)
+            if generation_id != self._generation_id:
+                # R-18: segment changed mid-decode — stale speculative
+                # result, do not latch/emit it.
+                return
             if text:
                 self._prev_full_text = self._last_partial_text or ""
                 self._speculative = {
@@ -1987,6 +2209,14 @@ class WhisperEngine:
 
     def _finalize(self, audio: np.ndarray, segment_id: str | None) -> None:
         if self._model is None:
+            return
+        # R-20: the user pressed Stop while this command sat in the queue.
+        # The segment's audio is already lost to the next session anyway
+        # (state is reset on start_segment); burning a 5–15 s decode on it
+        # only keeps stop()/start() blocked for no benefit.
+        if self._stopping_event.is_set():
+            log.debug("whisper: finalize skipped — stop requested (R-20)")
+            self._cleanup_segment()
             return
         if len(audio) < int(self._sr * 0.25):
             self._cleanup_segment()

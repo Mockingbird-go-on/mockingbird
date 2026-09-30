@@ -492,6 +492,9 @@ class InterviewPanel(QWidget):
         self._regenerate_callback = regenerate_callback
         self._concept_callback = concept_callback
         self._llm_primary = llm_primary
+        # ``llm_available`` may be a bool (tests / static callers) or a callable
+        # (MainWindow passes a lambda so the panel sees a just-onboarded LLM —
+        # the value was captured BEFORE the wizard mutated the config).
         self._llm_available = llm_available
         # Truth source for "an answer is being generated right now" (engine's
         # is_streaming/answer-pending state). More reliable than the panel's
@@ -500,7 +503,6 @@ class InterviewPanel(QWidget):
         self._current_query = ""
         self._pending_llm_query = ""
         self._browsing_history = False
-        self._covered_topics: dict[str, str] = {}
         self._llm_answer_cache: dict[str, str] = {}
         self._llm_html_cache: dict[str, str] = {}
         self._llm_timer = QTimer(self)
@@ -511,6 +513,9 @@ class InterviewPanel(QWidget):
         self._llm_watchdog.setInterval(15000)
         self._llm_watchdog.timeout.connect(self._on_llm_timeout)
         self._llm_stream_text = ""
+        # UX-1: the watchdog marked the current stream as truncated; a later
+        # done=True must replace (not append to) the notice — see _on_llm_timeout.
+        self._llm_stream_truncated = False
         self._llm_answer_text = ""
         self._llm_answer_from_kb = False
         # Active stream guard: only ONE stream may feed the pane. The first
@@ -538,20 +543,9 @@ class InterviewPanel(QWidget):
         self._context_line.setStyleSheet(f"color:{theme.TEXT_SECONDARY};font-size:12px;")
         self._context_line.setVisible(False)  # folded into the context tooltip
 
-        # Compact info glyph next to the question: the full context line,
-        # breadcrumb and session-topic chips live in its tooltip instead of
-        # occupying header rows.
-        self._context_icon = QLabel()
-        self._context_icon.setFixedSize(18, 18)
-        self._context_icon.setScaledContents(False)
-        self._context_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._context_icon.setVisible(False)
-        self._context_icon.setCursor(Qt.CursorShape.WhatsThisCursor)
-        self._update_context_icon()
-
-        self._chips_row = QHBoxLayout()
-        self._chips_row.setSpacing(6)
-        self._chips_row_folded = True  # chips only feed the context tooltip
+        # Context glyph + topic chips removed (2026-09-29): the info icon
+        # next to the live strip showed breadcrumb / context line / session
+        # topics only on hover — they were dead weight in the common case.
 
         self._live = QLabel("")
         self._live.setWordWrap(True)
@@ -576,14 +570,15 @@ class InterviewPanel(QWidget):
         header_layout = QVBoxLayout(header)
         header_layout.setContentsMargins(0, 0, 0, 0)
         header_layout.setSpacing(4)
-        question_row = QHBoxLayout()
-        question_row.setSpacing(8)
-        question_row.addWidget(self._question)
-        question_row.addWidget(self._context_icon)
-        question_row.addStretch(1)
-        header_layout.addLayout(question_row)
-        header_layout.addLayout(self._chips_row)
-        header_layout.addWidget(self._live)
+        # Big question header removed (2026-09-28): it occupied a whole row
+        # above the live transcript and the user only needs the live strip.
+        # ``_question`` is kept (hidden) so history/regenerate paths that
+        # call setText() keep working without touching the visible layout.
+        self._question.setVisible(False)
+        live_row = QHBoxLayout()
+        live_row.setSpacing(8)
+        live_row.addWidget(self._live, stretch=1)
+        header_layout.addLayout(live_row)
         self._header = header
 
         # === Layout ===
@@ -615,6 +610,22 @@ class InterviewPanel(QWidget):
         self._main_layout = layout
 
     # -- events ------------------------------------------------------------
+
+    def _llm_available_now(self) -> bool:
+        """Resolve the LLM-available flag, supporting a dynamic callable.
+
+        MainWindow passes a lambda (``lambda: bool(self._app.llm.available)``)
+        so the panel reflects an LLM configured during onboarding — the panel
+        is constructed BEFORE the wizard runs, so a captured bool would stay
+        False and silently disable regenerate / concept answers forever.
+        """
+        avail = self._llm_available
+        if callable(avail):
+            try:
+                return bool(avail())
+            except Exception:  # noqa: BLE001
+                return False
+        return bool(avail)
 
     def _set_question_placeholder(self, on: bool) -> None:
         """Paint the question header as muted placeholder or active text."""
@@ -648,7 +659,7 @@ class InterviewPanel(QWidget):
         self._llm_answer_text = ""
         self._question.setText(detected.text)
         self._set_question_placeholder(False)
-        if self._llm_primary and self._llm_available:
+        if self._llm_primary and self._llm_available_now():
             self._answer_llm.browser().setHtml(_themed_html(
                 f"<p style='color:{theme.TEXT_SECONDARY};'>{html.escape(_LLM_PLACEHOLDER)}</p>"
             ))
@@ -695,7 +706,6 @@ class InterviewPanel(QWidget):
             f"color:{theme.TEXT_SECONDARY};font-size:12px;"
         )
         self._render_live()
-        self._update_chips(self._view)
         if self._llm_answer_text:
             self._render_llm_answer()
         elif self._view is not None:
@@ -708,34 +718,6 @@ class InterviewPanel(QWidget):
 
     def on_answer(self, view: protocol.KnowledgeView) -> None:
         self._render_view(view, record=True)
-
-    def _update_context_icon(self) -> None:
-        """Re-render the context glyph and rebuild the combined tooltip."""
-        from mockingbird.ui.icons import icon as lucide_icon
-
-        self._context_icon.setPixmap(
-            lucide_icon(
-                "info", size=16, color=theme.current.text_secondary
-            ).pixmap(16, 16)
-        )
-        tooltip_parts: list[str] = []
-        bc = self._breadcrumb.text()
-        if bc:
-            tooltip_parts.append(bc)
-        ctx = self._context_line.text()
-        if ctx:
-            # Strip the rich-text markup (<b>/<i>) — tooltips are plain text.
-            plain = re.sub(r"<[^>]+>", "", ctx)
-            tooltip_parts.append(plain)
-        topics = ", ".join(self._covered_topics.values())
-        if topics:
-            tooltip_parts.append(f"Темы сессии: {topics}")
-        if tooltip_parts:
-            self._context_icon.setToolTip("\n".join(tooltip_parts))
-            self._context_icon.setVisible(True)
-        else:
-            self._context_icon.setToolTip("")
-            self._context_icon.setVisible(False)
 
     def on_context(self, state: protocol.DiscussionState) -> None:
         """Context info (topic, summary, active question) — shown in tooltip."""
@@ -751,7 +733,6 @@ class InterviewPanel(QWidget):
         else:
             prefix = "Переход" if state.shifted else "Контекст"
             self._context_line.setText(f"{prefix}: " + " · ".join(parts))
-        self._update_context_icon()
 
     def on_llm_answer(self, msg) -> None:
         """Render the exact-question LLM answer into the primary pane.
@@ -800,7 +781,10 @@ class InterviewPanel(QWidget):
                 return
             self._llm_timer.stop()
             self._llm_watchdog.stop()
+            # UX-1: the done answer replaces the truncated stream (the
+            # watchdog notice must not survive into the final render).
             self._llm_stream_text = ""
+            self._llm_stream_truncated = False
             answer = (msg.answer or "").strip()
             if answer:
                 if not self._browsing_history:
@@ -926,6 +910,7 @@ class InterviewPanel(QWidget):
     def _reset_llm_stream(self) -> None:
         self._llm_timer.stop()
         self._llm_stream_text = ""
+        self._llm_stream_truncated = False
         self._active_stream_id = ""
 
     def begin_external_stream(self, query: str, stream_id: str) -> None:
@@ -945,7 +930,7 @@ class InterviewPanel(QWidget):
         self._answer_llm.set_current_query(query)
         self._reset_llm_stream()
         self._llm_answer_text = ""
-        if self._llm_primary and self._llm_available:
+        if self._llm_primary and self._llm_available_now():
             self._answer_llm.browser().setHtml(_themed_html(
                 f"<p style='color:{theme.TEXT_SECONDARY};'>{_html.escape(_LLM_PLACEHOLDER)}</p>"
             ))
@@ -974,7 +959,6 @@ class InterviewPanel(QWidget):
         self._question.setText(view.matched_query or view.title or view.topic)
         self._set_question_placeholder(False)
         self._breadcrumb.setText(view.title or view.topic)
-        self._update_chips(view)
         self._render_kb_pane(view)
         self._render_primary(view)
         if view.preview or view.partial:
@@ -1032,7 +1016,7 @@ class InterviewPanel(QWidget):
         # exact block, we show the "forming answer…" placeholder while the
         # model generates a rich, expanded answer — the KB block stays
         # available in the topic tree for manual browsing (click → popover).
-        if not view.preview and self._llm_primary and self._llm_available:
+        if not view.preview and self._llm_primary and self._llm_available_now():
             self._llm_answer_from_kb = False
             self._llm_answer_text = ""
             self._answer_llm.browser().setHtml(_themed_html(
@@ -1077,33 +1061,6 @@ class InterviewPanel(QWidget):
             f"<h3>{html.escape(block.question)}</h3>"
             f"<p>{render_answer(block.answer, block.highlight)}</p>"
         )
-
-    # -- chips -------------------------------------------------------------
-
-    def _update_chips(self, view: protocol.KnowledgeView | None) -> None:
-        if view is not None and view.topic:
-            self._covered_topics.setdefault(view.topic, view.title or view.topic)
-        # Chips are folded into the context tooltip (space saving): the row
-        # stays empty; only the icon tooltip lists the covered topics.
-        while self._chips_row.count():
-            item = self._chips_row.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
-        if self._covered_topics and not self._chips_row_folded:
-            caption = QLabel("Темы сессии:")
-            caption.setStyleSheet(f"color:{theme.TEXT_SECONDARY};")
-            self._chips_row.addWidget(caption)
-            for topic_id, title in self._covered_topics.items():
-                chip = QLabel(title)
-                chip.setStyleSheet(
-                    "border-radius:10px; padding:2px 10px; color:white; background:"
-                    + theme.TOPIC_COLORS[abs(hash(topic_id)) % len(theme.TOPIC_COLORS)]
-                    + "; font-size:11px;"
-                )
-                self._chips_row.addWidget(chip)
-            self._chips_row.addStretch(1)
-        self._update_context_icon()
 
     # -- history -----------------------------------------------------------
 
@@ -1159,6 +1116,12 @@ class InterviewPanel(QWidget):
             # A partial stream stalled mid-answer without a done message:
             # keep what was rendered but mark it clearly as truncated, so it
             # does not silently pass for the final answer.
+            # UX-1: latch a flag instead of only mutating the buffer — if the
+            # stream recovers and a done=True arrives, the final render
+            # REPLACES the buffer and must not re-append the truncation
+            # notice (the user used to see «⏳ Ответ оборвался…» flash and
+            # then duplicate under a normal answer).
+            self._llm_stream_truncated = True
             self._llm_stream_text += (
                 "\n\n⏳ Ответ оборвался — нажмите ⟳ для перегенерации."
             )
@@ -1169,7 +1132,7 @@ class InterviewPanel(QWidget):
 
     def _on_regenerate(self, query: str) -> None:
         """Handle regenerate button click."""
-        if not self._llm_primary or not self._llm_available:
+        if not self._llm_primary or not self._llm_available_now():
             return
         
         # Use current query if provided, otherwise use pending query
@@ -1207,7 +1170,6 @@ class InterviewPanel(QWidget):
                 self._question.setText(view.matched_query or view.title or view.topic)
                 self._set_question_placeholder(False)
                 self._breadcrumb.setText(view.title or view.topic)
-                self._update_chips(view)
                 self._render_kb_pane(view)
                 # Record the (re-asked/edited) question in history.
                 self._history.add_entry(
@@ -1234,7 +1196,7 @@ class InterviewPanel(QWidget):
         as a new entry in the history sidebar.
         """
         term = (term or "").strip()
-        if not term or not self._llm_primary or not self._llm_available:
+        if not term or not self._llm_primary or not self._llm_available_now():
             return
         if self._concept_callback is None:
             return
@@ -1254,7 +1216,6 @@ class InterviewPanel(QWidget):
         self._question.setText(query)
         self._set_question_placeholder(False)
         self._breadcrumb.setText(query)
-        self._update_chips(None)
 
         # Reset stream state and show the forming-answer placeholder.
         self._reset_llm_stream()
