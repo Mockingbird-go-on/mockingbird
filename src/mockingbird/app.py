@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import logging
+
+from mockingbird.i18n import t
 import os
 import threading
 import time
@@ -36,7 +38,7 @@ log = logging.getLogger(__name__)
 # Bilingual anchor sentence placed first in whisper's initial_prompt. It biases
 # the decoder towards Russian syntax while keeping the Latin spelling of the
 # English terms it mentions; adjust freely.
-_STT_PROMPT_ANCHOR = "Пример: расскажи про Kubernetes и Docker, как устроен Helm-чарт."
+_STT_PROMPT_ANCHOR = t("Пример: расскажи про Kubernetes и Docker, как устроен Helm-чарт.")
 
 
 def _anchor_enabled() -> bool:
@@ -380,7 +382,7 @@ class App:
             try:
                 self.signals.llm_answer.emit(
                     protocol.LlmAnswer(
-                        query=question, topic="screenshot", title="Скриншот",
+                        query=question, topic="screenshot", title=t("Скриншот"),
                         answer="", delta="", done=False, stream_id=stream_id,
                     )
                 )
@@ -391,15 +393,15 @@ class App:
                     acc.append(piece)
                     self.signals.llm_answer.emit(
                         protocol.LlmAnswer(
-                            query=question, topic="screenshot", title="Скриншот",
+                            query=question, topic="screenshot", title=t("Скриншот"),
                             answer="", delta=piece, done=False, stream_id=stream_id,
                         )
                     )
                 text = "".join(acc).strip()
                 self.signals.llm_answer.emit(
                     protocol.LlmAnswer(
-                        query=question, topic="screenshot", title="Скриншот",
-                        answer=text or "(пустой ответ)", delta="", done=True,
+                        query=question, topic="screenshot", title=t("Скриншот"),
+                        answer=text or t("(пустой ответ)"), delta="", done=True,
                         stream_id=stream_id,
                     )
                 )
@@ -409,8 +411,8 @@ class App:
                 log.exception("screenshot answer failed")
                 self.signals.llm_answer.emit(
                     protocol.LlmAnswer(
-                        query=question, topic="screenshot", title="Скриншот",
-                        answer=f"Не удалось получить ответ по скриншоту: {exc}",
+                        query=question, topic="screenshot", title=t("Скриншот"),
+                        answer=t("Не удалось получить ответ по скриншоту: {exc}", exc=exc),
                         delta="", done=True, stream_id=stream_id,
                     )
                 )
@@ -855,8 +857,7 @@ class App:
                 # thread on a long download — the warm start pre-fetch usually
                 # has the model by now; if not, ask the user to retry.
                 self.signals.error.emit(
-                    "Не удалось скачать модель детекции речи (VAD). "
-                    "Проверьте интернет и нажмите «Старт» ещё раз."
+                    t("Не удалось скачать модель детекции речи (VAD). Проверьте интернет и нажмите «Старт» ещё раз.")
                 )
                 raise RuntimeError(f"VAD model download failed: {exc}") from exc
             self._vad = SileroVAD(
@@ -965,7 +966,7 @@ class App:
                 log.info("audio capture restarted by watchdog")
             except Exception as exc:  # noqa: BLE001
                 log.error("capture restart failed: %s", exc)
-                self.signals.error.emit(f"Захват аудио остановился: {exc}")
+                self.signals.error.emit(t("Захват аудио остановился: {exc}", exc=exc))
 
     # -- stt events (stt worker thread) --
     def _on_engine_partial(self, msg) -> None:

@@ -93,7 +93,7 @@ def test_groupbox_style_reserves_title_space_onboarding():
     src = (ROOT / "src" / "mockingbird" / "ui" / "onboarding.py").read_text(
         encoding="utf-8"
     )
-    for title in ("Настройки Whisper", "Тема"):
+    for title in ("Настройки Whisper",):
         style = _extract_group_style(src, title)
         assert "margin-top" in style, f"{title}: no margin-top — title overlaps content"
         assert "subcontrol-origin: margin" in style, (
@@ -121,7 +121,7 @@ def test_groupbox_stylesheet_parses_cleanly():
     acc = "#ff2a1a"
     from PySide6.QtCore import qInstallMessageHandler
 
-    for title in ("Настройки Whisper", "Тема"):
+    for title in ("Настройки Whisper",):
         raw = _extract_group_style(src, title)
         # The call body is an implicit-concat f-string with {self._ACCENT};
         # evaluate it with a stub self exactly as the wizard does.

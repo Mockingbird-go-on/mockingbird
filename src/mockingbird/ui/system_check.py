@@ -1,6 +1,8 @@
 """System capability checks — warn user about missing CUDA, no LLM, no KB modules, etc."""
 from __future__ import annotations
 
+from mockingbird.i18n import t
+
 import logging
 from dataclasses import dataclass
 
@@ -28,9 +30,8 @@ def run_system_checks(config: Config) -> list[SystemWarning]:
     if not config.llm.base_url or not config.llm.api_key:
         warnings.append(SystemWarning(
             level="error",
-            title="LLM не настроен",
-            message="Без LLM-подключения ответы, контекст-анализ и personal-режим не работают. "
-            "Настройте в «Настройки → LLM».",
+            title=t("LLM не настроен"),
+            message=t("Без LLM-подключения ответы, контекст-анализ и personal-режим не работают. Настройте в «Настройки → LLM»."),
         ))
 
     # 2. No CUDA (GPU) — STT will be slower
@@ -49,9 +50,8 @@ def run_system_checks(config: Config) -> list[SystemWarning]:
         if cuda_effectively_off:
             warnings.append(SystemWarning(
                 level="warning",
-                title="GPU (CUDA) недоступен",
-                message="CUDA выбрана в настройках, но недоступна — whisper работает на CPU "
-                "(медленнее). Установите «Устройство: авто» или проверьте драйвер GPU.",
+                title=t("GPU (CUDA) недоступен"),
+                message=t("CUDA выбрана в настройках, но недоступна — whisper работает на CPU (медленнее). Установите «Устройство: авто» или проверьте драйвер GPU."),
             ))
     except Exception:
         # ctranslate2 not installed yet, or CUDA driver mismatch / load error —
@@ -66,8 +66,8 @@ def run_system_checks(config: Config) -> list[SystemWarning]:
         if not topics:
             warnings.append(SystemWarning(
                 level="warning",
-                title="База знаний пуста",
-                message="Не найдено топиков базы знаний.",
+                title=t("База знаний пуста"),
+                message=t("Не найдено топиков базы знаний."),
             ))
     except Exception:
         pass
@@ -79,9 +79,8 @@ def run_system_checks(config: Config) -> list[SystemWarning]:
         if not ResumeLoader.is_loaded():
             warnings.append(SystemWarning(
                 level="info",
-                title="Резюме не загружено",
-                message="Personal-вопросы («что ты делал?») будут отвечать в constructive-режиме "
-                "(без конкретных фактов из резюме). Загрузите PDF на вкладке «Резюме».",
+                title=t("Резюме не загружено"),
+                message=t("Personal-вопросы («что ты делал?») будут отвечать в constructive-режиме (без конкретных фактов из резюме). Загрузите PDF на вкладке «Резюме»."),
             ))
     except Exception:
         pass
@@ -96,9 +95,8 @@ def run_system_checks(config: Config) -> list[SystemWarning]:
         ):
             warnings.append(SystemWarning(
                 level="info",
-                title="Скрытие от захвата недоступно",
-                message=f"Требуется Windows 10 build 19041+. "
-                f"У вас build {capture_guard.windows_build() or '?'}.",
+                title=t("Скрытие от захвата недоступно"),
+                message=t("Требуется Windows 10 build 19041+. У вас build {build}.", build=capture_guard.windows_build() or "?"),
             ))
     except Exception:
         pass

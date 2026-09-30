@@ -226,3 +226,23 @@ echo "  zip: $OUT"
 echo "=== done: $(du -h "$OUT" | cut -f1) ==="
 echo ""
 echo "Model pack location: $OUT"
+
+# ---- optional upload to s3.cloud.ru (PRIMARY runtime source) -----------------
+# The runtime prefers the public bucket over GitHub Releases — faster CDN from
+# RU/CIS networks and no 2 GiB asset cap. The bucket hosts one zip per model
+# size, refreshed whenever a new pack is built. Skipped silently when awscli
+# is missing or S3_ENDPOINT_URL is unset (e.g. local-only builds).
+if command -v aws >/dev/null 2>&1 && [[ -n "${S3_ENDPOINT_URL:-}" ]]; then
+    S3_BUCKET="${S3_BUCKET:-mockingbird}"
+    S3_KEY="${S3_KEY:-models/$MODEL.zip}"
+    echo ""
+    echo "=== uploading to s3.cloud.ru: s3://$S3_BUCKET/$S3_KEY ==="
+    if aws s3 cp "$OUT" "s3://$S3_BUCKET/$S3_KEY" \
+            --endpoint-url "$S3_ENDPOINT_URL" \
+            --acl public-read \
+            --only-show-errors; then
+        echo "  uploaded: s3://$S3_BUCKET/$S3_KEY"
+    else
+        echo "  WARNING: S3 upload failed (build still succeeded — pack is on disk)"
+    fi
+fi

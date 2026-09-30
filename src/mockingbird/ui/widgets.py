@@ -16,6 +16,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from mockingbird.stt.device import device_label
+from mockingbird.i18n import t
 from mockingbird.ui import theme
 
 
@@ -110,52 +111,103 @@ class BackgroundWidget(QWidget):
         painter.fillRect(0, 0, w, h, grad)
 
 
-class StatusPill(QLabel):
+class StatusPill(QWidget):
+    """Unified status + device + model pill.
+
+    Left edge carries a small blinking green dot when a session is running
+    (replaces the old «running» text). The text line combines the device
+    (GPU/CPU) and the loaded whisper model name (model_size only, no
+    compute-type suffix).
+    """
+
+    _DOT = 6  # px
+    _PAD = 6  # px between the dot and the text label
+
     def __init__(self, text: str = ""):
         super().__init__()
         self._state = "idle"
         self._detail = ""
+        self._device = ""
+        self._running = False
+        self._dot_on = True
+        self._blink = QTimer(self)
+        self._blink.setInterval(600)
+        self._blink.timeout.connect(self._toggle_blink)
+        self._label = QLabel()
+        self._layout = QHBoxLayout(self)
+        self._layout.setContentsMargins(8, 2, 8, 2)
+        self._layout.setSpacing(self._PAD)
+        self._layout.addWidget(self._label)
+        self._layout.addStretch(1)
+        self.setSizePolicy(
+            self._label.sizePolicy().horizontalPolicy(),
+            self._label.sizePolicy().verticalPolicy(),
+        )
         self.set_state("idle", text)
+
+    def _toggle_blink(self) -> None:
+        self._dot_on = not self._dot_on
+        self.update()
+
+    def set_device(self, device: str) -> None:
+        self._device = device
+        self._refresh_text()
+
+    def _model_only(self, detail: str) -> str:
+        """Strip the compute-type and device from the model name.
+
+        engine.model_name is «{model_size}/{compute} [{device}]» — keep the
+        model_size part only (int8/float suffixes are noise for the pill).
+        """
+        if not detail:
+            return ""
+        return detail.split("/")[0].split("[")[0].strip()
+
+    def _refresh_text(self) -> None:
+        label = device_label(self._device)
+        parts = [p for p in (label, self._model_only(self._detail)) if p]
+        text = " · ".join(parts)
+        if not text and self._detail:
+            text = self._detail
+        self._label.setText(text)
+        self.setVisible(bool(text))
 
     def set_state(self, state: str, detail: str = "") -> None:
         self._state = state
         self._detail = detail
-        text = state if not detail else f"{state} · {detail}"
-        self.setText(text)
+        self._running = state == "running"
+        if self._running and not self._blink.isActive():
+            self._blink.start()
+            self._dot_on = True
+        elif not self._running:
+            self._blink.stop()
+        self._refresh_text()
         self.update_theme()
 
     def update_theme(self) -> None:
         color = theme.status_color(self._state)
+        self._label.setStyleSheet(f"color:{color}; font-weight:bold;")
         self.setStyleSheet(
-            f"background-color:{theme.current.card}; color:{color};"
-            f"border:1px solid {theme.current.border}; border-radius:8px;"
-            "padding:2px 8px; font-weight:bold;"
+            f"StatusPill {{ background-color:{theme.current.card};"
+            f" border:1px solid {theme.current.border}; border-radius:4px; }}"
         )
 
-
-class DeviceBadge(QLabel):
-    """Tiny CPU/GPU indicator shown in the toolbar."""
-
-    def __init__(self):
-        super().__init__()
-        self._device = ""
-        self.set_state("")
-
-    def set_device(self, device: str) -> None:
-        self.set_state(device)
-
-    def set_state(self, device: str) -> None:
-        self._device = device
-        self.update_theme()
-
-    def update_theme(self) -> None:
-        label = device_label(self._device)
-        color = theme.current.device_gpu if label == "GPU" else theme.current.device_cpu
-        self.setText(label)
-        self.setStyleSheet(
-            f"background-color:{theme.current.card}; color:{color};"
-            f"border:1px solid {theme.current.border}; border-radius:8px;"
-            "padding:2px 8px; font-weight:bold;"
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        if not self._running:
+            return
+        # Blinking green dot pinned to the top-left inner corner of the frame.
+        color = QColor(theme.current.status_running)
+        if not self._dot_on:
+            color.setAlpha(90)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(color))
+        painter.drawEllipse(
+            QPointF(8 + self._DOT / 2.0, self._DOT / 2.0 + 5),
+            self._DOT / 2.0,
+            self._DOT / 2.0,
         )
 
 
@@ -222,7 +274,7 @@ class LogoBadge(QWidget):
         )
         self.setStyleSheet(
             f"background-color:{theme.current.card};"
-            f"border:1px solid {theme.current.border}; border-radius:17px;"
+            f"border:1px solid {theme.current.border}; border-radius:9px;"
         )
 
 
@@ -241,7 +293,7 @@ class _BarCanvas(QWidget):
         t = theme.current
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QBrush(QColor(t.surface_alt)))
-        painter.drawRoundedRect(rect, 6, 6)
+        painter.drawRoundedRect(rect, 3, 3)
         mode = self._owner._mode
         if mode == ActivityBar.MODE_LIVE:
             self._paint_wave(painter, rect)
@@ -249,10 +301,10 @@ class _BarCanvas(QWidget):
             self._paint_progress(painter, rect)
         elif mode == ActivityBar.MODE_ERROR:
             painter.setBrush(QBrush(QColor(t.status_error)))
-            painter.drawRoundedRect(rect, 6, 6)
+            painter.drawRoundedRect(rect, 3, 3)
         painter.setPen(QPen(QColor(t.border), 1))
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), 6, 6)
+        painter.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), 3, 3)
 
     def _paint_wave(self, painter: QPainter, rect: QRectF) -> None:
         """Horizontal VU thermometer: gradient fill + peak-hold marker."""
@@ -276,7 +328,7 @@ class _BarCanvas(QWidget):
             painter.setBrush(QBrush(grad))
             painter.setPen(Qt.PenStyle.NoPen)
             painter.drawRoundedRect(
-                QRectF(rect.x(), rect.y(), fill_w, rect.height()), 6, 6
+                QRectF(rect.x(), rect.y(), fill_w, rect.height()), 3, 3
             )
 
         # Peak-hold marker: bright vertical bar at the peak position.
@@ -295,14 +347,14 @@ class _BarCanvas(QWidget):
         # Clip everything to the track's rounded rect — the sweeping gradient
         # would otherwise poke square corners outside the rounded ends.
         clip = QPainterPath()
-        clip.addRoundedRect(rect, 6, 6)
+        clip.addRoundedRect(rect, 3, 3)
         painter.save()
         painter.setClipPath(clip)
         percent = self._owner._percent
         if percent is not None and percent >= 0:
             w = rect.width() * min(100.0, percent) / 100.0
             painter.setBrush(QBrush(QColor(t.accent)))
-            painter.drawRoundedRect(QRectF(rect.x(), rect.y(), w, rect.height()), 6, 6)
+            painter.drawRoundedRect(QRectF(rect.x(), rect.y(), w, rect.height()), 3, 3)
         else:
             x = self._owner._sweep * rect.width()
             sweep = QRectF(x - 60.0, rect.y(), 120.0, rect.height())
@@ -311,7 +363,7 @@ class _BarCanvas(QWidget):
             grad.setColorAt(0.5, QColor(t.accent))
             grad.setColorAt(1.0, QColor(t.surface_alt))
             painter.setBrush(QBrush(grad))
-            painter.drawRoundedRect(sweep, 6, 6)
+            painter.drawRoundedRect(sweep, 3, 3)
         painter.restore()
 
 
@@ -382,7 +434,7 @@ class ActivityBar(QWidget):
             self._anim.stop()
         else:
             self._percent = None
-            self._label.setText(message or "Загрузка модели…")
+            self._label.setText(message or t("Загрузка модели…"))
             self._anim.start()
         self._canvas.update()
 
@@ -411,14 +463,14 @@ class ActivityBar(QWidget):
 
     def set_muted(self) -> None:
         self._mode = self.MODE_MUTED
-        self._label.setText("Мьют")
+        self._label.setText(t("Мьют"))
         self._label.setVisible(True)
         self._anim.stop()
         self._canvas.update()
 
     def set_error(self, message: str) -> None:
         self._mode = self.MODE_ERROR
-        self._label.setText(message or "Ошибка")
+        self._label.setText(message or t("Ошибка"))
         self._label.setVisible(True)
         self._anim.stop()
         self._canvas.update()
@@ -481,7 +533,7 @@ class ThemeToggle(QPushButton):
                            color=theme.current.text_secondary)
         self.setIcon(icon)
         self.setText("")
-        self.setToolTip("Светлая" if is_dark else "Тёмная")
+        self.setToolTip(t("Светлая") if is_dark else t("Тёмная"))
 
 class SourceBadge(QLabel):
     """Primary audio source: «Система» (loopback) or «Микрофон»."""
@@ -496,7 +548,7 @@ class SourceBadge(QLabel):
         self.update_theme()
 
     def update_theme(self) -> None:
-        label = {"system": "Система", "mic": "Микрофон"}.get(self._source, "")
+        label = {"system": t("Система"), "mic": t("Микрофон")}.get(self._source, "")
         # Hide the badge entirely when there is no source yet so the toolbar
         # does not show a stray empty pill next to the device badge.
         self.setVisible(bool(label))
@@ -504,7 +556,7 @@ class SourceBadge(QLabel):
         self.setText(label)
         self.setStyleSheet(
             f"background-color:{theme.current.card}; color:{color};"
-            f"border:1px solid {theme.current.border}; border-radius:8px;"
+            f"border:1px solid {theme.current.border}; border-radius:4px;"
             "padding:2px 8px; font-weight:bold;"
         )
 

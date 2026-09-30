@@ -246,6 +246,65 @@ def test_size_hints_cover_release_assets():
     assert set(we._MODEL_SIZE_HINTS) == set(we._MODEL_RELEASE_ASSETS)
 
 
+def test_s3_assets_cover_release_assets():
+    """s3.cloud.ru is the PRIMARY runtime source — every model that ships on
+    GitHub Releases must also be available in the public bucket."""
+    from mockingbird.stt import whisper_engine as we
+
+    assert set(we._S3_ASSETS) == set(we._MODEL_RELEASE_ASSETS)
+
+
+def test_s3_url_format():
+    """The public bucket URL must use the global bucket name (no signing).
+
+    Cloud.ru requires the bucket's global name (`mockingbird.s3.cloud.ru`)
+    for anonymous downloads — the bare `s3.cloud.ru/mockingbird` endpoint
+    demands SigV4 on every GET and would fail in production.
+    """
+    from mockingbird.stt import whisper_engine as we
+
+    for repo_id, asset in we._S3_ASSETS.items():
+        url = we._s3_model_url(repo_id)
+        assert url == f"{we._S3_BASE}/{asset}"
+        assert url.startswith("https://"), "S3 must use plain HTTPS"
+        assert "?" not in url, "no signing query params"
+        # Sanity: the base must address the bucket via its global name,
+        # not the SigV4-only `s3.cloud.ru/<bucket>` form.
+        assert we._S3_BASE.startswith("https://mockingbird.s3.cloud.ru/"), \
+            f"expected global-name host, got {we._S3_BASE!r}"
+
+
+def test_s3_attempted_before_github(monkeypatch, tmp_path):
+    """resolve_model_path must try s3.cloud.ru BEFORE github.com — the order
+    is the whole point of having a primary source under our control."""
+    from mockingbird.stt import whisper_engine as we
+
+    calls = []
+
+    monkeypatch.setattr(we, "_download_from_s3",
+                        lambda *a, **k: calls.append("s3") or None)
+    monkeypatch.setattr(we, "_download_from_github",
+                        lambda *a, **k: calls.append("github") or None)
+    monkeypatch.setattr(we, "_ensure_free_space", lambda *a, **k: None)
+    # Stub the HuggingFace fallback so it never hits the network. The
+    # snapshot_download symbol is imported inside resolve_model_path with a
+    # local `from huggingface_hub import snapshot_download`, so we patch the
+    # huggingface_hub module (which is already imported by whisper_engine).
+    import huggingface_hub
+
+    def _hf_stub(*a, **k):
+        raise RuntimeError("hf stub — should not be reached in this test")
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", _hf_stub)
+
+    cfg = we.WhisperConfig(model_size="large-v3-turbo", model_dir=str(tmp_path / "models"))
+    try:
+        we.resolve_model_path(cfg)
+    except Exception:
+        pass  # HF stub raises; we only care about call order
+
+    assert calls[:2] == ["s3", "github"], f"unexpected order: {calls}"
+
+
 def test_pack_move_replaces_stale_target(tmp_path, monkeypatch):
     """A stale (locked/partial) models--<slug> dir from a previous corrupt
     cleanup must NOT silently swallow the freshly unpacked pack — the old
@@ -290,3 +349,32 @@ def test_pack_move_source_contains_replace_logic():
     # swallow the pack — the snapshot also resolves from cache/ fallback.
     assert "_replace_dir_robust" in text
     assert "for base in (root, root / \"cache\")" in text
+
+
+def test_faulthandler_dump_cancelled_in_finally():
+    """The CLI diagnostic tool (``--download-model``) arms faulthandler and
+    must cancel the watchdog from a finally block — otherwise the next
+    normal launch inherits the thread-dump scheduler and writes spurious
+    traces to its own log file.
+
+    The finally clause must guard against the ``faulthandler`` symbol not
+    being bound yet (early failure before the ``import faulthandler``
+    line) so the cleanup never raises ``NameError``.
+    """
+    import re
+    from pathlib import Path
+
+    main_text = Path(__file__).resolve().parents[1] / "src" / "mockingbird" / "main.py"
+    src = main_text.read_text(encoding="utf-8")
+
+    # Slice the body of _download_model_cli.
+    start = src.index("def _download_model_cli")
+    # The function ends at the next "def " at the same indent level.
+    m = re.search(r"^def ", src[start + 1:], re.M)
+    fn = src[start : start + 1 + m.start()] if m else src[start:]
+
+    # The finally block must call cancel_dump_traceback_later (possibly via
+    # an existence guard — the latter is needed if anything before the
+    # `import faulthandler` line can fail, e.g. permission error on log_path).
+    assert "cancel_dump_traceback_later" in fn
+    assert "faulthandler.cancel_dump_traceback_later" in fn

@@ -15,13 +15,44 @@ from mockingbird.config import LlmConfig
 
 log = logging.getLogger(__name__)
 
-EXPLAIN_PROMPT = (
+
+# JSON-helper prompts stay in Russian (their JSON schema is Russian-centric and
+# tiny model fine-tunes if any assume that). For English UI mode we just append
+# an output-language hint so the model responds in English instead of Russian.
+_EN_LANG_HINT = (
+    "\n\nIMPORTANT: Respond in English. Keep all JSON keys exactly as specified. "
+    "Reference material may be in another language — translate the substance of "
+    "your answer into English."
+)
+
+
+def _pick(ru: str, en: str = "") -> str:
+    """Pick a prompt string in the active UI language.
+
+    ``en`` may be empty: that means the prompt has no English variant yet
+    (it is still being translated). In that case we append the
+    ``_EN_LANG_HINT`` so the model still answers in English instead of
+    Russian. When ``en`` IS provided, the hint is omitted — the prompt is
+    already in the right language and we trust the model to follow its
+    own output-language instruction.
+    """
+    if _CURRENT_LANG == "en":
+        return en or (ru + _EN_LANG_HINT)
+    return ru
+
+
+EXPLAIN_PROMPT_RU = (
     "Ты — глоссарий IT-терминов. Объясни термин кратко (2–4 предложения) "
     "на русском языке. Формат: только текст объяснения, без лишних слов и заголовков.\n\n"
     "Термин: {term}"
 )
+EXPLAIN_PROMPT_EN = (
+    "You are an IT glossary. Explain the term briefly (2–4 sentences) in English. "
+    "Format: only the explanation text, no extra words or headings.\n\n"
+    "Term: {term}"
+)
 
-ANALYZE_PROMPT = (
+ANALYZE_PROMPT_RU = (
     "Ты — ассистент для IT-созвонов. Ниже — транскрипт (возможно, частичный) встречи. "
     "Определи предмет обсуждения и найди ВСЕ технические термины, сокращения, акронимы, "
     "названия инструментов и технологий, которые упоминаются или по которым нужно дать "
@@ -31,8 +62,18 @@ ANALYZE_PROMPT = (
     '{{"terms": []}}.\n\n'
     "Транскрипт:\n{transcript}"
 )
+ANALYZE_PROMPT_EN = (
+    "You are an IT-meeting assistant. Below is a (possibly partial) meeting transcript. "
+    "Identify the subject of discussion and find ALL technical terms, abbreviations, "
+    "acronyms, tool and technology names mentioned or worth explaining. "
+    "Return STRICT JSON in the format:\n"
+    '{{"terms": [{{"term": "term", "explanation": "brief explanation 1-3 sentences in English"}}]}}\n'
+    "No markdown markup, no content outside JSON. If there are no terms, return "
+    '{{"terms": []}}.\n\n'
+    "Transcript:\n{transcript}"
+)
 
-SUBJECT_PROMPT = (
+SUBJECT_PROMPT_RU = (
     "Ты — ассистент поиска по базе знаний для подготовки к IT-собеседованию. "
     "Из вопроса или реплики выдели ПРЕДМЕТ (тему), о которой идёт речь, — одно или "
     "несколько существительных, терминов или названий технологий "
@@ -50,6 +91,23 @@ SUBJECT_PROMPT = (
     '{{"subjects": []}}.\n\n'
     "Контекст разговора (может быть пустым):\n{context}\n\n"
     "Вопрос:\n{text}"
+)
+SUBJECT_PROMPT_EN = (
+    "You are a knowledge-base search assistant for IT-interview preparation. "
+    "Extract the SUBJECT (topic) from the question or utterance — one or several "
+    "nouns, terms, or technology names (e.g. kubernetes, docker, nginx, database, "
+    "entry point). If the question refers back to an earlier topic via pronouns "
+    "(\"it\", \"its\", \"that tool\", \"this topic\"), resolve them through the "
+    "dialogue context. Correct likely speech-recognition (STT) errors and "
+    "phonetically garbled IT terms: return them in their canonical Latin spelling "
+    "(e.g. \"кюбрнетес\" → kubernetes, \"докер\" → docker, \"кубкл\" → kubectl). "
+    "If companies, employers or projects from the resume are mentioned, return them "
+    "as separate subjects. Return STRICT JSON:\n"
+    '{{"subjects": ["term1", "term2"]}}\n'
+    "No markdown markup, no content outside JSON. If there is no subject, return "
+    '{{"subjects": []}}.\n\n'
+    "Dialogue context (may be empty):\n{context}\n\n"
+    "Question:\n{text}"
 )
 
 CONTEXT_PROMPT = (
@@ -114,7 +172,14 @@ DIALOG_CONTEXT_PROMPT = (
 # (``profiles/loader.py``) once at load time via ``set_profile`` — the
 # rendered strings stay static so OpenAI-style prompt caching can reuse the
 # prefix across different questions.
-ANSWER_SYSTEM_TEMPLATE = (
+#
+# Two flavours per mode: Russian (default) and English. Selection happens in
+# ``_apply_language_prompts`` based on ``mockingbird.i18n.current_language()``.
+# The English variants keep the same persona voice (senior engineer who has
+# actually deployed the thing) and explicitly tell the model the KB reference
+# material may be in Russian — the model still answers in English.
+
+ANSWER_SYSTEM_TEMPLATE_RU = (
     "Ты — {persona} на собеседовании. "
     "Отвечай как практик, а не как учебник: коротко, повествовательно, "
     "по существу — 3–4 предложения на русском, живым разговорным языком. "
@@ -127,7 +192,20 @@ ANSWER_SYSTEM_TEMPLATE = (
     "«вот ответ»."
 )
 
-ANSWER_SYSTEM_PERSONAL_TEMPLATE = (
+ANSWER_SYSTEM_TEMPLATE_EN = (
+    "You are {persona} in a technical interview. "
+    "Answer like a practitioner, not a textbook: short, narrative, "
+    "to the point — 3–4 sentences in English, in a conversational tone. "
+    "Do not write an essay or break it into bullet points.\n\n"
+    "Answer from YOUR own experience — there is no reference material. "
+    "Use specific commands/flags/versions/ports only if you are sure; "
+    "if unsure, say \"check the docs\" and stay conceptual.\n\n"
+    "Highlight key terms with **bold**. If the question is garbled by a "
+    "speech-recognition error, answer the intended meaning. No preambles like "
+    "\"here's the answer\"."
+)
+
+ANSWER_SYSTEM_PERSONAL_TEMPLATE_RU = (
     "Ты — ассистент подготовки к техническому собеседованию. "
     "Кандиденту задан ВОПРОС О ЛИЧНОМ ОПЫТЕ. Отвечай СТРОГО ОТ ПЕРВОГО ЛИЦА («Я "
     "сделал…», «У нас было…»), как если бы ты был самим кандидатом на собеседовании. "
@@ -145,7 +223,25 @@ ANSWER_SYSTEM_PERSONAL_TEMPLATE = (
     "Не пиши преамбулы вроде «вот ответ»."
 )
 
-ANSWER_SYSTEM_MIXED_TEMPLATE = (
+ANSWER_SYSTEM_PERSONAL_TEMPLATE_EN = (
+    "You are a technical-interview preparation assistant. "
+    "The candidate is being asked a PERSONAL-EXPERIENCE question. "
+    "Answer STRICTLY IN FIRST PERSON (\"I did…\", \"At our team we had…\"), "
+    "as if you were the candidate being interviewed. "
+    "Your role: {persona_senior}. Your stack: {stack}.\n\n"
+    "If the resume has relevant experience, base the answer on it "
+    "(Situation → Task → Actions → Result + a pitfall). If there is NO "
+    "exact experience but the question is in your role's domain — DO NOT REFUSE. "
+    "Construct a plausible first-person answer from your own expertise: how YOU "
+    "would use the tool based on its purpose and your experience with similar "
+    "technologies. Describe how you would deploy and configure it in a real project. "
+    "Interviewers expect you to know the topic — refusing looks incompetent.\n"
+    "Do NOT invent company names or specific numbers that are not in the resume. "
+    "Highlight key terms in **bold**. 5–8 sentences, in English. "
+    "No preambles like \"here's the answer\"."
+)
+
+ANSWER_SYSTEM_MIXED_TEMPLATE_RU = (
     "Ты — ассистент подготовки к техническому собеседованию. "
     "Вопрос совмещает ТЕХНИЧЕСКУЮ суть и ЛИЧНЫЙ ОПЫТ. Ответ из двух частей:\n"
     "1) 1–2 предложения — техническая суть инструмента/технологии.\n"
@@ -157,7 +253,20 @@ ANSWER_SYSTEM_MIXED_TEMPLATE = (
     "НЕ выдумывай компании/цифры. Выделяй **жирным**. 5–10 предложений."
 )
 
-ANSWER_SYSTEM_BEHAVIORAL_TEMPLATE = (
+ANSWER_SYSTEM_MIXED_TEMPLATE_EN = (
+    "You are a technical-interview preparation assistant. "
+    "The question mixes TECHNICAL substance with PERSONAL experience. "
+    "Answer in two parts:\n"
+    "1) 1–2 sentences — technical essence of the tool/technology.\n"
+    "2) 3–6 sentences — first person (\"I did…\", \"At our team…\"), STAR: what "
+    "you did with the technology, what result, what pitfall.\n"
+    "Your role: {persona_senior}. Your stack: {stack}.\n"
+    "If the resume has few details, start with \"My resume has little on this, "
+    "but in general…\" and give a technically sound first-person answer. "
+    "Do NOT invent companies/numbers. Highlight with **bold**. 5–10 sentences."
+)
+
+ANSWER_SYSTEM_BEHAVIORAL_TEMPLATE_RU = (
     "Ты — ассистент подготовки к техническому собеседованию. "
     "Поведенческий вопрос (как решаешь конфликты, приоритеты, коммуникация). "
     "Отвечай ОТ ПЕРВОГО ЛИЦА, STAR: Ситуация → Задача → Действия → Результат. "
@@ -165,13 +274,65 @@ ANSWER_SYSTEM_BEHAVIORAL_TEMPLATE = (
     "НЕ выдумывай компании/цифры. Выделяй **жирным**. 5–10 предложений."
 )
 
-ANSWER_SYSTEM_CONCEPT_TEMPLATE = (
+ANSWER_SYSTEM_BEHAVIORAL_TEMPLATE_EN = (
+    "You are a technical-interview preparation assistant. "
+    "This is a behavioral question (how you resolve conflicts, set priorities, "
+    "communicate). Answer IN FIRST PERSON using STAR: Situation → Task → "
+    "Actions → Result. Your role: {persona_senior}.\n"
+    "Do NOT invent companies/numbers. Highlight with **bold**. 5–10 sentences."
+)
+
+ANSWER_SYSTEM_CONCEPT_TEMPLATE_RU = (
     "Ты — опытный senior-специалист: {persona}. Пользователь спрашивает про конкретный "
     "термин или технологию. Объясни кратко и точно из СВОЕЙ экспертизы — без "
     "справочного материала. Структура: что это → зачем нужно → как работает "
     "в общих чертах → 1 нюанс/подводный камень. 5–7 предложений на русском. "
     "Выделяй ключевые термины через **жирный**. Не пиши преамбулы."
 )
+
+ANSWER_SYSTEM_CONCEPT_TEMPLATE_EN = (
+    "You are an experienced senior engineer: {persona}. The user is asking about "
+    "a specific term or technology. Explain it briefly and precisely from YOUR "
+    "own expertise — no reference material. Structure: what it is → why it's "
+    "needed → how it works in general → 1 nuance/pitfall. 5–7 sentences in "
+    "English. Highlight key terms with **bold**. No preambles."
+)
+
+
+# Bound to the language at the moment ``set_profile`` was called. Re-render
+# whenever the user switches UI language so the system prompts follow the
+# answer stream.
+_CURRENT_LANG = "ru"
+
+# The active specialization profile (set via ``set_profile``). Remembered so
+# that a language change can re-render the system prompts for the SAME
+# profile — without this, every language switch would silently snap the
+# system back to the bundled "devops" profile and lose persona/title fields.
+_ACTIVE_PROFILE = None
+
+
+def _apply_language_prompts(fields: dict[str, str]) -> None:
+    """Render the system prompts in the active UI language."""
+    global _CURRENT_LANG
+    try:
+        from mockingbird import i18n as _i18n
+
+        _CURRENT_LANG = _i18n.current_language() or "ru"
+    except Exception:  # noqa: BLE001 — i18n may not be initialised yet
+        _CURRENT_LANG = "ru"
+
+    if _CURRENT_LANG == "en":
+        _SYSTEM_BY_MODE["technical"] = ANSWER_SYSTEM_TEMPLATE_EN.format(**fields)
+        _SYSTEM_BY_MODE["personal"] = ANSWER_SYSTEM_PERSONAL_TEMPLATE_EN.format(**fields)
+        _SYSTEM_BY_MODE["mixed"] = ANSWER_SYSTEM_MIXED_TEMPLATE_EN.format(**fields)
+        _SYSTEM_BY_MODE["behavioral"] = ANSWER_SYSTEM_BEHAVIORAL_TEMPLATE_EN.format(**fields)
+        _SYSTEM_BY_MODE["concept"] = ANSWER_SYSTEM_CONCEPT_TEMPLATE_EN.format(**fields)
+    else:
+        _SYSTEM_BY_MODE["technical"] = ANSWER_SYSTEM_TEMPLATE_RU.format(**fields)
+        _SYSTEM_BY_MODE["personal"] = ANSWER_SYSTEM_PERSONAL_TEMPLATE_RU.format(**fields)
+        _SYSTEM_BY_MODE["mixed"] = ANSWER_SYSTEM_MIXED_TEMPLATE_RU.format(**fields)
+        _SYSTEM_BY_MODE["behavioral"] = ANSWER_SYSTEM_BEHAVIORAL_TEMPLATE_RU.format(**fields)
+        _SYSTEM_BY_MODE["concept"] = ANSWER_SYSTEM_CONCEPT_TEMPLATE_RU.format(**fields)
 
 
 def set_profile(profile) -> None:
@@ -189,20 +350,35 @@ def set_profile(profile) -> None:
         "persona_senior": profile.persona_senior,
         "stack": profile.stack,
     }
-    _SYSTEM_BY_MODE["technical"] = ANSWER_SYSTEM_TEMPLATE.format(**fields)
-    _SYSTEM_BY_MODE["personal"] = ANSWER_SYSTEM_PERSONAL_TEMPLATE.format(**fields)
-    _SYSTEM_BY_MODE["mixed"] = ANSWER_SYSTEM_MIXED_TEMPLATE.format(**fields)
-    _SYSTEM_BY_MODE["behavioral"] = ANSWER_SYSTEM_BEHAVIORAL_TEMPLATE.format(**fields)
-    _SYSTEM_BY_MODE["concept"] = ANSWER_SYSTEM_CONCEPT_TEMPLATE.format(**fields)
+    global _ACTIVE_PROFILE
+    _ACTIVE_PROFILE = profile
+    _apply_language_prompts(fields)
 
 
 _SYSTEM_BY_MODE = {
-    "technical": ANSWER_SYSTEM_TEMPLATE,
-    "personal": ANSWER_SYSTEM_PERSONAL_TEMPLATE,
-    "mixed": ANSWER_SYSTEM_MIXED_TEMPLATE,
-    "behavioral": ANSWER_SYSTEM_BEHAVIORAL_TEMPLATE,
-    "concept": ANSWER_SYSTEM_CONCEPT_TEMPLATE,
+    "technical": ANSWER_SYSTEM_TEMPLATE_RU,
+    "personal": ANSWER_SYSTEM_PERSONAL_TEMPLATE_RU,
+    "mixed": ANSWER_SYSTEM_MIXED_TEMPLATE_RU,
+    "behavioral": ANSWER_SYSTEM_BEHAVIORAL_TEMPLATE_RU,
+    "concept": ANSWER_SYSTEM_CONCEPT_TEMPLATE_RU,
 }
+
+
+def rerender_for_language() -> None:
+    """Re-render system prompts after a language change.
+
+    Looks up the active profile and rebinds ``_SYSTEM_BY_MODE`` so the next
+    LLM call picks up the new wording. Called from ``i18n.set_language``
+    callers (main.py on startup, settings apply).
+    """
+    if _ACTIVE_PROFILE is None:
+        return  # set_profile was never called — nothing to re-render
+    fields = {
+        "persona": _ACTIVE_PROFILE.persona,
+        "persona_senior": _ACTIVE_PROFILE.persona_senior,
+        "stack": _ACTIVE_PROFILE.stack,
+    }
+    _apply_language_prompts(fields)
 
 
 def _apply_default_profile() -> None:
@@ -786,10 +962,14 @@ class LlmClient:
 
     # -- vision (screenshot-to-answer) ----------------------------------------
 
-    # 1x1 red PNG: the cheapest possible image probe payload.
+    # 4x4 red PNG: valid RGB image probe payload. DeepSeek (and several
+    # other gateways) reject 1x1 test images with a 400 «unsupported image»
+    # that LOOKS like "no vision support" — the button then got disabled for
+    # a vision-capable model. A real 4x4 pixel image passes validation, so
+    # the 400 only fires for genuinely text-only models.
     _PROBE_PNG_B64 = (
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4"
-        "z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg=="
+        "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAAEElEQVR4nGP4"
+        "z8AARwzEcQCukw/x0F8jngAAAABJRU5ErkJggg=="
     )
 
     def probe_vision(self) -> bool:
@@ -935,7 +1115,7 @@ class LlmClient:
         try:
             response = client.chat.completions.create(
                 model=self._cfg.model,
-                messages=[{"role": "user", "content": ANALYZE_PROMPT.format(transcript=transcript)}],
+                messages=[{"role": "user", "content": _pick(ANALYZE_PROMPT_RU, ANALYZE_PROMPT_EN).format(transcript=transcript)}],
                 temperature=0.3,
                 max_tokens=800,
             )
@@ -952,7 +1132,7 @@ class LlmClient:
         try:
             response = client.chat.completions.create(
                 model=self._cfg.model,
-                messages=[{"role": "user", "content": EXPLAIN_PROMPT.format(term=term)}],
+                messages=[{"role": "user", "content": _pick(EXPLAIN_PROMPT_RU, EXPLAIN_PROMPT_EN).format(term=term)}],
                 temperature=0.3,
                 max_tokens=160,
             )
@@ -982,10 +1162,10 @@ class LlmClient:
             # Some providers return an empty completion for 1-token requests
             # — the HTTP 200 itself proves the endpoint/key/model work.
             _ = (response.choices[0].message.content or "").strip()
-            return True, "✅ Подключение работает!"
+            return True, "Подключение работает!"
         except Exception as exc:  # noqa: BLE001
             log.warning("llm probe failed: %s", exc)
-            return False, f"❌ {exc!s:.100}"
+            return False, f"{exc!s:.100}"
 
     def answer_question(self, question: str, context: str = "", mode: str = "technical", previous_qa: str = "") -> str | None:
         """Ask the LLM to answer a question.
@@ -1272,7 +1452,7 @@ class LlmClient:
                     messages=[
                         {
                             "role": "user",
-                            "content": PREDICT_PROMPT.format(
+                            "content": _pick(PREDICT_PROMPT, "").format(
                                 question=question,
                                 topic=topic,
                                 context=context or "(пока пусто)",
@@ -1310,7 +1490,7 @@ class LlmClient:
                     messages=[
                         {
                             "role": "user",
-                            "content": SUBJECT_PROMPT.format(text=text, context=context or "(пусто)"),
+                            "content": _pick(SUBJECT_PROMPT_RU, SUBJECT_PROMPT_EN).format(text=text, context=("(empty)" if _CURRENT_LANG == "en" else "(пусто)")),
                         }
                     ],
                     temperature=0.0,
@@ -1347,7 +1527,7 @@ class LlmClient:
                     messages=[
                         {
                             "role": "user",
-                            "content": CONTEXT_PROMPT.format(
+                            "content": _pick(CONTEXT_PROMPT, "").format(
                                 previous_topic=previous_topic or "(нет)",
                                 previous_kind=previous_kind or "none",
                                 transcript=transcript,
@@ -1389,7 +1569,7 @@ class LlmClient:
                     messages=[
                         {
                             "role": "user",
-                            "content": DIALOG_CONTEXT_PROMPT.format(
+                            "content": _pick(DIALOG_CONTEXT_PROMPT, "").format(
                                 history=history or "(пусто)",
                                 utterance=utterance,
                             ),
@@ -1428,7 +1608,7 @@ class LlmClient:
                 messages=[
                     {
                         "role": "user",
-                        "content": KB_GENERATION_PROMPT.format(
+                        "content": _pick(KB_GENERATION_PROMPT, "").format(
                             chunk=chunk,
                             max_topics=max_topics,
                             max_blocks=max_blocks,

@@ -22,11 +22,11 @@ from mockingbird.ui.log_panel import LogPanel
 from mockingbird.ui.modules_panel import ResumePanel
 from mockingbird.ui.settings_dialog import SettingsDialog
 from mockingbird.ui import theme
+from mockingbird.i18n import t
 from mockingbird.ui.icons import icon as lucide_icon
 from mockingbird.ui.widgets import (
     ActivityBar,
     BackgroundWidget,
-    DeviceBadge,
     LogoBadge,
     SourceBadge,
     StatusPill,
@@ -74,6 +74,10 @@ class MainWindow(QMainWindow):
         # history entry (the engine's pending query may belong to a voice
         # question that arrived meanwhile).
         self._pending_screenshot_question: str = ""
+        # Last answered screenshot: (jpeg bytes, question). The regenerate
+        # button must re-send the IMAGE too — routing it through the regular
+        # text-only regenerate path would answer from the question text alone.
+        self._last_screenshot: tuple[bytes, str] | None = None
         self._session_timer = QTimer(self)
         self._session_timer.setInterval(1000)
         self._session_timer.timeout.connect(self._tick_session)
@@ -89,17 +93,17 @@ class MainWindow(QMainWindow):
         self._interview = InterviewPanel(
             resolve=self._app.kb_matcher.resolve,
             answer_query=self._app.interview.answer_query,
-            regenerate_callback=self._app.interview.regenerate_answer,
+            regenerate_callback=self._on_regenerate_query,
             concept_callback=self._app.interview.ask_concept,
             llm_primary=self._app.config.interview.llm_primary,
-            llm_available=self._app.llm.available,
+            llm_available=lambda: bool(self._app.llm.available),
             llm_busy=lambda: bool(getattr(self._app.llm, "is_streaming", False)),
         )
-        self._tabs.addTab(self._interview, "Интервью")
+        self._tabs.addTab(self._interview, t("Интервью"))
         self._modules_panel = ResumePanel(self._app)
-        self._tabs.addTab(self._modules_panel, "Резюме")
+        self._tabs.addTab(self._modules_panel, t("Резюме"))
         self._log_panel = LogPanel(log_file=self._app.config.storage.log_dir)
-        self._tabs.addTab(self._log_panel, "Лог")
+        self._tabs.addTab(self._log_panel, t("Лог"))
         self._toolbar = self._build_toolbar()
         layout.addWidget(self._toolbar)
         layout.addWidget(self._tabs, stretch=1)
@@ -135,25 +139,24 @@ class MainWindow(QMainWindow):
         self._start_btn.setIcon(lucide_icon("play", color=theme.LIGHT))
         self._start_btn.setIconSize(QSize(18, 18))
         self._start_btn.setProperty("primary", True)
-        self._start_btn.setToolTip("Старт")
+        self._start_btn.setToolTip(t("Старт"))
         self._stop_btn = QPushButton()
         self._stop_btn.setIcon(lucide_icon("square", color=theme.current.status_error))
         self._stop_btn.setIconSize(QSize(18, 18))
-        self._stop_btn.setToolTip("Стоп")
+        self._stop_btn.setToolTip(t("Стоп"))
         self._mute_btn = QPushButton()
         self._mute_btn.setIcon(self._mute_icon(False))
         self._mute_btn.setIconSize(QSize(18, 18))
-        self._mute_btn.setToolTip("Мьют")
+        self._mute_btn.setToolTip(t("Мьют"))
         self._settings_btn = QPushButton()
         self._settings_btn.setIcon(lucide_icon("settings-2"))
         self._settings_btn.setIconSize(QSize(18, 18))
-        self._settings_btn.setToolTip("Настройки")
+        self._settings_btn.setToolTip(t("Настройки"))
         self._start_btn.clicked.connect(self._on_start)
         self._stop_btn.clicked.connect(self._on_stop)
         self._mute_btn.clicked.connect(self._on_toggle_mute)
         self._settings_btn.clicked.connect(self._on_settings)
         self._status = StatusPill()
-        self._device_badge = DeviceBadge()
         self._source_badge = SourceBadge()
         self._activity = ActivityBar()
         # Small Cancel affordance shown next to the loader while the model is
@@ -166,7 +169,7 @@ class MainWindow(QMainWindow):
         self._cancel_load_btn.setIconSize(QSize(14, 14))
         self._cancel_load_btn.setFixedSize(20, 20)
         self._cancel_load_btn.setFlat(True)
-        self._cancel_load_btn.setToolTip("Отменить загрузку модели")
+        self._cancel_load_btn.setToolTip(t("Отменить загрузку модели"))
         self._cancel_load_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._cancel_load_btn.clicked.connect(self._on_cancel_model_load)
         self._cancel_load_btn.hide()
@@ -174,10 +177,14 @@ class MainWindow(QMainWindow):
         self._shot_btn = QPushButton()
         self._shot_btn.setIcon(lucide_icon("camera"))
         self._shot_btn.setIconSize(QSize(18, 18))
-        self._shot_btn.setToolTip("Скриншот-вопрос (Ctrl+Shift+S)\nВыделите область экрана и задайте вопрос")
+        self._shot_btn.setToolTip(t("Скриншот-вопрос (Ctrl+Shift+S)\nВыделите область экрана и задайте вопрос"))
         self._shot_btn.clicked.connect(self._on_screenshot)
         if not getattr(self._app.config, "screenshot", None) or not self._app.config.screenshot.enabled:
             self._shot_btn.hide()
+        # Sync the button state with the cached probe result (if any) so a
+        # vision-capable / text-only model is reflected without waiting for
+        # the next probe.
+        self._refresh_screenshot_button()
         self._timer_label = QLabel("00:00")
         self._timer_label.setObjectName("sessionTimer")
         self._timer_label.setStyleSheet(
@@ -192,9 +199,9 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._cancel_load_btn)
         layout.addWidget(self._timer_label)
         layout.addStretch(1)
-        layout.addWidget(self._shot_btn)
-        layout.addWidget(self._device_badge)
+        layout.addWidget(self._source_badge)
         layout.addWidget(self._status)
+        layout.addWidget(self._shot_btn)
         layout.addWidget(self._settings_btn)
         layout.addWidget(self._logo)
         return bar
@@ -252,13 +259,13 @@ class MainWindow(QMainWindow):
         )
         self._mute_btn.setIcon(self._mute_icon(self._app.muted))
         self._settings_btn.setIcon(lucide_icon("settings-2"))
+        self._shot_btn.setIcon(lucide_icon("camera"))
 
     def _apply_theme(self, name: str) -> None:
         theme.apply_theme(QApplication.instance(), name)
         self._settings.setValue("ui/theme", name)
         self._bg.theme_changed()
         self._status.update_theme()
-        self._device_badge.update_theme()
         self._source_badge.update_theme()
         self._logo.update_theme()
         self._activity.update_theme()
@@ -274,13 +281,17 @@ class MainWindow(QMainWindow):
     def _connect_signals(self) -> None:
         self._sig.partial.connect(self._interview.on_partial)
         self._sig.question.connect(self._interview.on_question)
+        # A voice question becomes the current query — the screenshot
+        # regenerate association must not survive it (its regenerate click
+        # would otherwise re-send a stale image answer).
+        self._sig.question.connect(lambda *_: setattr(self, "_last_screenshot", None))
         self._sig.final.connect(self._interview.on_final)
         self._sig.answer.connect(self._interview.on_answer)
         self._sig.llm_answer.connect(self._interview.on_llm_answer)
         self._sig.context.connect(self._interview.on_context)
         self._sig.mic_level.connect(self._activity.set_level)
         self._sig.status.connect(self._on_status)
-        self._sig.device.connect(self._device_badge.set_device)
+        self._sig.device.connect(self._status.set_device)
         self._sig.source.connect(self._source_badge.set_source)
         self._sig.speech.connect(self._activity.flash_speech)
         self._sig.error.connect(self._on_error)
@@ -298,27 +309,57 @@ class MainWindow(QMainWindow):
 
     def _on_vision_probe_result(self, ok) -> None:
         self._vision_state = bool(ok)
+        self._refresh_screenshot_button()
         dlg = getattr(self, "_shot_dlg", None)
         if dlg is not None and dlg.isVisible():
             dlg._set_vision(self._vision_state)
+
+    def _refresh_screenshot_button(self) -> None:
+        """Reflect the cached vision-probe result in the screenshot button.
+
+        When the configured LLM does not support image inputs the button is
+        disabled and the tooltip explains why; otherwise it stays active.
+        The probe is launched from _on_start (and lazily on first use); until
+        the result lands the button keeps its default state.
+        """
+        if not hasattr(self, "_shot_btn"):
+            return
+        if self._vision_state is False:
+            self._shot_btn.setEnabled(False)
+            self._shot_btn.setToolTip(
+                t("Скриншот-вопрос недоступен: текущая LLM не поддерживает изображения.\nИзмените модель в «Настройки».")
+            )
+        else:
+            self._shot_btn.setEnabled(True)
+            self._shot_btn.setToolTip(
+                t("Скриншот-вопрос (Ctrl+Shift+S)\nВыделите область экрана и задайте вопрос")
+            )
 
     def _on_start(self) -> None:
         try:
             self._app.start_session()
         except Exception as exc:  # noqa: BLE001
             log.exception("start failed")
-            # Явное модальное уведомление: статусбар легко не заметить.
-            from PySide6.QtWidgets import QMessageBox
+            # Go through NotificationBus — same FIFO as model-load-failed,
+            # vision probe, etc. A direct modal dialog would stack on top of
+            # the bus and freeze the GUI (2026-09-26 incident).
+            from mockingbird.ui.notify import bus as notify_bus
 
-            QMessageBox.warning(
-                self,
-                "Не удалось начать сессию",
+            notify_bus.error(
+                t("Не удалось начать сессию"),
                 str(exc),
             )
             self._sig.error.emit(str(exc))
             return
         self._set_running(True)
         self._log_label.setText(self._log_path_text(session=self._app.session_id))
+        # Run the vision-capability probe in the background after the session
+        # starts. The result lands on _on_vision_probe_result, which updates
+        # the screenshot button (greyed-out + tooltip when the model is
+        # text-only). The probe is cheap (1×1 PNG, ~5-token reply) and the
+        # result is cached per (base_url, model) by LlmClient.probe_vision.
+        if self._vision_state is None:
+            self._app.check_vision_async()
 
     def _on_stop(self) -> None:
         """Stop the session without freezing the GUI.
@@ -382,10 +423,14 @@ class MainWindow(QMainWindow):
         if self._model_dl is None:
             from mockingbird.ui.model_download_dialog import ModelDownloadDialog
 
-            self._model_dl = ModelDownloadDialog(parent=None)
+            # Pass `self` as parent so the overlay is owned by the main
+            # window — it stays on top of Mockingbird without going above
+            # unrelated applications (no more stealing focus over a
+            # browser the user switched to mid-download).
+            self._model_dl = ModelDownloadDialog(parent=self)
             self._model_dl.cancelled.connect(self._on_model_dl_cancel)
             self._model_dl.set_model_name(
-                f"Модель: {self._app.config.whisper.model_size}"
+                t("Модель: {name}", name=self._app.config.whisper.model_size)
             )
             self._model_dl.show_above(self)
         self._model_dl.set_progress(message, percent)
@@ -395,12 +440,12 @@ class MainWindow(QMainWindow):
         if not visible:
             # Reset any "Отмена…" latched state so the next load starts clean.
             self._cancel_load_btn.setEnabled(True)
-            self._cancel_load_btn.setToolTip("Отменить загрузку модели")
+            self._cancel_load_btn.setToolTip(t("Отменить загрузку модели"))
 
     def _on_cancel_model_load(self) -> None:
         """Small cross in the toolbar: cancel the in-flight model load."""
         self._cancel_load_btn.setEnabled(False)
-        self._cancel_load_btn.setToolTip("Отмена…")
+        self._cancel_load_btn.setToolTip(t("Отмена…"))
         self._app.cancel_model_download()
 
     def _on_model_load_cancelled(self) -> None:
@@ -422,22 +467,26 @@ class MainWindow(QMainWindow):
         if "cancelled" in low:
             return  # user cancelled deliberately — no nagging
         if "certificate" in low:
-            text = (
+            text = t(
                 "Не удалось скачать модель: соединение блокируется "
                 "прокси-сервером или антивирусом (подмена SSL-сертификата).\n\n"
                 "Варианты:\n"
                 "• Попросить IT добавить huggingface.co в исключения SSL-инспекции\n"
                 "• Перенести папку модели с другой машины в\n"
-                f"  {self._app.config.whisper.model_dir or '~/.mockingbird/models'}"
+                "  {model_dir}",
+                model_dir=self._app.config.whisper.model_dir or "~/.mockingbird/models",
             )
         else:
-            text = f"Не удалось скачать модель распознавания:\n{error}\n\nПроверьте интернет-соединение."
+            text = t(
+                "Не удалось скачать модель распознавания:\n{error}\n\nПроверьте интернет-соединение.",
+                error=error,
+            )
         from mockingbird.ui.notify import bus as notify_bus
 
         notify_bus.error(
-            "Загрузка модели",
+            t("Загрузка модели"),
             text,
-            buttons=(("Повторить", self._app.retry_model_download), ("Закрыть", None)),
+            buttons=((t("Повторить"), self._app.retry_model_download), (t("Закрыть"), None)),
             dedup_key="model-load-failed",
         )
 
@@ -450,12 +499,12 @@ class MainWindow(QMainWindow):
         self._stop_btn.setEnabled(not stopping)
         self._mute_btn.setEnabled(not stopping)
         if stopping:
-            self._status.set_state("loading", "остановка…")
+            self._status.set_state("loading", t("остановка…"))
 
     def _on_status(self, state: str, detail: str) -> None:
         self._status.set_state(state, detail)
         if state == "loading":
-            self._activity.set_loading(detail or "Загрузка модели…", -1)
+            self._activity.set_loading(detail or t("Загрузка модели…"), -1)
             # "stopping" is a teardown, not a model load — never offer Cancel.
             self._set_cancel_load_visible(detail != "stopping")
         else:
@@ -471,7 +520,7 @@ class MainWindow(QMainWindow):
             elif state == "idle":
                 self._activity.set_idle()
             elif state == "error":
-                self._activity.set_error(detail or "Ошибка")
+                self._activity.set_error(detail or t("Ошибка"))
 
     def _tick_session(self) -> None:
         self._session_seconds += 1
@@ -479,14 +528,14 @@ class MainWindow(QMainWindow):
 
     def _log_path_text(self, session: str | None = None) -> str:
         path = getattr(self._app.config.storage, "log_dir", "")
-        prefix = f"Сессия #{session} · " if session else ""
-        return f"{prefix}Лог: {path}"
+        prefix = t("Сессия #{n} · ", n=session) if session else ""
+        return t("{prefix}Лог: {path}", prefix=prefix, path=path)
 
     def _on_toggle_mute(self) -> None:
         self._app.toggle_mute()
         muted = self._app.muted
         self._mute_btn.setIcon(self._mute_icon(muted))
-        self._mute_btn.setToolTip("Снять мьют" if muted else "Мьют")
+        self._mute_btn.setToolTip(t("Снять мьют") if muted else t("Мьют"))
         self._sig.status.emit("muted" if muted else "running", "")
 
     def _on_settings(self) -> None:
@@ -508,6 +557,12 @@ class MainWindow(QMainWindow):
                     log.exception("apply_profile failed")
             self._app.save_settings()
             self._apply_capture_affinity()
+            # LLM base_url/model may have changed in the dialog — the cached
+            # vision capability is stale now. Reset and re-probe so the
+            # screenshot button reflects the NEW model immediately.
+            self._vision_state = None
+            self._refresh_screenshot_button()
+            self._app.check_vision_async()
             if dialog.restart_required:
                 self._prompt_restart()
 
@@ -539,13 +594,13 @@ class MainWindow(QMainWindow):
 
     def _prompt_restart(self) -> None:
         box = QMessageBox(self)
-        box.setWindowTitle("Перезапуск")
+        box.setWindowTitle(t("Перезапуск"))
         box.setIcon(QMessageBox.Icon.Information)
-        box.setText("Часть изменений вступит в силу после перезапуска приложения.")
+        box.setText(t("Часть изменений вступит в силу после перезапуска приложения."))
         restart = box.addButton(
-            "Перезапустить сейчас", QMessageBox.ButtonRole.AcceptRole
+            t("Перезапустить сейчас"), QMessageBox.ButtonRole.AcceptRole
         )
-        later = box.addButton("Позже", QMessageBox.ButtonRole.RejectRole)
+        later = box.addButton(t("Позже"), QMessageBox.ButtonRole.RejectRole)
         box.setDefaultButton(later)
         box.exec()
         if box.clickedButton() is restart:
@@ -578,7 +633,7 @@ class MainWindow(QMainWindow):
         try:
             subprocess.Popen(argv, cwd=os.getcwd())
         except Exception as exc:  # noqa: BLE001
-            QMessageBox.critical(None, "Ошибка", f"Не удалось перезапустить приложение: {exc}")
+            QMessageBox.critical(None, t("Ошибка"), t("Не удалось перезапустить приложение: {exc}", exc=exc))
             return
         QApplication.quit()
 
@@ -622,7 +677,7 @@ class MainWindow(QMainWindow):
             )
         except Exception as exc:  # noqa: BLE001
             log.warning("screenshot grab failed: %s", exc)
-            self.statusBar().showMessage(f"Скриншот не получен: {exc}", 5000)
+            self.statusBar().showMessage(t("Скриншот не получен: {exc}", exc=exc), 5000)
             return
         # Close (and let Qt delete) any previous dialog before opening a new
         # one — the overwritten reference used to orphan a visible dialog
@@ -641,6 +696,27 @@ class MainWindow(QMainWindow):
         if self._vision_state is None or self._vision_state is False:
             self._app.check_vision_async()
 
+    def _on_regenerate_query(self, query: str):
+        """Regenerate dispatcher: screenshot answers re-send the IMAGE.
+
+        The panel's regenerate button passes the last query; when that query
+        was a screenshot question the regeneration must go through
+        answer_screenshot (vision stream) — the engine's text-only
+        regenerate_answer would answer from the question text alone, losing
+        the image context entirely.
+        """
+        shot = self._last_screenshot
+        if shot is not None and shot[1].strip() == (query or "").strip():
+            import uuid as _uuid
+
+            jpeg, question = shot
+            stream_id = f"shot-{_uuid.uuid4().hex[:12]}"
+            self._interview.begin_external_stream(question, stream_id)
+            self._pending_screenshot_question = question
+            self._app.answer_screenshot(jpeg, question, stream_id=stream_id)
+            return None
+        return self._app.interview.regenerate_answer(query)
+
     def _on_screenshot_question(self, question: str) -> None:
         dlg = getattr(self, "_shot_dlg", None)
         if dlg is None:
@@ -654,12 +730,13 @@ class MainWindow(QMainWindow):
         stream_id = f"shot-{_uuid.uuid4().hex[:12]}"
         self._interview.begin_external_stream(question, stream_id)
         self._pending_screenshot_question = question
+        self._last_screenshot = (dlg.jpeg_bytes(), question)
         self._app.answer_screenshot(dlg.jpeg_bytes(), question, stream_id=stream_id)
 
     def _on_screenshot_answer_done(self, shot_id: str) -> None:
         dlg = getattr(self, "_shot_dlg", None)
         if dlg is not None and dlg.isVisible():
-            dlg.set_busy(False, "Ответ — в панели «Ответ ИИ»")
+            dlg.set_busy(False, t("Ответ — в панели «Ответ ИИ»"))
             dlg.close()
         # History entry: the query is the screenshot question (NOT the
         # engine's _pending_llm_query — a voice question may have arrived
@@ -683,15 +760,18 @@ class MainWindow(QMainWindow):
 
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Warning)
-        box.setWindowTitle("GPU недоступен")
+        box.setWindowTitle(t("GPU недоступен"))
         box.setText(
-            "GPU (CUDA) настроен, но не работает:\n"
-            f"{detail}\n\n"
-            "Приложение уже переключилось на CPU (распознавание медленнее). "
-            "Продолжить на CPU?"
+            t(
+                "GPU (CUDA) настроен, но не работает:\n"
+                "{detail}\n\n"
+                "Приложение уже переключилось на CPU (распознавание медленнее). "
+                "Продолжить на CPU?",
+                detail=detail,
+            )
         )
-        stay = box.addButton("Работать на CPU", QMessageBox.ButtonRole.YesRole)
-        restart = box.addButton("Перезапустить", QMessageBox.ButtonRole.NoRole)
+        stay = box.addButton(t("Работать на CPU"), QMessageBox.ButtonRole.YesRole)
+        restart = box.addButton(t("Перезапустить"), QMessageBox.ButtonRole.NoRole)
         box.setDefaultButton(stay)
         box.exec()
         if box.clickedButton() is restart:

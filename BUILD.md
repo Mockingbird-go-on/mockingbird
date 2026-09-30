@@ -328,3 +328,29 @@ bash scripts/release.sh --clobber      # заменить существующи
 ⚠️ Релиз публикуется от **текущего `gh`-аккаунта**. Правило AGENTS
 «Mockingbird Dev» относится к git-коммитам, не к релизам; для релиза от
 организации нужен соответствующий токен.
+
+### 6.4. Зеркало модели в s3.cloud.ru
+
+Пак модели дополнительно заливается в публичный бакет `mockingbird` на
+`s3.cloud.ru` (PRIMARY источник для рантайма, GitHub — fallback-1,
+HuggingFace CDN — fallback-2). Bucket populated всеми 5 zip'ами, см.
+[docs/S3_MODEL_PACKS.md](docs/S3_MODEL_PACKS.md).
+
+Автоматическая заливка включается, когда в окружении есть `aws` CLI и
+`S3_ENDPOINT_URL`:
+
+```bash
+export S3_ENDPOINT_URL=https://s3.cloud.ru
+export AWS_ACCESS_KEY_ID='5b7b9b26-db4d-4489-8ce4-40cc6b531fe0:0ab48abc07bb79b54ddbb4d245c2b29c'
+export AWS_SECRET_ACCESS_KEY='211ff4f73d8b74de9befe83b04052dff'
+export AWS_DEFAULT_REGION=ru-central-1
+
+bash scripts/build_model_pack.sh small      # собирает модель-пак + cp в s3://mockingbird/models/small.zip
+bash scripts/release.sh 1.0.3.0            # GitHub-релиз + S3 (через build_model_pack.sh внутри)
+```
+
+⚠️ **Auth**: Cloud.ru S3 требует AWS SigV4 на каждом GET — анонимный
+download возвращает `AuthorizationQueryParametersError: missing tenant id`.
+Приложение пока не умеет с этим работать (нужен presigned URL, SigV4 в
+коде или reverse-proxy). До выбора стратегии аутентификации рантайм
+использует GitHub-releases как primary, хотя zip'ы уже лежат в S3.

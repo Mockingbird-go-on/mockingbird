@@ -95,7 +95,7 @@ def test_download_uses_etag_timeout_and_retry():
     assert "attempt" in src and "download failed after retries" in src
 
 
-def test_download_retry_actually_retries(monkeypatch, tmp_path):
+def test_download_retry_actually_retries(monkeypatch, tmp_path, no_github_model_mirror):
     """snapshot_download is imported inside the function — patch the module
     it comes from instead of the engine module."""
     import sys

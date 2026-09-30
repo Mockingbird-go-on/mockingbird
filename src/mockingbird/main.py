@@ -41,7 +41,7 @@ def _show_system_warnings(parent, warnings: list) -> None:
     }
 
     dlg = QDialog(parent)
-    dlg.setWindowTitle("Проверка системы")
+    dlg.setWindowTitle(t("Проверка системы"))
     # Stay above the (always-on-top) model-download overlay: without this
     # the overlay stacks over this modal dialog on some platforms.
     dlg.setWindowFlags(dlg.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
@@ -67,7 +67,7 @@ def _show_system_warnings(parent, warnings: list) -> None:
         row.addWidget(text, 1)
         layout.addLayout(row)
 
-    btn = QPushButton("Понятно")
+    btn = QPushButton(t("Понятно"))
     btn.setProperty("primary", True)
     btn.setFixedWidth(120)
     btn.clicked.connect(dlg.accept)
@@ -217,22 +217,26 @@ def _download_model_cli() -> int:
     # the model.bin redirect target differs from the API host.
     try:
         import time as _time
-
-        import requests as _rq
+        from urllib.request import urlopen, Request
 
         _t0 = _time.monotonic()
-        _r = _rq.get(
-            "https://huggingface.co/deepdml/faster-whisper-large-v3-turbo-ct2"
-            "/resolve/4df90f75321148c3a29a9e2351b7ddf8f5b115a8/model.bin",
-            allow_redirects=True, timeout=(5, 15), stream=True,
-            headers={"Range": "bytes=0-1000000"},
+        _r = urlopen(
+            Request(
+                "https://huggingface.co/deepdml/faster-whisper-large-v3-turbo-ct2"
+                "/resolve/4df90f75321148c3a29a9e2351b7ddf8f5b115a8/model.bin",
+                headers={"Range": "bytes=0-1000000"},
+            ),
+            timeout=(5, 15),
         )
         _n = 0
-        for _c in _r.iter_content(65536):
+        while True:
+            _c = _r.read(65536)
+            if not _c:
+                break
             _n += len(_c)
             if _n >= 1000000:
                 break
-        print(f"cdn probe: status={_r.status_code} bytes={_n} in {_time.monotonic() - _t0:.1f}s")
+        print(f"cdn probe: bytes={_n} in {_time.monotonic() - _t0:.1f}s")
     except Exception as _e:  # noqa: BLE001
         print(f"cdn probe FAILED: {_e!r}")
 
@@ -262,7 +266,12 @@ def _download_model_cli() -> int:
         print(f"FAILED: {exc}")
         return 1
     finally:
-        faulthandler.cancel_dump_traceback_later()
+        # faulthandler.dump_traceback_later() is armed above; if we got here
+        # before the import succeeded (e.g. a permission error on log_path
+        # before line 207) the symbol isn't bound yet — guard with hasattr
+        # so the finally clause never raises NameError on the cleanup path.
+        if "faulthandler" in globals():
+            faulthandler.cancel_dump_traceback_later()
         fh.flush()
         fh.close()
 
@@ -295,6 +304,12 @@ def main() -> int:
     settings = QSettings("Mockingbird", "Mockingbird")
     theme_name = settings.value("ui/theme", "dark")
     apply_theme(app, theme_name)
+
+    # i18n: activate the persisted UI language (or auto-detect on first run)
+    # BEFORE any widget is constructed.
+    from mockingbird import i18n
+
+    i18n.load_initial_language(settings)
 
     # Splash screen — show immediately while App initializes.
     from mockingbird.ui.splash import LoaderSplash
@@ -418,6 +433,11 @@ def main() -> int:
             return 0
         # Persist onboarding choices
         context.save_settings()
+        # Language picked on the wizard's first step — store it so the next
+        # launch (and the LLM prompt language) follow the user's choice.
+        lang_choice = getattr(wizard, "language_choice", "") or i18n.current_language()
+        settings.setValue("ui/lang", lang_choice)
+        i18n.set_language(lang_choice)
         # The checks ran BEFORE the wizard (with the LLM still unconfigured);
         # re-run them now that onboarding has filled in base_url/api_key —
         # otherwise the stale «LLM не настроен» warning greets a user who
@@ -442,30 +462,36 @@ def main() -> int:
         def _collect_and_report() -> None:
             try:
                 zip_path = diagnostics.collect_diagnostics(config)
-                notify_bus.info("Готово", f"Архив создан:\n{zip_path}")
+                notify_bus.info(t("Готово"), t("Архив создан:\n{path}", path=zip_path))
             except Exception:
                 log.exception("diagnostics collection failed")
                 notify_bus.error(
-                    "Ошибка",
-                    "Не удалось собрать архив диагностики "
-                    "(подробности в файле лога).",
+                    t("Ошибка"),
+                    t("Не удалось собрать архив диагностики (подробности в файле лога)."),
                 )
 
         notify_bus.push(
-            "Аварийное завершение",
-            "Предыдущий запуск Mockingbird завершился аварийно.\n"
-            "Собрать архив с логами для диагностики?",
+            t("Аварийное завершение"),
+            t("Предыдущий запуск Mockingbird завершился аварийно.\nСобрать архив с логами для диагностики?"),
             severity="warning",
             scope="startup",
-            buttons=(("Да", _collect_and_report), ("Нет", None)),
+            buttons=((t("Да"), _collect_and_report), (t("Нет"), None)),
         )
     if sys_warnings:
-        notify_bus.push(
-            "Проверка системы",
-            "\n\n".join(f"• {w.title}\n{w.message}" for w in sys_warnings),
-            severity="warning",
-            scope="startup",
-        )
+        from PySide6.QtCore import QTimer
+
+        def _show_sys_warnings() -> None:
+            notify_bus.push(
+                t("Проверка системы"),
+                "\n\n".join(f"• {w.title}\n{w.message}" for w in sys_warnings),
+                severity="warning",
+                scope="runtime",
+            )
+
+        # Defer the system-check dialog by 10 s AFTER the window is up: it
+        # used to fire while the splash/loader was still on screen (and the
+        # «резюме не загружено» warning is pointless noise at that moment).
+        QTimer.singleShot(10_000, _show_sys_warnings)
     notify_bus.flush_startup()
 
     # Kick the STT model load off as early as possible: the worker thread

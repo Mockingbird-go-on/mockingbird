@@ -147,14 +147,36 @@ def test_main_flushes_startup_before_window_show():
 
 
 def test_model_load_failed_uses_bus():
+    import re
+
     src = _src(os.path.join("ui", "main_window.py"))
     fn = src[src.index("def _on_model_load_failed"):src.index("def _on_model_dl_cancel")]
-    if fn.count('"""') >= 2:  # strip the docstring (it mentions QMessageBox)
-        first = fn.index('"""')
-        second = fn.index('"""', first + 3)
-        fn = fn[:first] + fn[second + 3:]
+    # Strip docstrings (triple-quoted) AND single-line comments — comments
+    # that mention QMessageBox would otherwise look like direct call sites.
+    fn = re.sub(r'"""[\s\S]*?"""', "", fn)
+    fn = re.sub(r"#[^\n]*", "", fn)
     assert "notify_bus.error" in fn
     assert "QMessageBox" not in fn, "load-failed must go through the bus"
+
+
+def test_start_session_failure_uses_bus():
+    """Session-start failure must go through the NotificationBus, not a bare
+    QMessageBox. Two parallel dialog stacks overlap and freeze the GUI
+    (observed 2026-09-26 when the model-load-failed dialog and a stale
+    QMessageBox were both queued)."""
+    import re
+
+    src = _src(os.path.join("ui", "main_window.py"))
+    fn = src[src.index("def _on_start"):src.index("def _on_stop")]
+    # Strip docstrings (triple-quoted) AND single-line comments — the
+    # original stripper only handled docstrings and was caught by an
+    # explanatory comment in _on_start that mentioned "QMessageBox" by name.
+    fn = re.sub(r'"""[\s\S]*?"""', "", fn)
+    fn = re.sub(r"#[^\n]*", "", fn)
+    assert "notify_bus.error" in fn, \
+        "_on_start failure path must use notify_bus (single FIFO with model-load-failed)"
+    assert "QMessageBox" not in fn, \
+        "_on_start must NOT call QMessageBox directly — overlaps the bus"
 
 
 def test_download_overlay_respects_modal_active():
@@ -166,7 +188,9 @@ def test_download_overlay_respects_modal_active():
     # 2026-09-27: the overlay stays visible even while the app is inactive
     # (user request) — no activeWindow() gating may remain.
     assert "activeWindow" not in fn
-    assert "self.raise_()" in fn
+    # 2026-09-29: the overlay is a child window of the main window, so raise_()
+    # is no longer needed and would steal focus when called every 300 ms.
+    assert "self.raise_()" not in fn
 
 
 def test_onboarding_has_accent_marks():

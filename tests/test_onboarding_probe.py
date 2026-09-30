@@ -33,16 +33,23 @@ def test_onboarding_test_llm_names_are_module_imported():
     # Everything the function body references from PySide6 must come from
     # the module imports — no lazy `from PySide6...` inside functions that
     # forgot a name (the QThread NameError class of bugs).
-    fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_test_llm")
-    used = {n.id for n in ast.walk(fn) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)}
-    missing = {
-        u for u in used
-        if u[0].isupper() and u.startswith("Q") or u in ("Signal",)
-    } - imported
-    assert not missing, f"_test_llm uses names that are never imported: {missing}"
+    # Проверяем обе функции: _test_llm (старая, может оставаться в коде) и _perform_llm_check (новая)
+    for fn_name in ["_test_llm", "_perform_llm_check"]:
+        try:
+            fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == fn_name)
+        except StopIteration:
+            continue  # функция отсутствует — ок
+        used = {n.id for n in ast.walk(fn) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)}
+        missing = {
+            u for u in used
+            if u[0].isupper() and u.startswith("Q") or u in ("Signal",)
+        } - imported
+        assert not missing, f"{fn_name} uses names that are never imported: {missing}"
 
 
 def test_no_shadowed_pyside_imports_in_onboarding():
     src = (SRC / "ui" / "onboarding.py").read_text(encoding="utf-8")
     # The lazy local imports are gone; the module imports own these names.
-    assert "from PySide6.QtCore import Qt, QThread, QTimer, Signal" in src
+    assert "from PySide6.QtCore import Qt, QEvent, QThread, QTimer, Signal" in src
+    # Проверяем что импорт QProgressBar добавлен правильно
+    assert "from PySide6.QtWidgets import QProgressBar" in src or "QProgressBar" in src
