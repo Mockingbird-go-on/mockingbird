@@ -1633,6 +1633,10 @@ class WhisperEngine:
             return
         self._thread = None
         self._stopping = False
+        # R-20: the worker exited cleanly — nothing is stopping anymore.
+        # Without this, a warm-start stop()/start() cycle left the event set
+        # and the next session's finals were all silently skipped.
+        self._stopping_event.clear()
 
     def _wait_for_stopped_worker(self, timeout: float = 30.0) -> bool:
         """Wait for a leftover (timed-out) worker thread to exit.
@@ -1647,6 +1651,10 @@ class WhisperEngine:
             return False
         self._thread = None
         self._stopping = False
+        # R-20 follow-up: the leftover worker is gone, the stop that set this
+        # event is complete — a fresh worker must not inherit it or every
+        # _finalize of the new session silently early-exits (zero finals).
+        self._stopping_event.clear()
         return True
 
     # -- audio-worker API (called from the capture thread) --
@@ -1708,6 +1716,22 @@ class WhisperEngine:
         audio can be dropped by the race between feeding and flushing.
         """
         self._put_final(_CMD_FLUSH, None)
+
+    def wait_flush(self, timeout: float = 3.0) -> bool:
+        """Wait until every queued finalization command has been served.
+
+        Used on the shutdown path so engine.stop()'s _stopping_event (R-20)
+        does not early-exit a flush that is still queued — the last segment
+        of the session would otherwise be lost from the DB.
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            with self._lock:
+                pending = self._pending_final_cmds
+            if pending <= 0:
+                return True
+            time.sleep(0.05)
+        return False
 
     # -- worker thread --
     def _run(self) -> None:

@@ -159,7 +159,37 @@ def test_stop_sets_stopping_event_and_start_clears_it():
     eng._stopping_event = threading.Event()
     eng._stopping = False
     eng._queue = __import__("queue").Queue()
-    eng._thread = None
+    # Simulate a live worker thread: stop() sets the event (finalize bail),
+    # joins; on clean exit it clears it so a later session's finals are
+    # not silently skipped.
+    started = threading.Event()
+
+    class _FakeThread:
+        def __init__(self):
+            pass
+
+        def is_alive(self):
+            return not started.is_set()
+
+        def join(self, timeout=None):
+            started.set()
+
+    eng._thread = _FakeThread()
+    eng.stop(timeout=0.1)
+    assert not eng._stopping_event.is_set(), (
+        "stop() must clear _stopping_event once the worker exited cleanly"
+    )
+    # And while a worker is genuinely stuck, the event STAYS set:
+    stuck = threading.Event()
+
+    class _StuckThread:
+        def is_alive(self):
+            return True
+
+        def join(self, timeout=None):
+            pass
+
+    eng._thread = _StuckThread()
     eng.stop(timeout=0.1)
     assert eng._stopping_event.is_set()
 
