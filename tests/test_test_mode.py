@@ -61,17 +61,25 @@ def test_dhash_rejects_tiny_image():
 
 def test_parse_arrow_answers():
     assert parse_test_answers("1 → B\n2 → D\n3 → A") == [
-        ("1", "B"), ("2", "D"), ("3", "A"),
+        ("1", "B", ""), ("2", "D", ""), ("3", "A", ""),
+    ]
+
+
+def test_parse_answers_with_notes():
+    text = "1 → B — шифрование на транспортном уровне\n2 → 3 - быстрая сортировка"
+    assert parse_test_answers(text) == [
+        ("1", "B", "шифрование на транспортном уровне"),
+        ("2", "3", "быстрая сортировка"),
     ]
 
 
 def test_parse_ascii_and_paren_forms():
     text = "Ответы:\n1 -> C\n2) a\n12: 3\n"
-    assert parse_test_answers(text) == [("1", "C"), ("2", "A"), ("12", "3")]
+    assert parse_test_answers(text) == [("1", "C", ""), ("2", "A", ""), ("12", "3", "")]
 
 
 def test_parse_dedups_numbers():
-    assert parse_test_answers("1 → A\n1 → B") == [("1", "A")]
+    assert parse_test_answers("1 → A\n1 → B") == [("1", "A", "")]
 
 
 def test_parse_empty_for_non_test():
@@ -386,7 +394,7 @@ def test_parse_rejects_prose_prefix():
     assert parse_test_answers("в 12: 30 минут") == []
     assert parse_test_answers("2024-05-01") == []
     # a valid answer line still parses (even mid-prose, number at line start)
-    assert parse_test_answers("Итог:\n1 → B") == [("1", "B")]
+    assert parse_test_answers("Итог:\n1 → B") == [("1", "B", "")]
 
 
 def test_change_threshold_default_scaled():

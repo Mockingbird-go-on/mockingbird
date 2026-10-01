@@ -1,13 +1,15 @@
 """Compact always-on-top overlay showing live test answers."""
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import QFont
-from mockingbird.i18n import t
-
 from PySide6.QtWidgets import (
     QHBoxLayout, QLabel, QPushButton, QTextBrowser, QVBoxLayout, QWidget,
 )
+
+from mockingbird.i18n import t
+
+_ACCENT = "#4f9cf9"
 
 
 class TestModeOverlay(QWidget):
@@ -15,7 +17,7 @@ class TestModeOverlay(QWidget):
 
     Signals:
         stop_requested()
-        force_requested()   — «сейчас» button (manual re-send)
+        force_requested()   — re-analyse button (manual re-send)
     """
 
     stop_requested = Signal()
@@ -41,12 +43,22 @@ class TestModeOverlay(QWidget):
         self._title = QLabel(self._target)
         self._title.setStyleSheet("font-weight: bold;")
         header.addWidget(self._title, 1)
-        btn_force = QPushButton(t("Сейчас"))
-        btn_force.setFixedHeight(24)
+
+        btn_force = QPushButton()
+        from mockingbird.ui.icons import icon as lucide_icon
+
+        btn_force.setIcon(lucide_icon("rotate-cw"))
+        btn_force.setIconSize(QSize(15, 15))
+        btn_force.setFixedSize(26, 24)
+        btn_force.setToolTip(t("Переанализировать текущий кадр"))
         btn_force.clicked.connect(self.force_requested)
         header.addWidget(btn_force)
-        btn_stop = QPushButton("×")
+
+        btn_stop = QPushButton()
+        btn_stop.setIcon(lucide_icon("circle-x"))
+        btn_stop.setIconSize(QSize(15, 15))
         btn_stop.setFixedSize(26, 24)
+        btn_stop.setToolTip(t("Остановить наблюдение"))
         btn_stop.clicked.connect(self.stop_requested)
         header.addWidget(btn_stop)
         root.addLayout(header)
@@ -58,12 +70,20 @@ class TestModeOverlay(QWidget):
         self._answers.setPlaceholderText(t("Ожидание стабильного кадра…"))
         root.addWidget(self._answers, 1)
 
+        # "Updated HH:MM:SS" — bright, bold: instantly tells the user the
+        # answers below belong to THIS page version, not a stale one.
+        self._updated_at = QLabel("")
+        self._updated_at.setStyleSheet(
+            f"color:{_ACCENT}; font-size: 11px; font-weight: bold;"
+        )
+        root.addWidget(self._updated_at)
+
         self._status = QLabel("запуск…")
         self._status.setStyleSheet("color: gray; font-size: 11px;")
         root.addWidget(self._status)
 
-        # Liveness indicator: shows tick count / uptime every second, so a
-        # dead watcher loop is immediately visible (status line stops).
+        # Liveness indicator: uptime in the header, refreshed every second —
+        # a dead watcher loop is immediately visible (clock stops).
         from PySide6.QtCore import QTimer
 
         self._started_at = None
@@ -98,15 +118,31 @@ class TestModeOverlay(QWidget):
     def set_status(self, text: str) -> None:
         self._status.setText(text)
 
-    def set_answers(self, pairs: list[tuple[str, str]], changed: bool = True) -> None:
+    def set_answers(self, pairs: list[tuple[str, str, str]], changed: bool = True) -> None:
+        from time import localtime, strftime
+
+        stamp = strftime("%H:%M:%S", localtime())
         if not pairs:
             self._answers.setPlainText(t("Точных ответов не найдено"))
+            self._updated_at.setText("")
+            self.set_status(t("тест не распознан на кадре") + f" · {stamp}")
             return
         lines = []
-        for num, ans in pairs:
-            lines.append(f"{num} → {ans}")
-        self._answers.setPlainText("\n".join(lines))
+        for num, ans, note in pairs:
+            line = f"<b>{num} → {ans}</b>"
+            if note:
+                line += f' <span style="color:#888;">— {note}</span>'
+            lines.append(line)
+        self._answers.setHtml("<br>".join(lines))
         if changed:
-            self.set_status(t("{0} ответов · обновлено").format(len(pairs)))
+            self._updated_at.setText(
+                t("обновлено в {time}", time=stamp)
+                + f" · {t('{0} ответов').format(len(pairs))}"
+            )
+            self.set_status("")
         else:
-            self.set_status(t("{0} ответов · без изменений").format(len(pairs)))
+            self._updated_at.setText(
+                t("без изменений · {time}", time=stamp)
+                + f" · {t('{0} ответов').format(len(pairs))}"
+            )
+            self.set_status("")

@@ -288,5 +288,10 @@
   "Тест": "Test",
   "Сейчас": "Ahora",
   "{0} ответов · обновлено": "{0} respuestas · actualizado",
-  "{0} ответов · без изменений": "{0} respuestas · sin cambios"
+  "{0} ответов · без изменений": "{0} respuestas · sin cambios",
+  "обновлено в {time}": "actualizado a las {time}",
+  "без изменений · {time}": "sin cambios · {time}",
+  "{0} ответов": "{0} respuestas",
+  "Переанализировать текущий кадр": "Reanalizar el fotograma actual",
+  "Остановить наблюдение": "Detener observación"
 }
