@@ -860,38 +860,15 @@ class MainWindow(QMainWindow):
             pass
 
     def _capture_window(self, hwnd: int):
-        import sys
+        from mockingbird.ui.window_capture import capture_window
 
-        from PySide6.QtCore import QBuffer, QIODevice, Qt
-        from PySide6.QtGui import QGuiApplication, QImage
-
-        log.info("test-mode: capture window hwnd=%s", hwnd)
         cfg = self._app.config.test_mode
-        screen = QGuiApplication.primaryScreen()
-        if screen is None:
-            raise RuntimeError("нет экрана")
-        pix = screen.grabWindow(int(hwnd))
-        if pix.isNull() or pix.width() < 10:
-            log.warning(
-                "test-mode: grabWindow(hwnd=%s) empty: %dx%d null=%s",
-                hwnd, pix.width(), pix.height(), pix.isNull(),
-            )
-            raise RuntimeError("пустой кадр (окно свёрнуто?)")
-        image: QImage = pix.toImage()
-        if max(image.width(), image.height()) > cfg.max_image_dim:
-            pix = pix.scaled(
-                cfg.max_image_dim, cfg.max_image_dim,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-            image = pix.toImage()
-        buf = QBuffer()
-        buf.open(QIODevice.OpenModeFlag.WriteOnly)
-        pix.save(buf, "JPEG", cfg.jpeg_quality)
-        jpeg = bytes(buf.data())
+        image, jpeg, pix = capture_window(
+            hwnd, max_dim=cfg.max_image_dim, jpeg_quality=cfg.jpeg_quality
+        )
         log.info(
-            "test-mode: captured %dx%d -> jpeg %dB",
-            image.width(), image.height(), len(jpeg),
+            "test-mode: window %s captured %dx%d -> jpeg %dB",
+            hwnd, image.width(), image.height(), len(jpeg),
         )
         return image, jpeg, pix
 
