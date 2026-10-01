@@ -17,6 +17,8 @@ from __future__ import annotations
 import logging
 import sys
 
+from mockingbird.i18n import t
+
 log = logging.getLogger(__name__)
 
 _PW_RENDERFULLCONTENT = 0x00000002
@@ -158,10 +160,10 @@ def capture_window(hwnd: int, max_dim: int = 1600, jpeg_quality: int = 80):
         # Fallback: legacy BitBlt via Qt (works for non-GPU windows).
         screen = QGuiApplication.primaryScreen()
         if screen is None:
-            raise RuntimeError("нет экрана")
+            raise RuntimeError(t("нет экрана"))
         pix = screen.grabWindow(int(hwnd))
         if pix.isNull() or pix.width() < 10:
-            raise RuntimeError("пустой кадр (окно свёрнуто?)")
+            raise RuntimeError(t("пустой кадр (окно свёрнуто?)"))
         image = pix.toImage()
         if _is_blank(image):
             log.warning(

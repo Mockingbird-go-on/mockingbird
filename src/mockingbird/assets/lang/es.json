@@ -293,5 +293,15 @@
   "без изменений · {time}": "sin cambios · {time}",
   "{0} ответов": "{0} respuestas",
   "Переанализировать текущий кадр": "Reanalizar el fotograma actual",
-  "Остановить наблюдение": "Detener observación"
+  "Остановить наблюдение": "Detener observación",
+  "анализ предыдущего кадра…": "analizando el fotograma anterior…",
+  "пауза после ошибки…": "pausa tras un error…",
+  "окно закрыто или недоступно — наблюдение остановлено": "ventana cerrada o no disponible — observación detenida",
+  "захват не удался (окно закрыто?)": "captura fallida (¿ventana cerrada?)",
+  "кадр {tick} · стабилизация ({run} из {need})": "fotograma {tick} · estabilizando ({run} de {need})",
+  "кадр {tick} · без изменений (d={dist})": "fotograma {tick} · sin cambios (d={dist})",
+  "кадр {tick} · слишком часто, ждём…": "fotograma {tick} · demasiado pronto, esperando…",
+  "запуск…": "iniciando…",
+  "нет экрана": "no hay pantalla disponible",
+  "пустой кадр (окно свёрнуто?)": "fotograma vacío (¿ventana minimizada?)"
 }

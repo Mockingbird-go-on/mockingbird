@@ -22,6 +22,8 @@ import time
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
+from mockingbird.i18n import t
+
 log = logging.getLogger(__name__)
 
 _HASH_SIZE = 8  # 8x8 dHash -> 64 bits
@@ -182,11 +184,11 @@ class TestWatcher(QObject):
         if self._capture is None:
             return
         if self._in_flight:
-            self.frame_skipped.emit("анализ предыдущего кадра…")
+            self.frame_skipped.emit(t("анализ предыдущего кадра…"))
             return
         now = time.monotonic()
         if now < self._not_before:
-            self.frame_skipped.emit("пауза после ошибки…")
+            self.frame_skipped.emit(t("пауза после ошибки…"))
             return
         try:
             image, jpeg, _preview = self._capture()
@@ -197,12 +199,12 @@ class TestWatcher(QObject):
                 tick, self._capture_fail_run, self._CAPTURE_FAIL_LIMIT, exc,
             )
             if self._capture_fail_run >= self._CAPTURE_FAIL_LIMIT:
-                msg = "окно закрыто или недоступно — наблюдение остановлено"
+                msg = t("окно закрыто или недоступно — наблюдение остановлено")
                 log.warning("test-mode: %s", msg)
                 self.stop()
                 self.capture_failed.emit(msg)
             else:
-                self.frame_skipped.emit("захват не удался (окно закрыто?)")
+                self.frame_skipped.emit(t("захват не удался (окно закрыто?)"))
             return
         self._capture_fail_run = 0
         bits = dhash_bits(image)
@@ -217,9 +219,8 @@ class TestWatcher(QObject):
         self._last_candidate = bits
         forced = self._force_next
         if not forced and self._stable_run < self._cfg.stable_frames:
-            msg = (
-                f"кадр {tick} · стабилизация "
-                f"({self._stable_run}/{self._cfg.stable_frames})"
+            msg = t("кадр {tick} · стабилизация ({run} из {need})").format(
+                tick=tick, run=self._stable_run, need=self._cfg.stable_frames,
             )
             log.info(
                 "test-mode[%d]: not stable yet (run=%d dist=%s)",
@@ -240,7 +241,7 @@ class TestWatcher(QObject):
                 "test-mode[%d]: skip — no change (dist=%d <= %d)",
                 tick, dist_sent, self._cfg.change_threshold,
             )
-            self.frame_skipped.emit(f"кадр {tick} · без изменений (d={dist_sent})")
+            self.frame_skipped.emit(t("кадр {tick} · без изменений (d={dist})").format(tick=tick, dist=dist_sent))
             return
         # 3. min send interval
         since = now - self._last_sent_at if self._last_sent_at else None
@@ -253,7 +254,7 @@ class TestWatcher(QObject):
                 "test-mode[%d]: skip — rate limit (%.1fs since last send)",
                 tick, since,
             )
-            self.frame_skipped.emit(f"кадр {tick} · слишком часто, ждём…")
+            self.frame_skipped.emit(t("кадр {tick} · слишком часто, ждём…").format(tick=tick))
             return
         # passed all layers -> send
         self._force_next = False
