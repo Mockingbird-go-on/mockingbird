@@ -1,8 +1,9 @@
 """Target picker for live test mode.
 
-Windows: click-to-pick — a fullscreen crosshair overlay; clicking anywhere
-resolves the root window under the cursor via Win32 (WindowFromPoint +
-GetAncestor) and returns (hwnd, title, rect).
+Windows: click-to-pick — a fullscreen freeze-and-dim overlay (a real
+screenshot of the desktop drawn slightly darkened, so every window stays
+visible); clicking anywhere resolves the root window under the cursor via
+Win32 (WindowFromPoint + GetAncestor) and returns (hwnd, title, rect).
 
 Other platforms / fallback: reuse ScreenGrabOverlay region selection; the
 watcher then captures that desktop region instead of a specific window.
@@ -13,10 +14,10 @@ import logging
 import sys
 
 from PySide6.QtCore import Qt, QRect, Signal
+from PySide6.QtGui import QColor, QCursor, QPainter, QPen, QPixmap
+from PySide6.QtWidgets import QApplication, QWidget
 
 from mockingbird.i18n import t
-from PySide6.QtGui import QColor, QCursor, QPainter, QPen
-from PySide6.QtWidgets import QApplication, QWidget
 
 log = logging.getLogger(__name__)
 
@@ -51,7 +52,13 @@ def pick_window_under_cursor() -> tuple[int, str, QRect] | None:
 
 
 class WindowPickOverlay(QWidget):
-    """Fullscreen click-to-pick overlay (crosshair + hint).
+    """Fullscreen freeze-and-dim click-to-pick overlay.
+
+    The desktop is captured ONCE and drawn with a light dim + the hint
+    banner on top; the actual windows stay fully recognizable (the naive
+    approach — a translucent window over the desktop — rendered as solid
+    black on Windows because the window had no translucent background
+    attribute, hiding every window from the user).
 
     Signals:
         picked(int, str, QRect)  — hwnd, title, window rect (Windows only)
@@ -72,18 +79,49 @@ class WindowPickOverlay(QWidget):
         )
         self._fallback = allow_region_fallback and sys.platform != "win32"
         self.setCursor(Qt.CursorShape.CrossCursor)
+        self._shot: QPixmap | None = None
         screen = QApplication.primaryScreen()
         geo = screen.availableGeometry() if screen else QRect(0, 0, 1920, 1080)
         self.setGeometry(geo)
         self._hint = t("Кликните по окну с тестом (Esc — отмена)")
 
+    def start(self) -> None:
+        screen = QApplication.primaryScreen()
+        if screen is None:
+            self.cancelled.emit()
+            return
+        self._shot = screen.grabWindow(0)
+        self.showFullScreen()
+        self.activateWindow()
+        self.raise_()
+
     def paintEvent(self, event) -> None:  # noqa: N802
         p = QPainter(self)
-        p.fillRect(self.rect(), QColor(0, 0, 0, 90))
-        p.setPen(QPen(QColor(255, 255, 255, 220), 2))
+        if self._shot is not None:
+            p.drawPixmap(0, 0, self._shot)
+            p.fillRect(self.rect(), QColor(0, 0, 0, 60))  # light dim
+        else:
+            p.fillRect(self.rect(), QColor(20, 20, 20))
+        p.setPen(QPen(QColor(255, 255, 255, 240), 2))
         f = p.font()
         f.setPointSize(12)
+        f.setBold(True)
         p.setFont(f)
+        # Banner plate behind the text so it stays readable over any content
+        from PySide6.QtCore import QRectF
+
+        fm = p.fontMetrics()
+        text_w = fm.horizontalAdvance(self._hint)
+        banner = QRectF(
+            self.width() / 2 - text_w / 2 - 16,
+            self.height() / 2 - fm.height() / 2 - 8,
+            text_w + 32,
+            fm.height() + 16,
+        )
+        p.setBrush(QColor(0, 0, 0, 170))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawRoundedRect(banner, 8, 8)
+        p.setPen(QPen(QColor(255, 255, 255, 240)))
         p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self._hint)
 
     def keyPressEvent(self, event) -> None:  # noqa: N802
