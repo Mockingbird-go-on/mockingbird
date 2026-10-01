@@ -303,5 +303,6 @@
   "кадр {tick} · слишком часто, ждём…": "frame {tick} · too soon, waiting…",
   "запуск…": "starting…",
   "нет экрана": "no screen available",
-  "пустой кадр (окно свёрнуто?)": "empty frame (window minimised?)"
+  "пустой кадр (окно свёрнуто?)": "empty frame (window minimised?)",
+  "LLM не настроен — задайте модель в настройках": "LLM is not configured — set a model in Settings"
 }
