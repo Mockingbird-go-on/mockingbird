@@ -274,6 +274,7 @@ class MainWindow(QMainWindow):
         self._mute_btn.setIcon(self._mute_icon(self._app.muted))
         self._settings_btn.setIcon(lucide_icon("settings-2"))
         self._shot_btn.setIcon(lucide_icon("camera"))
+        self._test_btn.setIcon(lucide_icon("clipboard-check"))
 
     def _apply_theme(self, name: str) -> None:
         theme.apply_theme(QApplication.instance(), name)
