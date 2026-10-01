@@ -288,5 +288,10 @@
   "Тест": "Test",
   "Сейчас": "Now",
   "{0} ответов · обновлено": "{0} answers · updated",
-  "{0} ответов · без изменений": "{0} answers · unchanged"
+  "{0} ответов · без изменений": "{0} answers · unchanged",
+  "обновлено в {time}": "updated at {time}",
+  "без изменений · {time}": "unchanged · {time}",
+  "{0} ответов": "{0} answers",
+  "Переанализировать текущий кадр": "Re-analyse the current frame",
+  "Остановить наблюдение": "Stop watching"
 }

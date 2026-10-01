@@ -1157,13 +1157,15 @@ class LlmClient:
             {
                 "role": "system",
                 "content": (
-                    "На изображении — экран теста: вопросы и варианты ответов "
-                    "(A, B, C, D или 1, 2, 3…). Определи правильные ответы. "
-                    "Верни ТОЛЬКО строки вида «N → X» (номер вопроса → буква "
-                    "или номер правильного варианта), по одной на строке, без "
-                    "пояснений, без markdown. Если вопрос виден лишь частично "
-                    "или вариантов нет — пропусти его. Если это не тест — "
-                    "верни пустой ответ."
+                    "Ты решаешь тест по скриншоту. Не рассуждай развёрнуто — "
+                    "выдай ответ СРАЗУ. Формат: строки «N → X — краткое "
+                    "обоснование в 2-4 словах» (номер вопроса → буква/номер "
+                    "правильного варианта, тире, суть), например:\n"
+                    "1 → B — шифрование на транспортном уровне\n"
+                    "2 → 3 — быстрая сортировка\n"
+                    "Никакого markdown, никаких пустых строк между ответами. "
+                    "Если вопрос виден частично — пропусти. Если теста на "
+                    "изображении нет — верни пустой ответ."
                 ),
             },
             {
@@ -1182,12 +1184,16 @@ class LlmClient:
         # Some providers intermittently return an empty completion for
         # image requests (same as the screenshot path) — retry once with
         # streaming enabled before giving up.
+        # max_tokens generous: reasoning-style models spend tokens on
+        # hidden thinking BEFORE the content — a tight budget yields
+        # finish_reason=length with an EMPTY visible answer (seen live
+        # with DeepSeek). The visible answer itself is ~10 tokens/question.
         for attempt in range(2):
             response = client.chat.completions.create(
                 model=self._cfg.model,
                 messages=messages,
                 temperature=0,
-                max_tokens=400,
+                max_tokens=2000,
                 stream=(attempt > 0),
             )
             text = ""

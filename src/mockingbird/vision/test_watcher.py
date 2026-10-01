@@ -273,26 +273,30 @@ class TestWatcher(QObject):
         return self._last_answer_text
 
 
-def parse_test_answers(text: str) -> list[tuple[str, str]]:
-    """Parse "N -> X" lines from the LLM reply.
+def parse_test_answers(text: str) -> list[tuple[str, str, str]]:
+    """Parse "N -> X — note" lines from the LLM reply.
 
-    Accepts "1 -> B", "1 → B", "1) B", "1 - B", "12: C" and surrounding
-    prose. Returns a list of (number, answer) tuples.
+    Accepts "1 -> B", "1 → B — заметка", "1) a", "12: 3". The trailing
+    note (2–4 words after —/-/) is optional and kept for display.
+    Returns a list of (number, answer, note) tuples.
     """
     import re
 
-    out: list[tuple[str, str]] = []
+    out: list[tuple[str, str, str]] = []
     seen: set[str] = set()
     # The line MUST start with the question number (leading whitespace ok) —
     # a leading prose prefix like «в 12: 30 минут» must NOT match.
     pat = re.compile(
-        r"^\s*(\d{1,3})\s*(?:->|→|[:\-)\]])\s*([A-Za-zА-Яа-я0-9]{1,4})\b",
+        r"^\s*(\d{1,3})\s*(?:->|→|[:\-)\]])\s*([A-Za-zА-Яа-я0-9]{1,4})\b"
+        r"(?:\s*(?:—|-|–)\s*(.+?))?\s*$",
         re.MULTILINE,
     )
     for m in pat.finditer(text):
-        num, ans = m.group(1).strip(), m.group(2).strip().upper()
+        num = m.group(1).strip()
+        ans = m.group(2).strip().upper()
+        note = (m.group(3) or "").strip()
         if num in seen:
             continue
         seen.add(num)
-        out.append((num, ans))
+        out.append((num, ans, note))
     return out
