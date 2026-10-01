@@ -461,15 +461,33 @@ class App:
     def _on_test_frame(self, _preview, jpeg_bytes: bytes) -> None:
         import base64
         import threading
+        import time as _time
 
         def _worker() -> None:
             ok = False
             text = ""
+            t0 = _time.monotonic()
+            # Debug dump: the exact frame the LLM sees (log dir), so the
+            # user can verify the capture content when answers look wrong.
             try:
+                from pathlib import Path
+
+                d = Path(self.config.storage.log_dir or "")
+                d.mkdir(parents=True, exist_ok=True)
+                (d / f"test-mode-{int(t0)}.jpg").write_bytes(jpeg_bytes)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                log.info("test-mode: LLM request started (jpeg=%dB)", len(jpeg_bytes))
                 text = self.llm.answer_test_screen(base64.b64encode(jpeg_bytes).decode())
-                ok = True
+                ok = bool(text)
+                log.info(
+                    "test-mode: LLM reply in %.1fs (%d chars): %r",
+                    _time.monotonic() - t0, len(text), text[:200],
+                )
             except Exception as exc:  # noqa: BLE001
-                log.warning("test-mode: LLM failed: %s", exc)
+                log.warning("test-mode: LLM failed after %.1fs: %s",
+                            _time.monotonic() - t0, exc)
                 text = ""
             finally:
                 w = self.test_watcher

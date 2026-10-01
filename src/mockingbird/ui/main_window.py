@@ -846,6 +846,10 @@ class MainWindow(QMainWindow):
         self._test_overlay = ov
         ov.show()
         ov.set_status(t("наблюдение за {title}…", title=title))
+        # Liveness timer start
+        import time as _time
+
+        ov._started_at = _time.monotonic()
         # Exclude the overlay itself from capture (Windows) so it never
         # feeds itself into the frame.
         try:
@@ -858,16 +862,20 @@ class MainWindow(QMainWindow):
     def _capture_window(self, hwnd: int):
         import sys
 
-        from PySide6.QtGui import QGuiApplication
         from PySide6.QtCore import QBuffer, QIODevice, Qt
-        from PySide6.QtGui import QImage
+        from PySide6.QtGui import QGuiApplication, QImage
 
+        log.info("test-mode: capture window hwnd=%s", hwnd)
         cfg = self._app.config.test_mode
         screen = QGuiApplication.primaryScreen()
         if screen is None:
             raise RuntimeError("нет экрана")
         pix = screen.grabWindow(int(hwnd))
         if pix.isNull() or pix.width() < 10:
+            log.warning(
+                "test-mode: grabWindow(hwnd=%s) empty: %dx%d null=%s",
+                hwnd, pix.width(), pix.height(), pix.isNull(),
+            )
             raise RuntimeError("пустой кадр (окно свёрнуто?)")
         image: QImage = pix.toImage()
         if max(image.width(), image.height()) > cfg.max_image_dim:
@@ -880,15 +888,22 @@ class MainWindow(QMainWindow):
         buf = QBuffer()
         buf.open(QIODevice.OpenModeFlag.WriteOnly)
         pix.save(buf, "JPEG", cfg.jpeg_quality)
-        return image, bytes(buf.data()), pix
+        jpeg = bytes(buf.data())
+        log.info(
+            "test-mode: captured %dx%d -> jpeg %dB",
+            image.width(), image.height(), len(jpeg),
+        )
+        return image, jpeg, pix
 
     def _capture_region(self, rect):
         from mockingbird.ui.screenshot import grab_screen_region
 
+        log.info("test-mode: capture region %s", rect)
         cfg = self._app.config.test_mode
         jpeg, pix = grab_screen_region(
             rect, max_dim=cfg.max_image_dim, jpeg_quality=cfg.jpeg_quality
         )
+        log.info("test-mode: region captured -> jpeg %dB", len(jpeg))
         return pix.toImage(), jpeg, pix
 
     def _on_test_answer(self, ok: bool, text: str) -> None:
