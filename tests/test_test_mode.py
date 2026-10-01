@@ -480,3 +480,11 @@ def test_blank_bitl_raises_runtime_error():
         # If offscreen returns non-blank noise, the guard can't trigger —
         # skip rather than flake.
         _pytest.skip("offscreen platform produced a non-blank frame")
+
+
+def test_parse_unknown_answer_marker():
+    text = "1 → B — TLS\n2 → ? — вопрос виден не полностью, проскроль экран"
+    assert parse_test_answers(text) == [
+        ("1", "B", "TLS"),
+        ("2", "?", "вопрос виден не полностью, проскроль экран"),
+    ]
