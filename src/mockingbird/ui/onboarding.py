@@ -450,10 +450,14 @@ class OnboardingWizard(QDialog):
                     self_.done.emit(f"{i18n.t('Ошибка')}: {exc!s}", False)
 
         # Keep a reference (GC would kill a running QThread) and retire any
-        # previous worker before starting a new one.
+        # previous worker before starting a new one (its late _on_done must
+        # not fire into the new check).
         old = getattr(self, "_test_worker", None)
         if old is not None:
-            old.wait(0)
+            try:
+                old.done.disconnect()
+            except (RuntimeError, TypeError):
+                pass
         self._test_worker = _TestWorker()
 
         def _on_done(msg: str, ok: bool):
@@ -516,13 +520,21 @@ class OnboardingWizard(QDialog):
         self._skip_btn.setEnabled(True)
 
     def _cancel_llm_check(self) -> None:
-        """Отменяет текущую проверку LLM и переходит на следующий шаг."""
+        """Отменяет текущую проверку LLM и переходит к следующему шагу."""
         if self._llm_check_in_progress:
             self._llm_check_in_progress = False
-            # Остановить воркер и таймер
-            if hasattr(self, "_test_worker"):
-                self._test_worker.quit()
-                self._test_worker.wait()
+            # Пометить результат устаревшим: HTTP-запрос прервать нельзя
+            # (worker без event loop — quit() бесполезен), а wait() в
+            # GUI-потоке ДЕДЛОКИТ приложение на wedged-соединении (прокси/
+            # DNS висят дольше HTTP-таймаута). Вместо ожидания — просто
+            # игнорируем поздний результат воркера.
+            self._llm_check_generation = getattr(self, "_llm_check_generation", 0) + 1
+            worker = getattr(self, "_test_worker", None)
+            if worker is not None:
+                try:
+                    worker.done.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
             if hasattr(self, "_test_deadline"):
                 self._test_deadline.stop()
             self._exit_llm_check_state()
