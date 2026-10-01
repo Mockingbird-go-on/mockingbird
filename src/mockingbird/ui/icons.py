@@ -14,10 +14,12 @@ import os
 import sys
 from functools import lru_cache
 
-from PySide6.QtCore import QPointF, QRectF
+from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtSvg import QSvgRenderer
+from PySide6.QtWidgets import QPushButton
 
+from mockingbird.i18n import t
 from mockingbird.ui import theme
 
 _ICON_SIZE = 20
@@ -77,3 +79,35 @@ def icon(name: str, size: int = _ICON_SIZE, color: str | None = None) -> QIcon:
     if color is None:
         color = theme.current.text
     return render_svg(name, color, size)
+
+
+class CloseButton(QPushButton):
+    """Standard window close affordance: Lucide «x», muted by default,
+    turns red on hover (Windows/macOS convention). Reused by the
+    screenshot dialog and the test-mode overlay."""
+
+    def __init__(self, size: int = 16, parent=None) -> None:
+        from PySide6.QtCore import QSize
+        from PySide6.QtGui import QColor
+
+        from . import theme
+
+        super().__init__(parent)
+        self._icon_size = size
+        self.setFlat(True)
+        self.setFixedSize(size + 10, size + 10)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip(t("Закрыть"))
+        self._muted = QColor(theme.current.text_secondary).name()
+        self._hover = "#e5484d"
+        self.setIcon(icon("x", size=size, color=self._muted))
+        self.setIconSize(QSize(size, size))
+        self.setStyleSheet(" QPushButton { border: none; background: transparent; } ")
+
+    def enterEvent(self, e) -> None:  # noqa: N802
+        self.setIcon(icon("x", size=self._icon_size, color=self._hover))
+        super().enterEvent(e)
+
+    def leaveEvent(self, e) -> None:  # noqa: N802
+        self.setIcon(icon("x", size=self._icon_size, color=self._muted))
+        super().leaveEvent(e)

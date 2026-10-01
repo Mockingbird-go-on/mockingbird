@@ -164,7 +164,7 @@ class ScreenshotQuestionDialog(QWidget):
         )
 
         from . import theme
-        from .icons import icon as lucide_icon
+        from .icons import CloseButton, icon as lucide_icon
 
         self._jpeg = jpeg_bytes
         self._busy = False
@@ -190,12 +190,7 @@ class ScreenshotQuestionDialog(QWidget):
         title.setObjectName("mddTitle")
         head.addWidget(glyph)
         head.addWidget(title, 1)
-        close = QPushButton()
-        close.setIcon(lucide_icon("circle-x"))
-        close.setIconSize(QSize(16, 16))
-        close.setFixedSize(24, 24)
-        close.setFlat(True)
-        close.setToolTip(t("Закрыть"))
+        close = CloseButton(size=16)
         close.clicked.connect(self.close)
         head.addWidget(close)
         lay.addLayout(head)
