@@ -179,11 +179,13 @@ class TestModeConfig(BaseModel):
     enabled: bool = True
     interval_s: float = 2.5  # capture tick
     stable_frames: int = 2  # consecutive identical captures before send
-    # dHash hamming threshold vs last SENT frame. The hash is nominally 64
-    # bits but the top 5 rows are duplicated for weighting (104 bits total),
-    # so the threshold is scaled accordingly (~17% of bits).
-    change_threshold: int = 18
-    min_send_interval_s: float = 10.0
+    # Change detection is a mean-abs grayscale diff of 48x48 fingerprints
+    # (0..255 scale). Measured: different text pages ~17, identical 0,
+    # scroll ~17, mouse cursor blink < 1. dHash was BLIND to text pages
+    # (dist 3 between different pages) — do not go back to bit hashes.
+    stable_threshold: float = 1.0  # mean-abs-diff below this = same frame
+    change_threshold: float = 5.0  # vs last SENT frame — below = no change
+    min_send_interval_s: float = 5.0
     backoff_s: float = 15.0
     max_image_dim: int = 1600
     jpeg_quality: int = 80
