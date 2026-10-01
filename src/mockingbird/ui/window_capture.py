@@ -84,9 +84,12 @@ def _print_window_capture(hwnd: int, w: int, h: int):
                 ptr = ctypes.cast(
                     ppv, ctypes.POINTER(ctypes.c_ubyte * (w * h * 4))
                 )
+                # RGB32 (not ARGB32): PrintWindow does not guarantee a
+                # meaningful alpha channel — stale/zero alpha in ARGB32
+                # would leak black/transparent artefacts into the JPEG.
                 image = QImage(
                     bytes(ptr.contents), w, h, w * 4,
-                    QImage.Format.Format_ARGB32,
+                    QImage.Format.Format_RGB32,
                 )
                 if image.isNull():
                     return None

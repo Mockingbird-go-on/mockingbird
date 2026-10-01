@@ -815,6 +815,7 @@ class MainWindow(QMainWindow):
         self._picker.show()
 
     def _stop_test_mode(self) -> None:
+        self._picker = None
         self._test_btn.setChecked(False)
         ov = self._test_overlay
         self._test_overlay = None
@@ -824,7 +825,27 @@ class MainWindow(QMainWindow):
             ov.deleteLater()
 
     def _on_test_pick_cancelled(self) -> None:
+        self._picker = None
         self._test_btn.setChecked(False)
+
+    def _on_test_capture_failed(self, msg: str) -> None:
+        """Target window gone — the watcher already stopped itself."""
+        ov = self._test_overlay
+        if ov is not None:
+            ov.set_status(msg)
+        self._test_btn.setChecked(False)
+        self._test_overlay = None
+        self._app.stop_test_mode()
+        if ov is not None:
+            from PySide6.QtCore import QTimer
+
+            watcher_ptr = ov
+
+            def _close() -> None:
+                watcher_ptr.close()
+                watcher_ptr.deleteLater()
+
+            QTimer.singleShot(3000, _close)  # let the user read the status
 
     def _on_test_window_picked(self, hwnd: int, title: str, rect) -> None:
         self._launch_test_watcher(title, lambda: self._capture_window(hwnd))
@@ -834,8 +855,15 @@ class MainWindow(QMainWindow):
 
     def _launch_test_watcher(self, title: str, capture_fn) -> None:
         from mockingbird.ui.test_overlay import TestModeOverlay
-        from mockingbird.vision.test_watcher import TestWatcher
 
+        # Close a stale overlay from a previous watcher run — its «×»
+        # button is still wired to _stop_test_mode and would kill the NEW
+        # watcher.
+        old = self._test_overlay
+        self._test_overlay = None
+        if old is not None:
+            old.close()
+            old.deleteLater()
         self._app.stop_test_mode()
         watcher = self._app.start_test_mode(capture_fn)
         ov = TestModeOverlay(title)
@@ -843,6 +871,7 @@ class MainWindow(QMainWindow):
         ov.force_requested.connect(self._app.force_test_frame)
         watcher.frame_skipped.connect(ov.set_status)
         watcher.frame_pending.connect(ov.set_status)
+        watcher.capture_failed.connect(self._on_test_capture_failed)
         self._test_overlay = ov
         ov.show()
         ov.set_status(t("наблюдение за {title}…", title=title))

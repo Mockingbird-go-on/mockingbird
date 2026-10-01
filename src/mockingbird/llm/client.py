@@ -1179,13 +1179,39 @@ class LlmClient:
                 ],
             },
         ]
-        response = client.chat.completions.create(
-            model=self._cfg.model,
-            messages=messages,
-            temperature=0,
-            max_tokens=400,
-        )
-        return (response.choices[0].message.content or "").strip()
+        # Some providers intermittently return an empty completion for
+        # image requests (same as the screenshot path) — retry once with
+        # streaming enabled before giving up.
+        for attempt in range(2):
+            response = client.chat.completions.create(
+                model=self._cfg.model,
+                messages=messages,
+                temperature=0,
+                max_tokens=400,
+                stream=(attempt > 0),
+            )
+            text = ""
+            if attempt > 0:
+                for delta in response:
+                    piece = (delta.choices[0].delta.content or "") if delta.choices else ""
+                    text += piece
+            else:
+                text = (response.choices[0].message.content or "")
+            text = text.strip()
+            finish = (
+                response.choices[0].finish_reason
+                if not attempt and response.choices
+                else "?"
+            )
+            if text:
+                return text
+            log.warning(
+                "llm: test-screen answer empty (attempt %d, finish_reason=%s)",
+                attempt + 1, finish,
+            )
+        # Empty is a VALID outcome ("no test on the frame") — return it as
+        # such; the caller treats it as "no answers", not as an error.
+        return ""
 
     def analyze_terms(self, transcript: str) -> list[dict]:
         """Ask the LLM to pull all relevant terms for the conversation.

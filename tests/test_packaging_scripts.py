@@ -817,3 +817,7 @@ def test_app_icon_is_multisize_square_ico():
         off += 16
     for required in (16, 32, 48, 256):
         assert required in sizes, f"missing {required}px size (have {sizes})"
+    # 256px must be the FIRST entry: QPixmap(path) reads entry [0] for
+    # generic loads (splash/window icon) — a small first entry renders the
+    # splash logo blurry after upscale.
+    assert sizes[0] == 256, f"256px must be first (have {sizes})"

@@ -205,8 +205,9 @@ def test_test_mode_config_defaults():
     cfg = TestModeConfig()
     assert cfg.interval_s == 2.5
     assert cfg.stable_frames == 2
-    assert cfg.change_threshold == 12
+    assert cfg.change_threshold == 18
     assert cfg.min_send_interval_s == 10.0
+    # hash is 104 bits (top rows duplicated), threshold ~17%
     assert cfg.backoff_s == 15.0
     assert cfg.max_image_dim == 1600
 
@@ -226,11 +227,11 @@ def test_llm_test_screen_prompt(monkeypatch):
     from mockingbird.config import LlmConfig
     from mockingbird.llm.client import LlmClient
 
-    calls = {}
+    calls = []
 
     def _create(**kw):
-        calls.update(kw)
-        return NS(choices=[NS(message=NS(content="1 → B\n2 → C"))])
+        calls.append(kw)
+        return NS(choices=[NS(message=NS(content="1 → B\n2 → C"), finish_reason="stop")])
 
     client = LlmClient(LlmConfig(base_url="http://x", api_key="k", model="m"))
     monkeypatch.setattr(
@@ -238,11 +239,59 @@ def test_llm_test_screen_prompt(monkeypatch):
     )
     out = client.answer_test_screen("QUJD")
     assert out == "1 → B\n2 → C"
-    assert calls["temperature"] == 0
-    msgs = calls["messages"]
+    assert calls[0]["temperature"] == 0
+    msgs = calls[0]["messages"]
     assert "N → X" in msgs[0]["content"] or "«N → X»" in msgs[0]["content"]
     img = msgs[1]["content"][1]["image_url"]["url"]
     assert img.endswith("QUJD")
+
+
+def test_llm_test_screen_retries_empty_then_streams(monkeypatch):
+    """Empty non-stream reply -> one retry with stream=True."""
+    from types import SimpleNamespace as NS
+
+    from mockingbird.config import LlmConfig
+    from mockingbird.llm.client import LlmClient
+
+    attempts = []
+
+    def _create(**kw):
+        attempts.append(kw.get("stream", False))
+        if not kw.get("stream", False):
+            # first attempt: empty completion
+            return NS(choices=[NS(message=NS(content=""), finish_reason="stop")])
+        # retry: streamed chunks
+        return [
+            NS(choices=[NS(delta=NS(content="1 → "))]),
+            NS(choices=[NS(delta=NS(content="B"))]),
+        ]
+
+    client = LlmClient(LlmConfig(base_url="http://x", api_key="k", model="m"))
+    monkeypatch.setattr(
+        client, "_ensure", lambda: NS(chat=NS(completions=NS(create=_create)))
+    )
+    out = client.answer_test_screen("QUJD")
+    assert attempts == [False, True]
+    assert out == "1 → B"
+
+
+def test_llm_test_screen_all_empty_returns_empty(monkeypatch):
+    """Both attempts empty -> '' (valid 'no test' outcome, not an error)."""
+    from types import SimpleNamespace as NS
+
+    from mockingbird.config import LlmConfig
+    from mockingbird.llm.client import LlmClient
+
+    def _create(**kw):
+        if kw.get("stream"):
+            return []
+        return NS(choices=[NS(message=NS(content=""), finish_reason="stop")])
+
+    client = LlmClient(LlmConfig(base_url="http://x", api_key="k", model="m"))
+    monkeypatch.setattr(
+        client, "_ensure", lambda: NS(chat=NS(completions=NS(create=_create)))
+    )
+    assert client.answer_test_screen("QUJD") == ""
 
 
 # -- app wiring (no Qt widgets) -------------------------------------------
@@ -288,3 +337,71 @@ def test_is_blank_detects_uniform_image():
         for x in range(64):
             content.setPixel(x, y, 0xFF000000)
     assert _is_blank(content) is False
+
+
+def test_auto_stop_after_consecutive_capture_failures():
+    w = _make_watcher()
+    fails, failed_sig = _W(), _W()
+    w.frame_skipped.connect(fails)
+    w.capture_failed.connect(failed_sig)
+    w.set_capture(lambda: (_ for _ in ()).throw(RuntimeError("окно закрыто")))
+    for _ in range(4):
+        w._tick()
+    assert not failed_sig.events, "stopped too early"
+    assert w._capture_fail_run == 4
+    w._tick()  # 5th consecutive failure
+    assert w._capture_fail_run == 5
+    assert len(failed_sig.events) == 1
+
+
+def test_capture_fail_counter_resets_on_success():
+    w = _make_watcher(stable_frames=1)
+    failed_sig = _W()
+    w.capture_failed.connect(failed_sig)
+    state = {"fail": True}
+
+    def cap():
+        if state["fail"]:
+            raise RuntimeError("boom")
+        return (_grad(), b"j", None)
+
+    w.set_capture(cap)
+    for _ in range(4):
+        w._tick()
+    state["fail"] = False
+    try:
+        w._tick()  # success resets the counter (dhash of _grad())
+    except TypeError:
+        pytest.fail("capture success path broken")
+    assert w._capture_fail_run == 0
+    state["fail"] = True
+    for _ in range(4):
+        w._tick()
+    assert not failed_sig.events, "should not stop: counter was reset"
+    w.stop()
+
+
+def test_parse_rejects_prose_prefix():
+    # prose time like «в 12: 30 минут» must not be parsed as Q12 -> 30
+    assert parse_test_answers("в 12: 30 минут") == []
+    assert parse_test_answers("2024-05-01") == []
+    # a valid answer line still parses (even mid-prose, number at line start)
+    assert parse_test_answers("Итог:\n1 → B") == [("1", "B")]
+
+
+def test_change_threshold_default_scaled():
+    # 104-bit hash (top rows duplicated) — threshold ~17%
+    assert TestModeConfig().change_threshold == 18
+
+
+def test_start_resets_counters():
+    w = _make_watcher()
+    w.set_capture(lambda: (_grad(), b"j", None))
+    w.start()
+    w._tick()
+    w._tick()
+    assert w._tick_count == 2
+    w.start()
+    assert w._tick_count == 0
+    assert w._capture_fail_run == 0
+    w.stop()

@@ -112,8 +112,10 @@ class TestWatcher(QObject):
 
     frame_skipped = Signal(str)  # reason (для статуса)
     frame_pending = Signal(str)  # stability progress
-    send_frame = Signal(object, bytes)  # (preview_pixmap, jpeg_bytes)
-    stable_detected = Signal()
+    send_frame = Signal(object, bytes)  # (preview, jpeg_bytes)
+    capture_failed = Signal(str)  # permanent capture failure (window closed)
+
+    _CAPTURE_FAIL_LIMIT = 5
 
     def __init__(self, cfg, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -130,6 +132,8 @@ class TestWatcher(QObject):
         self._not_before = 0.0
         self._in_flight = False
         self._force_next = False
+        self._tick_count = 0
+        self._capture_fail_run = 0
 
     # -- lifecycle -----------------------------------------------------
     def set_capture(self, fn) -> None:
@@ -141,6 +145,9 @@ class TestWatcher(QObject):
         self._last_sent_hash = None
         self._in_flight = False
         self._not_before = 0.0
+        self._tick_count = 0
+        self._capture_fail_run = 0
+        self._last_answer_text = ""
         self._timer.start()
 
     def stop(self) -> None:
@@ -170,7 +177,7 @@ class TestWatcher(QObject):
 
     # -- core tick ---------------------------------------------------------
     def _tick(self) -> None:
-        self._tick_count = getattr(self, "_tick_count", 0) + 1
+        self._tick_count += 1
         tick = self._tick_count
         if self._capture is None:
             return
@@ -184,9 +191,20 @@ class TestWatcher(QObject):
         try:
             image, jpeg, _preview = self._capture()
         except Exception as exc:  # capture failure (window closed etc.)
-            log.warning("test-mode[%d]: capture failed: %s", tick, exc)
-            self.frame_skipped.emit("захват не удался (окно закрыто?)")
+            self._capture_fail_run += 1
+            log.warning(
+                "test-mode[%d]: capture failed (%d/%d): %s",
+                tick, self._capture_fail_run, self._CAPTURE_FAIL_LIMIT, exc,
+            )
+            if self._capture_fail_run >= self._CAPTURE_FAIL_LIMIT:
+                msg = "окно закрыто или недоступно — наблюдение остановлено"
+                log.warning("test-mode: %s", msg)
+                self.stop()
+                self.capture_failed.emit(msg)
+            else:
+                self.frame_skipped.emit("захват не удался (окно закрыто?)")
             return
+        self._capture_fail_run = 0
         bits = dhash_bits(image)
         # 1. stability window
         dist_stable = (
@@ -248,16 +266,11 @@ class TestWatcher(QObject):
             dist_sent if dist_sent >= 0 else "first",
             ", forced" if forced else "",
         )
-        self.send_frame.emit(_preview_of(jpeg), jpeg)
-        self.stable_detected.emit()
+        self.send_frame.emit(_preview, jpeg)
 
     @property
     def last_answer_text(self) -> str:
         return self._last_answer_text
-
-
-def _preview_of(jpeg: bytes):
-    return jpeg  # preview unused by the watcher itself; owner may wrap
 
 
 def parse_test_answers(text: str) -> list[tuple[str, str]]:
@@ -270,8 +283,10 @@ def parse_test_answers(text: str) -> list[tuple[str, str]]:
 
     out: list[tuple[str, str]] = []
     seen: set[str] = set()
+    # The line MUST start with the question number (leading whitespace ok) —
+    # a leading prose prefix like «в 12: 30 минут» must NOT match.
     pat = re.compile(
-        r"^\s*[^\d]{0,3}(\d{1,3})\s*(?:->|→|[:\-)\]])\s*([A-Za-zА-Яа-я0-9]{1,4})\b",
+        r"^\s*(\d{1,3})\s*(?:->|→|[:\-)\]])\s*([A-Za-zА-Яа-я0-9]{1,4})\b",
         re.MULTILINE,
     )
     for m in pat.finditer(text):

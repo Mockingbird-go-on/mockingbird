@@ -532,12 +532,13 @@ def main() -> int:
     if getattr(config, "screenshot", None) and config.screenshot.enabled:
         shot_hotkey.start()
 
-    # Live test mode hotkey Ctrl+Shift+T (Windows only).
-    from mockingbird.ui.global_hotkey import VK_T
+    # Live test mode hotkey Ctrl+Alt+T (Windows only; Ctrl+Shift+T is the
+    # browser "reopen tab" shortcut and the target window IS a browser).
+    from mockingbird.ui.global_hotkey import MOD_ALT, MOD_CONTROL, VK_T
 
     test_hotkey = _GH(
         callback=context.signals.test_mode_request.emit,
-        modifiers=MOD_CONTROL | MOD_SHIFT,
+        modifiers=MOD_CONTROL | MOD_ALT,
         vk=VK_T,
         hotkey_id=3,
     )

@@ -29,7 +29,19 @@ def _resolve_logo() -> QPixmap | None:
         ]
     for path in candidates:
         if os.path.isfile(path):
-            pix = QPixmap(path)
+            # Pick the LARGEST frame explicitly: QPixmap(path) takes entry
+            # [0], which is small in some .ico writers → blurry upscale.
+            from PySide6.QtGui import QIcon
+
+            icon = QIcon(path)
+            sizes = icon.availableSizes()
+            if not sizes:
+                pix = QPixmap(path)
+                if not pix.isNull():
+                    return pix
+                continue
+            best = max(sizes, key=lambda s: s.width() * s.height())
+            pix = icon.pixmap(best)
             if not pix.isNull():
                 return pix
     return None
