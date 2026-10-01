@@ -306,5 +306,8 @@
   "пустой кадр (окно свёрнуто?)": "empty frame (window minimised?)",
   "LLM не настроен — задайте модель в настройках": "LLM is not configured — set a model in Settings",
   "новая страница · ответ через {sec:.0f} с…": "new page · answer in {sec:.0f}s…",
-  "ждём — идёт голосовой ответ…": "waiting — a voice answer is streaming…"
+  "ждём — идёт голосовой ответ…": "waiting — a voice answer is streaming…",
+  "Режим «Тест» недоступен: текущая LLM не поддерживает изображения.\nИзмените модель в «Настройки».": "Test mode unavailable: the current LLM does not support images.\nChange the model in Settings.",
+  "Режим «Тест»: проблема с LLM": "Test mode: LLM problem",
+  "Не удалось получить ответ от модели: проверьте подключение (сеть, API-ключ, модель) в «Настройки». Наблюдение продолжится с повторами.": "Could not get an answer from the model: check the connection (network, API key, model) in Settings. Watching will continue with retries."
 }

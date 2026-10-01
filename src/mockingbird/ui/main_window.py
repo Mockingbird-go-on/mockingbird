@@ -329,6 +329,7 @@ class MainWindow(QMainWindow):
     def _on_vision_probe_result(self, ok) -> None:
         self._vision_state = bool(ok)
         self._refresh_screenshot_button()
+        self._refresh_test_button()
         dlg = getattr(self, "_shot_dlg", None)
         if dlg is not None and dlg.isVisible():
             dlg._set_vision(self._vision_state)
@@ -353,6 +354,21 @@ class MainWindow(QMainWindow):
             self._shot_btn.setToolTip(
                 t("Скриншот-вопрос (Ctrl+Shift+S)\nВыделите область экрана и задайте вопрос")
             )
+
+    def _refresh_test_button(self) -> None:
+        """The test mode needs the SAME vision capability as screenshots:
+        grey the button out with an explaining tooltip when the model
+        can't take images."""
+        if not hasattr(self, "_test_btn"):
+            return
+        if self._vision_state is False:
+            self._test_btn.setEnabled(False)
+            self._test_btn.setToolTip(
+                t("Режим «Тест» недоступен: текущая LLM не поддерживает изображения.\nИзмените модель в «Настройки».")
+            )
+        else:
+            self._test_btn.setEnabled(True)
+            self._test_btn.setToolTip(t("Режим «Тест»: следить за окном и подсказывать ответы"))
 
     def _on_start(self) -> None:
         try:
@@ -928,6 +944,24 @@ class MainWindow(QMainWindow):
             return
         if not ok:
             ov.set_status(t("ошибка LLM, повтор через пару секунд…"))
+            # Persistent LLM failure (bad model / no network / provider
+            # down) must not pass silently — surface a notification, but
+            # throttled: backoff retries would spam one per failure.
+            from time import monotonic
+
+            last = getattr(self, "_test_llm_error_notified_at", 0.0)
+            if monotonic() - last > 60.0:
+                self._test_llm_error_notified_at = monotonic()
+                from mockingbird.ui.notify import bus as notify_bus
+
+                notify_bus.warning(
+                    t("Режим «Тест»: проблема с LLM"),
+                    t(
+                        "Не удалось получить ответ от модели: проверьте "
+                        "подключение (сеть, API-ключ, модель) в «Настройки». "
+                        "Наблюдение продолжится с повторами."
+                    ),
+                )
             return
         from mockingbird.vision.test_watcher import parse_test_answers
 
