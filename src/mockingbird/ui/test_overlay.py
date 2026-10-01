@@ -55,9 +55,9 @@ class TestModeOverlay(QWidget):
         header.addWidget(btn_force)
 
         btn_stop = QPushButton()
-        btn_stop.setIcon(lucide_icon("circle-x"))
-        btn_stop.setIconSize(QSize(15, 15))
-        btn_stop.setFixedSize(26, 24)
+        from mockingbird.ui.icons import CloseButton
+
+        btn_stop = CloseButton(size=15)
         btn_stop.setToolTip(t("Остановить наблюдение"))
         btn_stop.clicked.connect(self.stop_requested)
         header.addWidget(btn_stop)
