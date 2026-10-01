@@ -26,30 +26,33 @@ from mockingbird.i18n import t
 
 log = logging.getLogger(__name__)
 
-_HASH_SIZE = 8  # 8x8 dHash -> 64 bits
+_HASH_SIZE = 48  # 48x48 grayscale grid for change detection
 
 
-def dhash_bits(image) -> list[int]:
-    """Compute a weighted difference hash of a PIL-like/Qt image.
+def frame_fingerprint(image) -> list[list[int]]:
+    """Reduce ``image`` to a rows×rows grayscale grid (0..255).
 
-    Accepts anything convertible via ``_to_luma_grid`` (tests inject fake
-    images as nested lists). Returns a flat list of 0/1 ints (64 entries),
-    with the top 2/3 of rows duplicated once so that changes at the bottom
-    of the frame count less toward the hamming distance.
+    dHash (horizontal-gradient bits) is BLIND to text pages: downscaled to
+    9x8, any two pages of text average into the same grey soup (measured
+    dist=3/104 between completely different pages vs threshold 18 — the
+    "no change" bug). A direct grayscale comparison of a 48x48 grid
+    separates them cleanly (16.9 mean-abs-diff vs 0.0 identical).
     """
-    grid = _to_luma_grid(image, _HASH_SIZE + 1, _HASH_SIZE)
-    bits: list[int] = []
-    row_bits: list[list[int]] = []
-    for row in grid:
-        rbits = [1 if row[c] > row[c + 1] else 0 for c in range(_HASH_SIZE)]
-        row_bits.append(rbits)
-    top_rows = int(_HASH_SIZE * 2 / 3)
-    for ri, rbits in enumerate(row_bits):
-        bits.extend(rbits)
-        if ri < top_rows:
-            # duplicate top rows -> they carry double weight
-            bits.extend(rbits)
-    return bits
+    grid = _to_luma_grid(image, _HASH_SIZE, _HASH_SIZE)
+    return grid
+
+
+def frame_distance(a: list[list[int]] | None, b: list[list[int]] | None) -> float:
+    """Mean absolute difference of two fingerprints, 0..255."""
+    if a is None or b is None or len(a) != len(b):
+        return 255.0  # incomparable -> treat as maximal change
+    total = 0
+    n = 0
+    for row_a, row_b in zip(a, b):
+        for va, vb in zip(row_a, row_b):
+            total += abs(va - vb)
+            n += 1
+    return total / max(n, 1)
 
 
 def _to_luma_grid(image, cols: int, rows: int) -> list[list[int]]:
@@ -96,12 +99,6 @@ def _to_luma_grid(image, cols: int, rows: int) -> list[list[int]]:
     raise TypeError(f"unsupported image type: {type(image)!r}")
 
 
-def hamming(a: list[int], b: list[int]) -> int:
-    if len(a) != len(b):
-        return len(a) + len(b)
-    return sum(1 for x, y in zip(a, b) if x != y)
-
-
 class TestWatcher(QObject):
     """Periodic capture + change detection + (optional) LLM send decision.
 
@@ -127,8 +124,8 @@ class TestWatcher(QObject):
         self._timer.timeout.connect(self._tick)
         self._capture = None  # callable() -> (QImage, jpeg_bytes, preview)
         self._stable_run = 0
-        self._last_candidate: list[int] | None = None
-        self._last_sent_hash: list[int] | None = None
+        self._last_candidate = None
+        self._last_sent_fp = None
         self._last_answer_text: str = ""
         self._last_sent_at = 0.0
         self._not_before = 0.0
@@ -144,7 +141,7 @@ class TestWatcher(QObject):
     def start(self) -> None:
         self._stable_run = 0
         self._last_candidate = None
-        self._last_sent_hash = None
+        self._last_sent_fp = None
         self._in_flight = False
         self._not_before = 0.0
         self._tick_count = 0
@@ -207,16 +204,14 @@ class TestWatcher(QObject):
                 self.frame_skipped.emit(t("захват не удался (окно закрыто?)"))
             return
         self._capture_fail_run = 0
-        bits = dhash_bits(image)
+        fp = frame_fingerprint(image)
         # 1. stability window
-        dist_stable = (
-            hamming(bits, self._last_candidate) if self._last_candidate else -1
-        )
-        if self._last_candidate is not None and dist_stable <= 2:
+        dist_stable = frame_distance(fp, self._last_candidate)
+        if self._last_candidate is not None and dist_stable <= self._cfg.stable_threshold:
             self._stable_run += 1
         else:
             self._stable_run = 1 if self._last_candidate is None else 0
-        self._last_candidate = bits
+        self._last_candidate = fp
         forced = self._force_next
         if not forced and self._stable_run < self._cfg.stable_frames:
             msg = t("кадр {tick} · стабилизация ({run} из {need})").format(
@@ -229,12 +224,10 @@ class TestWatcher(QObject):
             self.frame_pending.emit(msg)
             return
         # 2. change gate vs last SENT frame
-        dist_sent = (
-            hamming(bits, self._last_sent_hash) if self._last_sent_hash else -1
-        )
+        dist_sent = frame_distance(fp, self._last_sent_fp)
         if (
             not forced
-            and self._last_sent_hash is not None
+            and self._last_sent_fp is not None
             and dist_sent <= self._cfg.change_threshold
         ):
             log.info(
@@ -250,16 +243,19 @@ class TestWatcher(QObject):
             and since is not None
             and since < self._cfg.min_send_interval_s
         ):
+            wait = max(0.0, self._cfg.min_send_interval_s - (since or 0.0))
             log.info(
                 "test-mode[%d]: skip — rate limit (%.1fs since last send)",
                 tick, since,
             )
-            self.frame_skipped.emit(t("кадр {tick} · слишком часто, ждём…").format(tick=tick))
+            self.frame_skipped.emit(
+                t("новая страница · ответ через {sec:.0f} с…").format(sec=wait)
+            )
             return
         # passed all layers -> send
         self._force_next = False
         self._in_flight = True
-        self._last_sent_hash = bits
+        self._last_sent_fp = fp
         log.info(
             "test-mode[%d]: SENDING frame to LLM (jpeg=%dB, stable_run=%d, "
             "dist_vs_last_sent=%s%s)",

@@ -7,7 +7,7 @@ import pytest
 
 from mockingbird.config import TestModeConfig
 from mockingbird.vision.test_watcher import (
-    TestWatcher, dhash_bits, hamming, parse_test_answers,
+    TestWatcher, frame_distance, frame_fingerprint, parse_test_answers,
 )
 
 
@@ -35,25 +35,41 @@ class _W:
         self.events.append(a)
 
 
-# -- dhash ------------------------------------------------------------
+# -- fingerprint / change detection -------------------------------------
+# dHash was BLIND to text pages (different pages hashed 3/104 apart); the
+# grayscale mean-abs-diff fingerprint separates them cleanly.
 
 
-def test_dhash_stable_for_same_image():
-    assert dhash_bits(_grad()) == dhash_bits(_grad())
+def test_fingerprint_stable_for_same_image():
+    assert frame_distance(frame_fingerprint(_grad()), frame_fingerprint(_grad())) == 0
 
 
-def test_dhash_differs_for_different_image():
-    assert hamming(dhash_bits(_grad()), dhash_bits(_flat())) > 10
+def test_fingerprint_differs_for_different_image():
+    assert frame_distance(frame_fingerprint(_grad()), frame_fingerprint(_flat())) > 5.0
 
 
-def test_dhash_top_rows_double_weighted():
-    bits = dhash_bits(_grad())
-    assert len(bits) == 64 + 8 * 5  # 8 rows + duplicated top 5 rows
+def test_fingerprint_detects_text_page_change():
+    # two distinct "text pages": white bg, grey lines in different places
+    import random as _random
+
+    def page(seed):
+        _random.seed(seed)
+        img = [[255] * 100 for _ in range(80)]
+        for _ in range(30):
+            y = _random.randint(0, 79)
+            x = _random.randint(0, 40)
+            w = _random.randint(10, 55)
+            for xx in range(x, min(x + w, 100)):
+                img[y][xx] = 60
+        return img
+
+    d = frame_distance(frame_fingerprint(page(1)), frame_fingerprint(page(2)))
+    assert d > 5.0, f"different pages must be far apart, got {d}"
 
 
-def test_dhash_rejects_tiny_image():
+def test_fingerprint_rejects_tiny_image():
     with pytest.raises(ValueError):
-        dhash_bits([[1]])
+        frame_fingerprint([[1]])
 
 
 # -- parse_test_answers --------------------------------------------------
@@ -124,7 +140,7 @@ def test_change_gate_blocks_similar_frame_after_send():
 
 
 def test_min_send_interval_rate_limits():
-    w = _make_watcher(stable_frames=1, change_threshold=0, min_send_interval_s=10.0)
+    w = _make_watcher(stable_frames=1, change_threshold=0.0, min_send_interval_s=10.0)
     sent, skipped, pending = _W(), _W(), _W()
     w.send_frame.connect(sent)
     w.frame_skipped.connect(skipped)
@@ -140,7 +156,7 @@ def test_min_send_interval_rate_limits():
     w._tick()
     assert len(sent.events) == 1  # rate limited
     reasons = [e[0] for e in skipped.events] + [e[0] for e in pending.events]
-    assert any(("слишком часто" in r) or ("стабилизация" in r) for r in reasons)
+    assert any(("ответ через" in r) or ("стабилизация" in r) for r in reasons)
     cap["img"] = g3
     w._tick()
     assert len(sent.events) == 1
@@ -213,9 +229,9 @@ def test_test_mode_config_defaults():
     cfg = TestModeConfig()
     assert cfg.interval_s == 2.5
     assert cfg.stable_frames == 2
-    assert cfg.change_threshold == 18
-    assert cfg.min_send_interval_s == 10.0
-    # hash is 104 bits (top rows duplicated), threshold ~17%
+    assert cfg.change_threshold == 5.0
+    assert cfg.stable_threshold == 1.0
+    assert cfg.min_send_interval_s == 5.0
     assert cfg.backoff_s == 15.0
     assert cfg.max_image_dim == 1600
 
@@ -398,8 +414,8 @@ def test_parse_rejects_prose_prefix():
 
 
 def test_change_threshold_default_scaled():
-    # 104-bit hash (top rows duplicated) — threshold ~17%
-    assert TestModeConfig().change_threshold == 18
+    # grayscale mean-abs-diff scale (0..255): measured text-page separation ~17
+    assert TestModeConfig().change_threshold == 5.0
 
 
 def test_start_resets_counters():
