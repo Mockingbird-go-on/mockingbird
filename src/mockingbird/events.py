@@ -43,6 +43,9 @@ class AppSignals(QObject):
     vision_probe_result = Signal(object)
     # Bridge: Ctrl+Shift+S global hotkey → MainWindow opens the grab overlay.
     screenshot_request = Signal()
+    test_answer = Signal(bool, str)  # ok, raw LLM text ("1 → B\n2 → D…")
+    # Bridge: Ctrl+Shift+T global hotkey → MainWindow toggles live test mode.
+    test_mode_request = Signal()
     # Screenshot answer finished (payload: shot_id) — UI refreshes history.
     screenshot_answer_done = Signal(str)
     # Bridge: STT worker → GUI thread for SQLite writes (avoids cross-thread

@@ -532,9 +532,22 @@ def main() -> int:
     if getattr(config, "screenshot", None) and config.screenshot.enabled:
         shot_hotkey.start()
 
+    # Live test mode hotkey Ctrl+Shift+T (Windows only).
+    from mockingbird.ui.global_hotkey import VK_T
+
+    test_hotkey = _GH(
+        callback=context.signals.test_mode_request.emit,
+        modifiers=MOD_CONTROL | MOD_SHIFT,
+        vk=VK_T,
+        hotkey_id=3,
+    )
+    if getattr(config, "test_mode", None) and config.test_mode.enabled:
+        test_hotkey.start()
+
     app.aboutToQuit.connect(context.shutdown)
     app.aboutToQuit.connect(lambda: hotkey.stop())
     app.aboutToQuit.connect(lambda: shot_hotkey.stop())
+    app.aboutToQuit.connect(lambda: test_hotkey.stop())
     return app.exec()
 
 

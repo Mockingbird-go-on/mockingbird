@@ -1144,6 +1144,49 @@ class LlmClient:
         finally:
             self._exit_stream()
 
+    def answer_test_screen(self, image_jpeg_b64: str) -> str:
+        """Live test mode: extract "N -> X" answers from a screenshot.
+
+        Non-streaming (short deterministic answer), temperature=0. Frames
+        are rate-limited by the TestWatcher; no history/context needed.
+        """
+        client = self._ensure()
+        if client is None:
+            raise RuntimeError("LLM не настроен (нет base_url/api_key)")
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "На изображении — экран теста: вопросы и варианты ответов "
+                    "(A, B, C, D или 1, 2, 3…). Определи правильные ответы. "
+                    "Верни ТОЛЬКО строки вида «N → X» (номер вопроса → буква "
+                    "или номер правильного варианта), по одной на строке, без "
+                    "пояснений, без markdown. Если вопрос виден лишь частично "
+                    "или вариантов нет — пропусти его. Если это не тест — "
+                    "верни пустой ответ."
+                ),
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Какие ответы верны?"},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{image_jpeg_b64}"
+                        },
+                    },
+                ],
+            },
+        ]
+        response = client.chat.completions.create(
+            model=self._cfg.model,
+            messages=messages,
+            temperature=0,
+            max_tokens=400,
+        )
+        return (response.choices[0].message.content or "").strip()
+
     def analyze_terms(self, transcript: str) -> list[dict]:
         """Ask the LLM to pull all relevant terms for the conversation.
 

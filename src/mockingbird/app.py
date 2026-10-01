@@ -427,6 +427,63 @@ class App:
 
         self.interview.submit_external_answer(question, _worker)
 
+    # ------------------------------------------------------------------
+    # Live test mode
+    # ------------------------------------------------------------------
+    def start_test_mode(self, capture_fn) -> "TestWatcher":
+        """Start the live test watcher with the given capture callable.
+
+        ``capture_fn() -> (QImage, jpeg_bytes, preview)``. The watcher's
+        ``send_frame`` is dispatched to a daemon LLM worker; results come
+        back through ``signals.test_answer``.
+        """
+        from mockingbird.vision.test_watcher import TestWatcher
+
+        self.stop_test_mode()
+        watcher = TestWatcher(self.config.test_mode)
+        watcher.set_capture(capture_fn)
+        watcher.send_frame.connect(self._on_test_frame)
+        watcher.start()
+        self._test_watcher = watcher
+        return watcher
+
+    def stop_test_mode(self) -> None:
+        w = getattr(self, "_test_watcher", None)
+        if w is not None:
+            w.stop()
+            w.deleteLater()
+            self._test_watcher = None
+
+    @property
+    def test_watcher(self):
+        return getattr(self, "_test_watcher", None)
+
+    def _on_test_frame(self, _preview, jpeg_bytes: bytes) -> None:
+        import base64
+        import threading
+
+        def _worker() -> None:
+            ok = False
+            text = ""
+            try:
+                text = self.llm.answer_test_screen(base64.b64encode(jpeg_bytes).decode())
+                ok = True
+            except Exception as exc:  # noqa: BLE001
+                log.warning("test-mode: LLM failed: %s", exc)
+                text = ""
+            finally:
+                w = self.test_watcher
+                if w is not None:
+                    w.mark_result(ok, text)
+            self.signals.test_answer.emit(ok, text)
+
+        threading.Thread(target=_worker, name="test-mode-llm", daemon=True).start()
+
+    def force_test_frame(self) -> None:
+        w = self.test_watcher
+        if w is not None:
+            w.force_send()
+
     def _on_term(self, detected) -> None:
         self.signals.term.emit(detected)
         term_text = getattr(detected, "term", "") or ""

@@ -276,5 +276,17 @@
   "Загрузка модели уже идёт в другом потоке — дождитесь её завершения или нажмите «Отмена» перед повтором.": "Ya se está descargando el modelo en otro hilo — espere a que termine o pulse «Cancelar» antes de reintentar.",
   "URL и ключ не заданы": "URL y clave no especificados",
   "Подключение работает!": "¡La conexión funciona!",
-  "Mockingbird — ассистент для интервью": "Mockingbird — asistente de entrevistas"
+  "Mockingbird — ассистент для интервью": "Mockingbird — asistente de entrevistas",
+  "Режим «Тест»: следить за окном и подсказывать ответы": "Modo Test: vigilar una ventana y sugerir respuestas",
+  "область экрана": "área de pantalla",
+  "наблюдение за {title}…": "observando {title}…",
+  "ошибка LLM, повтор через пару секунд…": "error del LLM, reintento en unos segundos…",
+  "тест не распознан на кадре": "no se detectó un test en la imagen",
+  "Кликните по окну с тестом (Esc — отмена)": "Haz clic en la ventana del test (Esc para cancelar)",
+  "Ожидание стабильного кадра…": "Esperando un fotograma estable…",
+  "Точных ответов не найдено": "No se encontraron respuestas",
+  "Тест": "Test",
+  "Сейчас": "Ahora",
+  "{0} ответов · обновлено": "{0} respuestas · actualizado",
+  "{0} ответов · без изменений": "{0} respuestas · sin cambios"
 }
