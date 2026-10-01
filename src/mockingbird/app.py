@@ -480,7 +480,7 @@ class App:
             try:
                 log.info("test-mode: LLM request started (jpeg=%dB)", len(jpeg_bytes))
                 text = self.llm.answer_test_screen(base64.b64encode(jpeg_bytes).decode())
-                ok = bool(text)
+                ok = True
                 log.info(
                     "test-mode: LLM reply in %.1fs (%d chars): %r",
                     _time.monotonic() - t0, len(text), text[:200],
@@ -489,6 +489,7 @@ class App:
                 log.warning("test-mode: LLM failed after %.1fs: %s",
                             _time.monotonic() - t0, exc)
                 text = ""
+                ok = False
             finally:
                 w = self.test_watcher
                 if w is not None:

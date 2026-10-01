@@ -271,3 +271,20 @@ def test_app_test_mode_lifecycle(tmp_path, monkeypatch):
     assert app.test_watcher is w
     app.stop_test_mode()
     assert app.test_watcher is None
+
+
+def test_is_blank_detects_uniform_image():
+    from PySide6.QtGui import QImage
+
+    from mockingbird.ui.window_capture import _is_blank
+
+    blank = QImage(64, 64, QImage.Format.Format_ARGB32)
+    blank.fill(0xFFFFFFFF)
+    assert _is_blank(blank) is True
+
+    content = QImage(64, 64, QImage.Format.Format_ARGB32)
+    content.fill(0xFFFFFFFF)
+    for y in range(0, 64, 8):
+        for x in range(64):
+            content.setPixel(x, y, 0xFF000000)
+    assert _is_blank(content) is False
