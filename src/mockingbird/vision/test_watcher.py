@@ -284,7 +284,7 @@ def parse_test_answers(text: str) -> list[tuple[str, str, str]]:
     # The line MUST start with the question number (leading whitespace ok) —
     # a leading prose prefix like «в 12: 30 минут» must NOT match.
     pat = re.compile(
-        r"^\s*(\d{1,3})\s*(?:->|→|[:\-)\]])\s*([A-Za-zА-Яа-я0-9]{1,4})\b"
+        r"^\s*(\d{1,3})\s*(?:->|→|[:\-)\]])\s*([A-Za-zА-Яа-я0-9]{1,4}|\?{1,2})(?=[\s—\-–]|$)"
         r"(?:\s*(?:—|-|–)\s*(.+?))?\s*$",
         re.MULTILINE,
     )

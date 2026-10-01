@@ -128,12 +128,18 @@ class TestModeOverlay(QWidget):
             self.set_status(t("тест не распознан на кадре") + f" · {stamp}")
             return
         lines = []
-        for num, ans, note in pairs:
-            from html import escape
+        from html import escape
 
-            line = f"<b>{escape(str(num))} → {escape(str(ans))}</b>"
+        for num, ans, note in pairs:
+            unknown = ans == "?"
+            color = "#e5a000" if unknown else _ACCENT
+            line = f'<b style="color:{color};">{escape(str(num))} → {escape(str(ans))}</b>'
             if note:
-                line += f' <span style="color:#888;">— {escape(str(note))}</span>'
+                note_color = "#a08030" if unknown else "#888"
+                line += (
+                    f' <span style="color:{note_color};">'
+                    f"— {escape(str(note))}</span>"
+                )
             lines.append(line)
         self._answers.setHtml("<br>".join(lines))
         if changed:
