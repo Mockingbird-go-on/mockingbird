@@ -821,3 +821,25 @@ def test_app_icon_is_multisize_square_ico():
     # generic loads (splash/window icon) — a small first entry renders the
     # splash logo blurry after upscale.
     assert sizes[0] == 256, f"256px must be first (have {sizes})"
+
+
+def test_displayicon_written_to_hkcu():
+    """DisplayIcon must go to HKCU, not HKLM.
+
+    PrivilegesRequired=lowest makes Inno register the uninstall key in
+    HKCU (per-user). A DisplayIcon value written to HKLM lands in a
+    branch "Installed apps" never reads for this install — Windows showed
+    a generic icon (regression 2026-10-01).
+    """
+    iss = _read("installer.iss")
+    assert "PrivilegesRequired=lowest" in iss
+    reg_section = iss.split("[Registry]", 1)[1].split("[", 1)[0]
+    displayicon_lines = [
+        ln.strip()
+        for ln in reg_section.splitlines()
+        if "DisplayIcon" in ln and ln.strip() and not ln.strip().startswith(";")
+    ]
+    assert displayicon_lines, "no DisplayIcon [Registry] entry found"
+    for ln in displayicon_lines:
+        assert "Root: HKCU" in ln, f"DisplayIcon must use HKCU: {ln}"
+        assert "Root: HKLM" not in ln, f"DisplayIcon must NOT use HKLM: {ln}"
