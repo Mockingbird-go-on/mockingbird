@@ -58,11 +58,23 @@ class AudioCapture:
                     log.exception("error closing audio stream")
 
     def _on_audio(self, indata, frames, time_info, status) -> None:
+        if self._stream is None:
+            return
         if status:
             log.debug("audio stream status: %s", status)
-        audio = np.ascontiguousarray(indata[:, 0])
-        if self._callback is not None:
-            self._callback(audio, time_info.currentTime)
+        try:
+            audio = np.ascontiguousarray(indata[:, 0])
+            if self._callback is not None:
+                self._callback(audio, time_info.currentTime)
+        except Exception:  # noqa: BLE001
+            # PortAudio kills the input thread on an unhandled callback
+            # exception (silent capture death — the app looks alive but
+            # never finalizes anything). Log loudly and stop cleanly.
+            log.exception("audio callback failed — stopping capture")
+            try:
+                self.stop()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def list_input_devices() -> list[str]:

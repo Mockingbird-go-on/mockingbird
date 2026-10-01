@@ -46,7 +46,7 @@ class Notification:
     text: str
     severity: str = "info"  # info | warning | error
     scope: str = "runtime"  # startup | runtime
-    buttons: tuple = ()  # (("Повторить", on_retry), ("Закрыть", None))
+    buttons: tuple = ()  # (t("Повторить"), on_retry), (t("Закрыть"), None))
     dedup_key: str = ""
     # Internal: action callbacks keyed by button label.
     _actions: dict = field(default_factory=dict, repr=False)
@@ -78,7 +78,7 @@ class Toast(QWidget):
                 background: {theme.current.bg};
                 border: 1px solid {color};
                 border-left: 3px solid {color};
-                border-radius: 6px;
+                border-radius: 3px;
             }}
             QLabel {{ color: {theme.current.text}; }}
             """

@@ -219,29 +219,37 @@ def collect_diagnostics(config, dest_dir: str | Path | None = None) -> Path:
     log_dir = Path(getattr(storage, "log_dir", None) or
                    (Path(getattr(storage, "base_dir", "")) / "logs"))
     dest_dir = Path(dest_dir) if dest_dir else log_dir
-    dest_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:  # noqa: BLE001
+        log.exception("diagnostics: cannot create destination dir %r", dest_dir)
+        return None
     stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     zip_path = dest_dir / f"mockingbird-diagnostics-{stamp}.zip"
 
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        try:
-            zf.writestr("environment.txt", environment_banner(config) + "\n")
-        except Exception:  # noqa: BLE001
-            log.warning("diagnostics: banner failed", exc_info=True)
-        try:
-            cfg = getattr(config, "model_dump", None)
-            snapshot = cfg(exclude_defaults=False) if callable(cfg) else {}
-            import json
-
-            zf.writestr("config.json", json.dumps(_redact(snapshot), indent=2,
-                                                  ensure_ascii=False,
-                                                  default=str) + "\n")
-        except Exception:  # noqa: BLE001
-            log.warning("diagnostics: config snapshot failed", exc_info=True)
-        for lf in sorted(log_dir.glob("mockingbird.log*")):
+    try:
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
             try:
-                zf.write(lf, lf.name)
-            except OSError:
-                pass
+                zf.writestr("environment.txt", environment_banner(config) + "\n")
+            except Exception:  # noqa: BLE001
+                log.warning("diagnostics: banner failed", exc_info=True)
+            try:
+                cfg = getattr(config, "model_dump", None)
+                snapshot = cfg(exclude_defaults=False) if callable(cfg) else {}
+                import json
+
+                zf.writestr("config.json", json.dumps(_redact(snapshot), indent=2,
+                                                      ensure_ascii=False,
+                                                      default=str) + "\n")
+            except Exception:  # noqa: BLE001
+                log.warning("diagnostics: config snapshot failed", exc_info=True)
+            for lf in sorted(log_dir.glob("mockingbird.log*")):
+                try:
+                    zf.write(lf, lf.name)
+                except OSError:
+                    pass
+    except Exception:  # noqa: BLE001 — full disk / read-only dir must not crash the caller
+        log.exception("diagnostics: failed to write bundle %r", zip_path)
+        return None
     log.info("diagnostics: bundle written to %s", zip_path)
     return zip_path

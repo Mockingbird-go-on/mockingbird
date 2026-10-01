@@ -58,16 +58,38 @@ class Glossary:
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> "Glossary":
+        """Load a glossary; a broken/missing user file falls back to the
+        bundled one instead of crashing the app (audit 2026-10-01)."""
+        import logging
+
+        log = logging.getLogger(__name__)
+        raw: dict | None = None
+        source = ""
         if path is not None:
-            with open(path, "r", encoding="utf-8") as fh:
-                raw = yaml.safe_load(fh) or {}
-        else:
-            with resources.files("mockingbird.assets").joinpath("glossary.yaml").open(
-                "r", encoding="utf-8"
-            ) as fh:
-                raw = yaml.safe_load(fh) or {}
+            source = str(path)
+            try:
+                with open(path, "r", encoding="utf-8") as fh:
+                    raw = yaml.safe_load(fh) or {}
+            except Exception:  # noqa: BLE001 — user file must never crash startup
+                log.exception("glossary: failed to load user glossary %r — "
+                              "falling back to the bundled one", path)
+        if raw is None:
+            source = "bundled"
+            try:
+                with resources.files("mockingbird.assets").joinpath("glossary.yaml").open(
+                    "r", encoding="utf-8"
+                ) as fh:
+                    raw = yaml.safe_load(fh) or {}
+            except Exception:  # noqa: BLE001 — even the bundled asset may be missing in a broken bundle
+                log.exception("glossary: bundled glossary failed to load — using empty glossary")
+                raw = {}
+        if not isinstance(raw, dict):
+            log.warning("glossary: %s is not a YAML mapping — skipping it", source)
+            raw = {}
         entries: list[TermEntry] = []
         for item in raw.get("terms", []):
+            if not isinstance(item, dict) or not (item.get("term") or "").strip():
+                continue
             entries.append(
                 TermEntry(
                     term=item["term"],

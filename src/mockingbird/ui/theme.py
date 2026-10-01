@@ -239,7 +239,7 @@ QSplitter::handle:vertical {{ height: 2px; }}
 #toolbar {{
     background-color: {t.header_bg};
     border: 1px solid {t.border};
-    border-radius: 14px;
+    border-radius: 7px;
     padding: 6px 8px;
 }}
 
@@ -247,7 +247,7 @@ QSplitter::handle:vertical {{ height: 2px; }}
 #mddCard {{
     background-color: {t.header_bg};
     border: 1px solid {t.border};
-    border-radius: 14px;
+    border-radius: 7px;
 }}
 #mddTitle {{
     font-size: 14px;
@@ -262,7 +262,7 @@ QPushButton {{
     background-color: {t.card};
     color: {t.text};
     border: 1px solid {t.border};
-    border-radius: 8px;
+    border-radius: 2px;
     padding: 5px 14px;
 }}
 QPushButton:hover {{
@@ -305,7 +305,7 @@ QPushButton[flat="true"]:hover {{
     background-color: {t.header_bg};
     color: {t.text_secondary};
     border: 1px solid {t.border};
-    border-radius: 14px;
+    border-radius: 7px;
     padding: 5px 12px;
 }}
 #themeToggle:hover {{
@@ -317,7 +317,7 @@ QComboBox, QLineEdit {{
     background-color: {t.card};
     color: {t.text};
     border: 1px solid {t.border};
-    border-radius: 6px;
+    border-radius: 3px;
     padding: 4px 8px;
 }}
 QComboBox:focus, QLineEdit:focus {{ border-color: {t.accent}; }}
@@ -335,7 +335,7 @@ QCheckBox::indicator {{
     width: 16px;
     height: 16px;
     border: 1px solid {t.border};
-    border-radius: 4px;
+    border-radius: 2px;
     background-color: {t.card};
 }}
 QCheckBox::indicator:hover {{ border-color: {t.accent}; }}
@@ -346,7 +346,7 @@ QCheckBox::indicator:checked {{
 
 QTabWidget::pane {{
     border: 1px solid {t.border};
-    border-radius: 10px;
+    border-radius: 3px;
     background-color: {t.card};
     top: -1px;
 }}
@@ -359,8 +359,8 @@ QTabBar::tab {{
     color: {t.text};
     border: 1px solid {t.border};
     border-bottom: 2px solid transparent;
-    border-top-left-radius: 8px;
-    border-top-right-radius: 8px;
+    border-top-left-radius: 4px;
+    border-top-right-radius: 4px;
     padding: 8px 18px;
     margin-right: 4px;
     font-weight: 600;
@@ -379,7 +379,7 @@ QTextBrowser, QPlainTextEdit, QTextEdit {{
     background-color: {t.surface};
     color: {t.text};
     border: 1px solid {t.border};
-    border-radius: 8px;
+    border-radius: 2px;
     padding: 4px;
     selection-background-color: {t.accent};
     selection-color: {LIGHT};
@@ -390,7 +390,7 @@ QTreeWidget, QListWidget {{
     background-color: {t.card};
     color: {t.text};
     border: 1px solid {t.border};
-    border-radius: 8px;
+    border-radius: 2px;
     outline: none;
 }}
 QTreeWidget::item, QListWidget::item {{ padding: 3px 4px; }}
@@ -401,12 +401,12 @@ QTreeWidget::item:selected, QListWidget::item:selected {{
 }}
 
 QScrollBar:vertical {{ background: transparent; width: 10px; margin: 0; }}
-QScrollBar::handle:vertical {{ background-color: {t.border}; border-radius: 5px; min-height: 24px; }}
+QScrollBar::handle:vertical {{ background-color: {t.border}; border-radius: 3px; min-height: 24px; }}
 QScrollBar::handle:vertical:hover {{ background-color: {t.accent}; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
 QScrollBar:horizontal {{ background: transparent; height: 10px; margin: 0; }}
-QScrollBar::handle:horizontal {{ background-color: {t.border}; border-radius: 5px; min-width: 24px; }}
+QScrollBar::handle:horizontal {{ background-color: {t.border}; border-radius: 3px; min-width: 24px; }}
 QScrollBar::handle:horizontal:hover {{ background-color: {t.accent}; }}
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
 QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{ background: transparent; }}
@@ -425,11 +425,11 @@ QProgressBar {{
     background-color: {t.surface_alt};
     color: {t.text_secondary};
     border: 1px solid {t.border};
-    border-radius: 5px;
+    border-radius: 3px;
     text-align: center;
     font-size: 10px;
 }}
-QProgressBar::chunk {{ background-color: {t.accent}; border-radius: 4px; }}
+QProgressBar::chunk {{ background-color: {t.accent}; border-radius: 2px; }}
 """
 
 

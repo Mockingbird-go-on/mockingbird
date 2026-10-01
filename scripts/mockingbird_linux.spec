@@ -82,6 +82,8 @@ datas = (
     + [(os.path.join(_ROOT, "src", "mockingbird", "sound.mp3"), "mockingbird")]
     + [(os.path.join(_ROOT, "src", "mockingbird", "assets", "icons", "*.svg"),
         os.path.join("mockingbird", "assets", "icons"))]
+    + [(os.path.join(_ROOT, "src", "mockingbird", "assets", "lang", "*.json"),
+        os.path.join("mockingbird", "assets", "lang"))]
     + collect_data_files("faster_whisper")
     + collect_data_files("ctranslate2")
     + collect_data_files("tokenizers")

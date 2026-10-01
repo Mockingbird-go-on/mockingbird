@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 
 from mockingbird.ui import theme
 from mockingbird.ui.toggle import ToggleSwitch
+from mockingbird.i18n import t
 
 _MAX_LINES = 5000
 
@@ -53,7 +54,7 @@ class LogPanel(QWidget):
                 Qt.TextInteractionFlag.TextSelectableByMouse
             )
             self._toolbar.addWidget(self._file_label)
-        self._active_checkbox = ToggleSwitch("Лог включён")
+        self._active_checkbox = ToggleSwitch(t("Лог включён"))
         self._active_checkbox.setChecked(False)
         self._active_checkbox.toggled.connect(self._on_toggle)
         self._toolbar.addStretch(1)
@@ -70,13 +71,11 @@ class LogPanel(QWidget):
         ph_layout.setContentsMargins(24, 24, 24, 24)
         ph_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         ph_text = QLabel(
-            "Вкладка лога отключена.\n\n"
-            "Включите её, чтобы видеть технический журнал приложения в реальном "
-            "времени (полезно для диагностики). Файл лога на диске пишется всегда."
+            t("Вкладка лога отключена.\n\nВключите её, чтобы видеть технический журнал приложения в реальном времени (полезно для диагностики). Файл лога на диске пишется всегда.")
         )
         ph_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
         ph_text.setWordWrap(True)
-        self._enable_checkbox = ToggleSwitch("Включить лог")
+        self._enable_checkbox = ToggleSwitch(t("Включить лог"))
         self._enable_checkbox.setChecked(False)
         self._enable_checkbox.toggled.connect(self._on_toggle)
         ph_layout.addStretch(1)

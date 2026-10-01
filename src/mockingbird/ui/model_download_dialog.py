@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import theme
+from ..i18n import t
 from .icons import icon as lucide_icon
 
 
@@ -60,7 +61,7 @@ class ModelDownloadDialog(QWidget):
         except Exception:  # noqa: BLE001 — icon must never break the dialog
             pass
         glyph.setFixedSize(20, 20)
-        title = QLabel("Загрузка модели распознавания")
+        title = QLabel(t("Загрузка модели распознавания"))
         title.setObjectName("mddTitle")
         head.addWidget(glyph)
         head.addWidget(title, 1)
@@ -75,13 +76,13 @@ class ModelDownloadDialog(QWidget):
         self._bar.setFixedHeight(8)
         lay.addWidget(self._bar)
 
-        self._detail = QLabel("Подготовка…")
+        self._detail = QLabel(t("Подготовка…"))
         self._detail.setObjectName("mddDetail")
         lay.addWidget(self._detail)
 
         btn_row = QHBoxLayout()
         btn_row.addStretch(1)
-        self._cancel_btn = QPushButton("Отмена")
+        self._cancel_btn = QPushButton(t("Отмена"))
         self._cancel_btn.clicked.connect(self._on_cancel)
         btn_row.addWidget(self._cancel_btn)
         lay.addLayout(btn_row)
@@ -128,7 +129,7 @@ class ModelDownloadDialog(QWidget):
             self._bar.setRange(0, 100)
             self._bar.setValue(int(percent))
             elapsed = max(0.001, time.monotonic() - self._t0)
-            self._detail.setText(f"{message}  ·  {percent:.0f}%  ·  {elapsed:.0f} с")
+            self._detail.setText(t("{message}  ·  {percent}%  ·  {elapsed} с", message=message, percent=f"{percent:.0f}", elapsed=f"{elapsed:.0f}"))
         else:
             self._bar.setRange(0, 0)
             self._detail.setText(message)
@@ -141,11 +142,14 @@ class ModelDownloadDialog(QWidget):
 
         Marks the overlay finalized: progress events can no longer re-show
         it, and it hides on the fade timer regardless of visibility."""
+        # UX-4: paint the final 100% BEFORE latching _finalized — set_progress
+        # early-returns once the flag is set, so the user never saw the
+        # completed bar.
+        self.set_progress(t("Модель загружена"), 100.0)
         self._finalized = True
         self._download_active = False
         self._active_timer.stop()
         self._hide_timer.stop()
-        self.set_progress("Модель загружена", 100.0)
         self._hide_timer.start(1200)
 
     def done_failed(self, error: str) -> None:
@@ -164,7 +168,7 @@ class ModelDownloadDialog(QWidget):
 
     def _on_cancel(self) -> None:
         self._cancel_btn.setEnabled(False)
-        self._detail.setText("Отмена…")
+        self._detail.setText(t("Отмена…"))
         self.cancelled.emit()
         # The abort seam is best-effort: if the underlying transfer ignores
         # the cancel (e.g. hub version without the hook), model_load_cancelled

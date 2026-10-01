@@ -7,6 +7,8 @@ Bundled-профили (из assets) — read-only; «Создать копию�
 """
 from __future__ import annotations
 
+import logging
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDialog,
@@ -24,6 +26,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from mockingbird.i18n import t
+
+log = logging.getLogger(__name__)
 from mockingbird.profiles.loader import (
     BrokenProfile,
     Profile,
@@ -38,7 +43,7 @@ from mockingbird.profiles.loader import (
 class ProfilesDialog(QDialog):
     def __init__(self, current_id: str, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Профили специализаций")
+        self.setWindowTitle(t("Профили специализаций"))
         self.resize(860, 520)
         self.current_id = current_id
         self.profile_changed = False  # True when the selected profile was edited
@@ -55,14 +60,14 @@ class ProfilesDialog(QDialog):
         self._stack.setAcceptRichText(False)
         self._stack.setFixedHeight(80)
         self._glossary = QLineEdit()
-        self._glossary_btn = QPushButton("Обзор…")
+        self._glossary_btn = QPushButton(t("Обзор…"))
         self._glossary_btn.clicked.connect(self._pick_glossary)
 
-        self._btn_new = QPushButton("Новый…")
-        self._btn_clone = QPushButton("Копировать")
-        self._btn_delete = QPushButton("Удалить")
-        self._btn_save = QPushButton("Сохранить")
-        self._btn_close = QPushButton("Закрыть")
+        self._btn_new = QPushButton(t("Новый…"))
+        self._btn_clone = QPushButton(t("Копировать"))
+        self._btn_delete = QPushButton(t("Удалить"))
+        self._btn_save = QPushButton(t("Сохранить"))
+        self._btn_close = QPushButton(t("Закрыть"))
         self._btn_new.clicked.connect(self._on_new)
         self._btn_clone.clicked.connect(self._on_clone)
         self._btn_delete.clicked.connect(self._on_delete)
@@ -75,7 +80,7 @@ class ProfilesDialog(QDialog):
 
         # left: list + actions; right: form
         left = QVBoxLayout()
-        left.addWidget(QLabel("Профили"))
+        left.addWidget(QLabel(t("Профили")))
         left.addWidget(self._list)
         actions = QHBoxLayout()
         actions.addWidget(self._btn_new)
@@ -87,16 +92,16 @@ class ProfilesDialog(QDialog):
         left.addWidget(wrap)
 
         form = QFormLayout()
-        form.addRow("Название", self._title)
-        form.addRow("Персона (кратко)", self._persona)
-        form.addRow("Персона (senior, от первого лица)", self._persona_senior)
-        form.addRow("Стек / технологии", self._stack)
+        form.addRow(t("Название"), self._title)
+        form.addRow(t("Персона (кратко)"), self._persona)
+        form.addRow(t("Персона (senior, от первого лица)"), self._persona_senior)
+        form.addRow(t("Стек / технологии"), self._stack)
         g = QHBoxLayout()
         g.addWidget(self._glossary, stretch=1)
         g.addWidget(self._glossary_btn)
         gw = QWidget()
         gw.setLayout(g)
-        form.addRow("Глоссарий (YAML, опц.)", gw)
+        form.addRow(t("Глоссарий (YAML, опц.)"), gw)
 
         right = QVBoxLayout()
         right.addLayout(form)
@@ -128,13 +133,13 @@ class ProfilesDialog(QDialog):
         ids = sorted(profiles, key=lambda i: (not profiles[i].user_defined, profiles[i].title))
         for pid in ids:
             prof = profiles[pid]
-            label = prof.title + ("" if prof.user_defined else " 🔒")
+            label = prof.display_title() + ("" if prof.user_defined else " 🔒")
             item = QListWidgetItem(label)
             item.setData(Qt.ItemDataRole.UserRole, pid)
             self._list.addItem(item)
         # invalid user YAMLs — visible so the user can fix or delete them
         for pid in sorted(self._broken):
-            item = QListWidgetItem(f"⚠ {pid} — ошибка: {self._broken[pid].error}")
+            item = QListWidgetItem(t("⚠ {pid} — ошибка: {error}", pid=pid, error=self._broken[pid].error))
             item.setData(Qt.ItemDataRole.UserRole, pid)
             self._list.addItem(item)
         target = select_id or self.current_id
@@ -180,9 +185,9 @@ class ProfilesDialog(QDialog):
         for w in (self._title, self._persona, self._persona_senior, self._stack, self._glossary, self._glossary_btn, self._btn_save):
             w.setEnabled(False)
         self._title.setText(broken.path.name)
-        self._persona.setPlainText(f"Файл: {broken.path}")
-        self._persona_senior.setPlainText(f"Ошибка: {broken.error}")
-        self._stack.setPlainText("Профиль не загружен. Исправьте YAML вручную или удалите.")
+        self._persona.setPlainText(t("Файл: {path}", path=broken.path))
+        self._persona_senior.setPlainText(t("Ошибка: {error}", error=broken.error))
+        self._stack.setPlainText(t("Профиль не загружен. Исправьте YAML вручную или удалите."))
         self._btn_delete.setEnabled(True)
 
     def _set_editable(self, editable: bool) -> None:
@@ -200,11 +205,16 @@ class ProfilesDialog(QDialog):
         prof = Profile(
             id=pid,
             title=pid.capitalize(),
-            persona="специалист с 5-летним опытом",
-            persona_senior="специалист 6+ лет",
-            stack="укажите стек технологий",
+            persona=t("специалист с 5-летним опытом"),
+            persona_senior=t("специалист 6+ лет"),
+            stack=t("укажите стек технологий"),
         )
-        save_profile(prof)
+        try:
+            save_profile(prof)
+        except Exception as exc:  # noqa: BLE001 — file I/O must not kill the dialog
+            log.exception("save_profile failed")
+            QMessageBox.warning(self, t("Ошибка"), t("Ошибка: {error}", error=exc))
+            return
         self._reload(select_id=pid)
         self.profile_changed = True
 
@@ -226,7 +236,12 @@ class ProfilesDialog(QDialog):
             glossary=prof.glossary,
             calibrated=False,
         )
-        save_profile(copy)
+        try:
+            save_profile(copy)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("save_profile failed")
+            QMessageBox.warning(self, t("Ошибка"), t("Ошибка: {error}", error=exc))
+            return
         self._reload(select_id=pid)
         self.profile_changed = True
 
@@ -235,8 +250,8 @@ class ProfilesDialog(QDialog):
         if pid in existing:
             QMessageBox.warning(
                 self,
-                "Профиль",
-                f"Профиль с id «{pid}» уже существует ({existing[pid].title}).",
+                t("Профиль"),
+                t("Профиль с id «{pid}» уже существует ({title}).", pid=pid, title=existing[pid].title),
             )
             return False
         return True
@@ -245,12 +260,12 @@ class ProfilesDialog(QDialog):
         from PySide6.QtWidgets import QInputDialog
 
         text, ok = QInputDialog.getText(
-            self, "Идентификатор", "Латинский id профиля (имя файла):", text=default
+            self, t("Идентификатор"), t("Латинский id профиля (имя файла):"), text=default
         )
         pid = text.strip().lower().replace(" ", "-")
         if not ok or not pid or not pid.replace("-", "").isascii() or not pid.replace("-", "").isalnum():
             if ok:
-                QMessageBox.warning(self, "Профиль", "Id должен быть латиницей/цифрами/дефисом.")
+                QMessageBox.warning(self, t("Профиль"), t("Id должен быть латиницей/цифрами/дефисом."))
             return ""
         return pid
 
@@ -263,13 +278,13 @@ class ProfilesDialog(QDialog):
         if broken is not None:
             # invalid YAML — offer deletion of the broken file
             if QMessageBox.question(
-                self, "Удалить битый профиль", f"Удалить файл {broken.path.name}?"
+                self, t("Удалить битый профиль"), t("Удалить файл {name}?", name=broken.path.name)
             ) != QMessageBox.StandardButton.Yes:
                 return
             try:
                 broken.path.unlink()
             except OSError:
-                QMessageBox.warning(self, "Профиль", "Не удалось удалить файл.")
+                QMessageBox.warning(self, t("Профиль"), t("Не удалось удалить файл."))
                 return
             self._reload()
             return
@@ -277,10 +292,15 @@ class ProfilesDialog(QDialog):
         if prof is None or not prof.user_defined:
             return
         if QMessageBox.question(
-            self, "Удалить профиль", f"Удалить «{prof.title}» ({prof.id})?"
+            self, t("Удалить профиль"), t("Удалить «{title}» ({id})?", title=prof.title, id=prof.id)
         ) != QMessageBox.StandardButton.Yes:
             return
-        delete_profile(prof.id)
+        try:
+            delete_profile(prof.id)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("delete_profile failed")
+            QMessageBox.warning(self, t("Ошибка"), t("Ошибка: {error}", error=exc))
+            return
         if self.current_id == prof.id:
             self.current_id = "devops"
             self.profile_changed = True
@@ -297,7 +317,7 @@ class ProfilesDialog(QDialog):
         glossary = self._glossary.text().strip() or None
         if not (persona and persona_senior and stack):
             QMessageBox.warning(
-                self, "Профиль", "Персона (оба поля) и стек обязательны."
+                self, t("Профиль"), t("Персона (оба поля) и стек обязательны.")
             )
             return
         if glossary:
@@ -311,13 +331,18 @@ class ProfilesDialog(QDialog):
         prof.persona_senior = persona_senior
         prof.stack = stack
         prof.glossary = glossary
-        save_profile(prof)
+        try:
+            save_profile(prof)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("save_profile failed")
+            QMessageBox.warning(self, t("Ошибка"), t("Ошибка: {error}", error=exc))
+            return
         self.profile_changed = True
         self._reload(select_id=prof.id)
 
     def _pick_glossary(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
-            self, "Выбрать глоссарий", str(profiles_dir().parent), "YAML (*.yaml *.yml)"
+            self, t("Выбрать глоссарий"), str(profiles_dir().parent), "YAML (*.yaml *.yml)"
         )
         if not path:
             return
@@ -331,16 +356,20 @@ class ProfilesDialog(QDialog):
         import yaml as _yaml
 
         try:
-            data = _yaml.safe_load(open(path, encoding="utf-8"))
+            with open(path, encoding="utf-8") as fh:
+                data = _yaml.safe_load(fh)
         except OSError:
-            QMessageBox.warning(self, "Глоссарий", "Файл не читается.")
+            QMessageBox.warning(self, t("Глоссарий"), t("Файл не читается."))
+            return False
+        except UnicodeDecodeError:
+            QMessageBox.warning(self, t("Глоссарий"), t("Файл не читается."))
             return False
         except _yaml.YAMLError as exc:
-            QMessageBox.warning(self, "Глоссарий", f"Некорректный YAML: {exc}")
+            QMessageBox.warning(self, t("Глоссарий"), t("Некорректный YAML: {exc}", exc=exc))
             return False
         if not isinstance(data, dict):
             QMessageBox.warning(
-                self, "Глоссарий", "Файл должен быть YAML-словарём (как glossary.yaml)."
+                self, t("Глоссарий"), t("Файл должен быть YAML-словарём (как glossary.yaml).")
             )
             return False
         return True

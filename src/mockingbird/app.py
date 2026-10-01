@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import logging
+
+from mockingbird.i18n import t
 import os
 import threading
 import time
@@ -36,7 +38,7 @@ log = logging.getLogger(__name__)
 # Bilingual anchor sentence placed first in whisper's initial_prompt. It biases
 # the decoder towards Russian syntax while keeping the Latin spelling of the
 # English terms it mentions; adjust freely.
-_STT_PROMPT_ANCHOR = "Пример: расскажи про Kubernetes и Docker, как устроен Helm-чарт."
+_STT_PROMPT_ANCHOR_KEY = "Пример: расскажи про Kubernetes и Docker, как устроен Helm-чарт."
 
 
 def _anchor_enabled() -> bool:
@@ -210,7 +212,7 @@ class App:
             and active_topic not in ("general", "")
             and any(t.id == active_topic for t in self.kb_topics)
         ):
-            anchor = _STT_PROMPT_ANCHOR
+            anchor = t(_STT_PROMPT_ANCHOR_KEY)
         elif active_topic:
             log.debug("hotwords: anchor skipped (topic %r not a KB topic)", active_topic)
         self.config.whisper.initial_prompt = build_stt_hotwords(
@@ -367,9 +369,12 @@ class App:
         except OSError as exc:
             log.warning("screenshot: failed to persist image (%s)", exc)
             image_path = ""
-        self.store.save_screenshot(
-            shot_id, self.session_id, str(image_path), question
-        )
+        try:
+            self.store.save_screenshot(
+                shot_id, self.session_id, str(image_path), question
+            )
+        except Exception:  # noqa: BLE001 — a DB hiccup must not kill the answer
+            log.exception("screenshot: failed to persist screenshot record")
 
         with getattr(self.interview, "_mode_lock", threading.Lock()):
             mode = getattr(self.interview, "_current_answer_mode", "technical") or "technical"
@@ -380,7 +385,7 @@ class App:
             try:
                 self.signals.llm_answer.emit(
                     protocol.LlmAnswer(
-                        query=question, topic="screenshot", title="Скриншот",
+                        query=question, topic="screenshot", title=t("Скриншот"),
                         answer="", delta="", done=False, stream_id=stream_id,
                     )
                 )
@@ -391,26 +396,29 @@ class App:
                     acc.append(piece)
                     self.signals.llm_answer.emit(
                         protocol.LlmAnswer(
-                            query=question, topic="screenshot", title="Скриншот",
+                            query=question, topic="screenshot", title=t("Скриншот"),
                             answer="", delta=piece, done=False, stream_id=stream_id,
                         )
                     )
                 text = "".join(acc).strip()
                 self.signals.llm_answer.emit(
                     protocol.LlmAnswer(
-                        query=question, topic="screenshot", title="Скриншот",
-                        answer=text or "(пустой ответ)", delta="", done=True,
+                        query=question, topic="screenshot", title=t("Скриншот"),
+                        answer=text or t("(пустой ответ)"), delta="", done=True,
                         stream_id=stream_id,
                     )
                 )
                 if text:
-                    self.store.update_screenshot_answer(shot_id, text)
+                    try:
+                        self.store.update_screenshot_answer(shot_id, text)
+                    except Exception:  # noqa: BLE001 — best effort persistence
+                        log.exception("screenshot: failed to persist answer")
             except Exception as exc:  # noqa: BLE001
                 log.exception("screenshot answer failed")
                 self.signals.llm_answer.emit(
                     protocol.LlmAnswer(
-                        query=question, topic="screenshot", title="Скриншот",
-                        answer=f"Не удалось получить ответ по скриншоту: {exc}",
+                        query=question, topic="screenshot", title=t("Скриншот"),
+                        answer=t("Не удалось получить ответ по скриншоту: {exc}", exc=exc),
                         delta="", done=True, stream_id=stream_id,
                     )
                 )
@@ -637,6 +645,15 @@ class App:
         """Start a capture session."""
         if self.session_id is not None:
             return
+        # UX-12: a Start clicked while the async stop is still draining used
+        # to be a silent no-op (session_id was already None) — the user saw
+        # nothing happen and clicked again. Surface why instead. "stopping"
+        # detail keeps the UI's cancel-cross hidden (it is a teardown, not a
+        # model load).
+        if self._stop_worker is not None and self._stop_worker.is_alive():
+            log.info("start_session: stop in progress — ignoring Start click")
+            self.signals.status.emit("loading", "stopping")
+            return
         self.session_id = uuid.uuid4().hex[:12]
         self.store.create_session(self.session_id, started_at=time.time(), title=None)
 
@@ -695,11 +712,25 @@ class App:
         freeze the window for up to ~8 s (engine join) inside an already-bad
         user experience (failed start).
         """
+        # R-01: pin the session being rolled back. If the user immediately
+        # presses Start again, start_session() creates a NEW session_id and
+        # this daemon must NOT tear that one down (it used to null
+        # self.session_id and end the fresh session in the DB).
+        sid = self.session_id
         self.signals.status.emit("loading", "stopping")
 
         def _worker() -> None:
             try:
-                self.stop_session()
+                if self.session_id == sid:
+                    self.stop_session()
+                else:
+                    # A new session already took over (fast Start re-click):
+                    # never touch its live state — just close the abandoned
+                    # row so it does not stay half-open in the DB forever.
+                    try:
+                        self.store.end_session(sid, ended_at=time.time())
+                    except Exception:
+                        log.debug("rollback: abandoned session row already closed")
             except Exception:  # noqa: BLE001
                 log.exception("rollback stop_session failed")
 
@@ -739,7 +770,12 @@ class App:
             except Exception:  # noqa: BLE001
                 log.exception("async stop_session failed")
             finally:
-                self._stop_worker = None
+                # R-02: do NOT null self._stop_worker here. shutdown() reads
+                # it to decide whether to wait; nulling from this thread
+                # let shutdown() skip the join and run its own stop_session()
+                # in parallel with this one (double engine.flush, double
+                # store.end_session). The reference is replaced by the next
+                # stop_session_async() call (single caller thread: GUI).
                 if on_done is not None:
                     try:
                         on_done()
@@ -827,8 +863,7 @@ class App:
                 # thread on a long download — the warm start pre-fetch usually
                 # has the model by now; if not, ask the user to retry.
                 self.signals.error.emit(
-                    "Не удалось скачать модель детекции речи (VAD). "
-                    "Проверьте интернет и нажмите «Старт» ещё раз."
+                    t("Не удалось скачать модель детекции речи (VAD). Проверьте интернет и нажмите «Старт» ещё раз.")
                 )
                 raise RuntimeError(f"VAD model download failed: {exc}") from exc
             self._vad = SileroVAD(
@@ -937,7 +972,7 @@ class App:
                 log.info("audio capture restarted by watchdog")
             except Exception as exc:  # noqa: BLE001
                 log.error("capture restart failed: %s", exc)
-                self.signals.error.emit(f"Захват аудио остановился: {exc}")
+                self.signals.error.emit(t("Захват аудио остановился: {exc}", exc=exc))
 
     # -- stt events (stt worker thread) --
     def _on_engine_partial(self, msg) -> None:
@@ -1161,6 +1196,15 @@ class App:
             self.capture.stop()
         except Exception:
             log.exception("capture stop failed")
+        # R-20 follow-up: let the worker serve the queued final flush BEFORE
+        # engine.stop() arms _stopping_event — otherwise the last segment of
+        # the session is silently dropped (finalize early-exit).
+        wait_flush = getattr(self.engine, "wait_flush", None)
+        if wait_flush is not None:
+            try:
+                wait_flush(timeout=3.0)
+            except Exception:
+                log.debug("engine wait_flush failed (non-fatal)")
         try:
             self.engine.stop()
         except Exception:

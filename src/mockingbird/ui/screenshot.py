@@ -15,6 +15,8 @@ from PySide6.QtCore import Qt, QRect, Signal
 from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QApplication, QLabel, QWidget
 
+from mockingbird.i18n import t
+
 log = logging.getLogger(__name__)
 
 _MIN_REGION_PX = 10
@@ -166,9 +168,13 @@ class ScreenshotQuestionDialog(QWidget):
 
         self._jpeg = jpeg_bytes
         self._busy = False
+        self._drag_pos = None  # offset for frameless window dragging
 
         root = QW(self)
         root.setObjectName("mddCard")
+        # Let mouse events fall through to the frameless top-level window
+        # (dragging); interactive children still get their own events.
+        root.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         lay = QVBoxLayout(root)
         lay.setContentsMargins(20, 16, 20, 14)
         lay.setSpacing(10)
@@ -183,7 +189,7 @@ class ScreenshotQuestionDialog(QWidget):
         except Exception:  # noqa: BLE001
             pass
         glyph.setFixedSize(18, 18)
-        title = QLabel("Вопрос по скриншоту")
+        title = QLabel(t("Вопрос по скриншоту"))
         title.setObjectName("mddTitle")
         head.addWidget(glyph)
         head.addWidget(title, 1)
@@ -203,7 +209,7 @@ class ScreenshotQuestionDialog(QWidget):
                 Qt.TransformationMode.SmoothTransformation,
             )
         )
-        self._preview.setStyleSheet("border-radius: 8px; background: rgba(0,0,0,0.25);")
+        self._preview.setStyleSheet("border-radius: 2px; background: rgba(0,0,0,0.25);")
         lay.addWidget(self._preview)
 
         self._status = QLabel("")
@@ -214,10 +220,10 @@ class ScreenshotQuestionDialog(QWidget):
         row = QHBoxLayout()
         row.setSpacing(8)
         self._edit = QLineEdit()
-        self._edit.setPlaceholderText("Спросить по скриншоту… (Enter — отправить)")
+        self._edit.setPlaceholderText(t("Спросить по скриншоту… (Enter — отправить)"))
         self._edit.returnPressed.connect(self._on_ask)
         row.addWidget(self._edit, 1)
-        self._ask_btn = QPushButton("Спросить")
+        self._ask_btn = QPushButton(t("Спросить"))
         self._ask_btn.setProperty("primary", True)
         self._ask_btn.clicked.connect(self._on_ask)
         row.addWidget(self._ask_btn)
@@ -261,18 +267,37 @@ class ScreenshotQuestionDialog(QWidget):
 
     def _set_vision(self, ok: bool | None) -> None:
         if ok is True:
-            self._status.setText("✓ Модель поддерживает изображения")
+            self._status.setText(t("✓ Модель поддерживает изображения"))
         elif ok is False:
-            self._status.setText("✗ Текущая LLM-модель не поддерживает изображения — "
-                                 "измените модель в настройках")
+            self._status.setText(t("✗ Текущая LLM-модель не поддерживает изображения — измените модель в настройках"))
         else:
-            self._status.setText("Проверка поддержки изображений моделью…")
+            self._status.setText(t("Проверка поддержки изображений моделью…"))
+
+    # Default question used when the user sends the screenshot without
+    # typing anything (the question entry is optional).
+    # Lazy t(): a class-attribute would freeze the language at import time.
+    DEFAULT_QUESTION_KEY = "Распознай текст на экране. Если там вопрос(ы) — ответь на них."
+
+    def mousePressEvent(self, e) -> None:  # noqa: N802
+        if e.button() == Qt.MouseButton.LeftButton:
+            # Frameless window: drag the card by any point (except the
+            # text inputs, which consume their own mouse events).
+            self._drag_pos = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
+
+    def mouseMoveEvent(self, e) -> None:  # noqa: N802
+        if self._drag_pos is not None and e.buttons() & Qt.MouseButton.LeftButton:
+            self.move(e.globalPosition().toPoint() - self._drag_pos)
+
+    def mouseReleaseEvent(self, e) -> None:  # noqa: N802
+        if e.button() == Qt.MouseButton.LeftButton:
+            self._drag_pos = None
 
     def _on_ask(self) -> None:
         if self._busy:
             return
-        q = self._edit.text().strip()
-        if not q:
-            return
-        self.set_busy(True, "Вопрос отправлен — ответ появится в «Ответ ИИ»")
+        q = self._edit.text().strip() or t(self.DEFAULT_QUESTION_KEY)
+        self.set_busy(True, t("Вопрос отправлен — ответ появится в «Ответ ИИ»"))
         self.asked.emit(q)
+        # Close the card immediately so the streamed answer in the main
+        # «Ответ ИИ» pane is visible (the user asked for this behaviour).
+        self.close()

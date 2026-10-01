@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from mockingbird.ui import theme
+from mockingbird.i18n import t
 
 
 def _topic_color(topic_id: str) -> str:
@@ -40,7 +41,7 @@ class _HistoryStrip(QWidget):
         self._chip = QLabel(topic or "—")
         self._chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._chip.setStyleSheet(
-            "border-radius:9px; padding:2px 8px; color:white;"
+            "border-radius:5px; padding:2px 8px; color:white;"
             f"background:{_topic_color(topic)}; border:none; font-size:10px;"
         )
         self._text = QLabel(query or "")
@@ -143,14 +144,14 @@ class HistorySidebar(QListWidget):
             return
         self._close_editor(commit=False)
         editor = _HistoryEditor(str(query), self)
-        editor.setPlaceholderText("Отредактируйте вопрос и нажмите Enter")
+        editor.setPlaceholderText(t("Отредактируйте вопрос и нажмите Enter"))
         # Opaque editor: a default QLineEdit over the strip lets the text
         # behind bleed through and the two overlap illegibly.
         editor.setStyleSheet(
             f"background:{theme.current.surface};"
             f"color:{theme.current.text};"
             f"border:1px solid {theme.current.accent};"
-            "border-radius:4px; padding:2px 6px;"
+            "border-radius:2px; padding:2px 6px;"
         )
         editor.returnPressed.connect(lambda: self._close_editor(commit=True))
         editor.installEventFilter(self)

@@ -1494,12 +1494,19 @@ class InterviewEngine:
                     "segment-scoped key",
                     (running or "")[:60], query[:60],
                 )
-                self._question_queue.submit(
+                accepted2 = self._question_queue.submit(
                     key=f"{key}#{seg_id or id(view)}",
                     segment_id=seg_id,
                     run=_run_and_release,
                     force=True,
                 )
+                if not accepted2 and unreserve is not None:
+                    # R-08: the queue refused the forced resubmit too (it is
+                    # stopped / the same segment-scoped job is running) —
+                    # nobody will ever run _run_and_release, so the answer
+                    # reservation taken at enqueue time must be released
+                    # HERE or is_streaming() stays True forever.
+                    unreserve()
         pending = self._question_queue.pending
         if pending:
             log.info("question-queue: enqueued %r (pending=%d)", query[:60], pending)

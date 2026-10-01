@@ -1,11 +1,14 @@
 """Load knowledge base YAML documents from a directory or bundled assets."""
 from __future__ import annotations
 
+import logging
 import re
 from importlib import resources
 from pathlib import Path
 
 import yaml
+
+log = logging.getLogger(__name__)
 
 from mockingbird.kb.model import KbBlock, KbSection, KbTopic
 
@@ -63,7 +66,15 @@ def _kb_files(path: str | Path | None) -> list[Path]:
         root = Path(path)
         if root.is_file():
             return [root]
-        return sorted(p for p in root.iterdir() if p.suffix.lower() in (".yaml", ".yml"))
+        try:
+            return sorted(
+                p for p in root.iterdir() if p.suffix.lower() in (".yaml", ".yml")
+            )
+        except OSError:
+            # A configured-but-missing custom KB dir must not crash startup
+            # (audit 2026-10-01) — behave like an empty KB.
+            log.warning("kb: custom kb path %r is missing or unreadable", path)
+            return []
     return sorted(
         p
         for p in resources.files("mockingbird.assets").joinpath("kb").iterdir()
@@ -104,9 +115,11 @@ def _try_parse(file) -> KbTopic | None:
         with file.open("r", encoding="utf-8") as fh:
             raw = yaml.safe_load(fh) or {}
         return _parse_topic(raw)
-    except (OSError, yaml.YAMLError):
+    except (OSError, yaml.YAMLError) as exc:
+        log.warning("kb: failed to parse %s: %s", file, exc)
         return None
     except Exception:
+        log.exception("kb: unexpected parse failure for %s", file)
         return None
 
 

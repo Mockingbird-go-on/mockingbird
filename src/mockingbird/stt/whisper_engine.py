@@ -735,6 +735,11 @@ def _fuzzy_fix_latin_partial(text: str, matcher) -> str:
 # download of the same repo would block forever on the hub's per-blob
 # filelock while holding its own locks (observed deadlock: warm-start worker
 # #1 stalled mid-transfer, retry spun worker #2, both frozen at 0 bytes).
+# NOTE (R-25): this lock is ALSO the guard that keeps the global
+# _install_cancel_hook patch single-instanced — two parallel patch/restore
+# cycles on huggingface_hub.file_download._get_progress_bar_context would
+# nest wrappers and cross-wire cancel events. Never bypass _RESOLVE_LOCKS
+# around a download.
 _RESOLVE_LOCKS: dict[str, threading.Lock] = {}
 _RESOLVE_LOCKS_GUARD = threading.Lock()
 
@@ -894,56 +899,62 @@ def _download_from_github(
     total = float(resp.headers.get("Content-Length") or 0)
     zip_path = root / ".github-model-pack.zip"
     root.mkdir(parents=True, exist_ok=True)
-    if total > 0:
-        # zip + unpacked snapshot coexist during installation → ~2x needed.
-        _ensure_free_space(str(root), total * 2.0, "загрузки модели распознавания")
-    done = 0.0
     try:
-        with open(zip_path, "wb") as f:
-            while True:
-                if cancel_event is not None and cancel_event.is_set():
-                    raise RuntimeError("whisper model download cancelled by user")
-                chunk = resp.read(_CHUNK)
-                if not chunk:
-                    break
-                f.write(chunk)
-                done += len(chunk)
-                if total > 0:
-                    pct = min(99.0, done / total * 100.0)
-                    _report(
-                        f"Скачивание model-pack.zip: {done / 1e6:.0f} из {total / 1e6:.0f} МБ",
-                        pct,
-                    )
-                else:
-                    _report(f"Скачивание model-pack.zip: {done / 1e6:.0f} МБ", -1.0)
-    except Exception:
+        if total > 0:
+            # zip + unpacked snapshot coexist during installation → ~2x needed.
+            _ensure_free_space(str(root), total * 2.0, "загрузки модели распознавания")
+        done = 0.0
         try:
-            zip_path.unlink()
-        except OSError:
-            pass
-        raise
+            with open(zip_path, "wb") as f:
+                while True:
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise RuntimeError("whisper model download cancelled by user")
+                    chunk = resp.read(_CHUNK)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    done += len(chunk)
+                    if total > 0:
+                        pct = min(99.0, done / total * 100.0)
+                        _report(
+                            f"Скачивание model-pack.zip: {done / 1e6:.0f} из {total / 1e6:.0f} МБ",
+                            pct,
+                        )
+                    else:
+                        _report(f"Скачивание model-pack.zip: {done / 1e6:.0f} МБ", -1.0)
+        except Exception:
+            try:
+                zip_path.unlink()
+            except OSError:
+                pass
+            raise
 
-    log.info(
-        "whisper: GitHub model pack downloaded: %.0f MB (expected %.0f MB)",
-        done / 1e6, total / 1e6,
-    )
-    _report("Распаковка модели…", -1.0)
-    try:
-        with zipfile.ZipFile(zip_path) as zf:
-            zf.extractall(root)
-    except Exception as exc:  # noqa: BLE001
-        log.exception("whisper: model pack unpack failed")
+        log.info(
+            "whisper: GitHub model pack downloaded: %.0f MB (expected %.0f MB)",
+            done / 1e6, total / 1e6,
+        )
+        _report("Распаковка модели…", -1.0)
         try:
-            zip_path.unlink()
-        except OSError:
-            pass
-        return None
+            with zipfile.ZipFile(zip_path) as zf:
+                zf.extractall(root)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("whisper: model pack unpack failed")
+            try:
+                zip_path.unlink()
+            except OSError:
+                pass
+            return None
+        finally:
+            try:
+                zip_path.unlink()
+            except OSError:
+                pass
+
     finally:
         try:
-            zip_path.unlink()
-        except OSError:
+            resp.close()
+        except Exception:  # noqa: BLE001
             pass
-
     snapshot = _resolve_unpacked_snapshot(root, repo_id)
     if snapshot is not None:
         log.info("whisper: model installed from GitHub release: %s", snapshot)
@@ -1033,8 +1044,20 @@ def _download_from_s3(
                 pass
             if attempt + 1 < max_attempts:
                 time.sleep(1.5 * (attempt + 1))
+                try:
+                    resp.close()
+                except Exception:  # noqa: BLE001
+                    pass
                 continue
+            try:
+                resp.close()
+            except Exception:  # noqa: BLE001
+                pass
             return None
+        try:
+            resp.close()
+        except Exception:  # noqa: BLE001
+            pass
         break
 
     log.info(
@@ -1442,6 +1465,9 @@ class WhisperEngine:
         # give the final decode GPU priority over cosmetic partial decodes:
         # with RTF > 1 every skipped partial window (~0.85 s GPU) is nearly a
         # second off the question's time-to-answer (A3, 2026-09-27).
+        # R-14: mutated from BOTH the capture thread (increment) and the
+        # worker thread (decrement) — the read-modify-write race under GIL
+        # loses decrements; always touch it under self._lock.
         self._pending_final_cmds = 0
         # Idle re-warm switch: enabled by the app while a capture session is
         # active (see enable_idle_rewarm). Off outside sessions — no point
@@ -1492,6 +1518,15 @@ class WhisperEngine:
         # re-decodes the identical buffer — pure GPU waste (the hold/resume
         # cycle of the chunker re-fires hints after a continuation start).
         self._decoded_audio_len = -1
+        # R-18: segment generation counter. start_segment() bumps it; decode
+        # results carry the generation they were launched for and are dropped
+        # when it no longer matches — a speculative decode launched for the
+        # PREVIOUS question must not paint its text onto the new segment.
+        self._generation_id = 0
+        # R-20: set by stop() so a long _finalize can early-exit instead of
+        # keeping the worker (and start()) blocked for a 5–15 s decode after
+        # the user already pressed Stop.
+        self._stopping_event = threading.Event()
 
         self.on_partial = None
         self.on_final = None
@@ -1584,6 +1619,7 @@ class WhisperEngine:
                 # consumer of the same queue (duplicated/lost finals).
                 return
         self._stopping = False
+        self._stopping_event.clear()
         # Drain stale commands from a previous (failed/dead) session — e.g.
         # audio and _CMD_FLUSH queued before a model-load failure. A new
         # worker must never inherit them: a stale flush corrupts segment
@@ -1598,6 +1634,7 @@ class WhisperEngine:
 
     def stop(self, timeout: float = 8.0) -> None:
         self._stopping = True
+        self._stopping_event.set()  # R-20: let an in-flight _finalize bail out
         self._queue.put((_CMD_STOP, None))
         thread = self._thread
         if thread is not None and thread.is_alive():
@@ -1614,6 +1651,10 @@ class WhisperEngine:
             return
         self._thread = None
         self._stopping = False
+        # R-20: the worker exited cleanly — nothing is stopping anymore.
+        # Without this, a warm-start stop()/start() cycle left the event set
+        # and the next session's finals were all silently skipped.
+        self._stopping_event.clear()
 
     def _wait_for_stopped_worker(self, timeout: float = 30.0) -> bool:
         """Wait for a leftover (timed-out) worker thread to exit.
@@ -1628,6 +1669,10 @@ class WhisperEngine:
             return False
         self._thread = None
         self._stopping = False
+        # R-20 follow-up: the leftover worker is gone, the stop that set this
+        # event is complete — a fresh worker must not inherit it or every
+        # _finalize of the new session silently early-exits (zero finals).
+        self._stopping_event.clear()
         return True
 
     # -- audio-worker API (called from the capture thread) --
@@ -1641,6 +1686,9 @@ class WhisperEngine:
             self._spec_partial_emitted = False
             self._chunk_texts = []
             self._last_partial_text = ""
+            # R-18: invalidate in-flight decodes for the previous segment —
+            # their results (speculative/partial) must not leak into this one.
+            self._generation_id += 1
         return segment_id
 
     def feed(self, audio: np.ndarray) -> None:
@@ -1648,7 +1696,8 @@ class WhisperEngine:
 
     def _put_final(self, cmd: str, payload) -> None:
         """Enqueue a finalization command and mark it pending (A3 priority)."""
-        self._pending_final_cmds += 1
+        with self._lock:
+            self._pending_final_cmds += 1
         self._queue.put((cmd, payload))
 
     @property
@@ -1686,6 +1735,22 @@ class WhisperEngine:
         """
         self._put_final(_CMD_FLUSH, None)
 
+    def wait_flush(self, timeout: float = 3.0) -> bool:
+        """Wait until every queued finalization command has been served.
+
+        Used on the shutdown path so engine.stop()'s _stopping_event (R-20)
+        does not early-exit a flush that is still queued — the last segment
+        of the session would otherwise be lost from the DB.
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            with self._lock:
+                pending = self._pending_final_cmds
+            if pending <= 0:
+                return True
+            time.sleep(0.05)
+        return False
+
     # -- worker thread --
     def _run(self) -> None:
         try:
@@ -1697,97 +1762,118 @@ class WhisperEngine:
             return
         self._ready = True
         if self.on_ready:
-            self.on_ready(self.model_name)
-        while True:
-            # If a speculative decode is ready, wait at most 5 seconds for a
-            # speech_end (CMD_END) or new audio (CMD_AUDIO). If neither arrives
-            # — the audio callback likely stalled (pyaudiowpatch loopback bug)
-            # or VAD's LSTM state is stuck at prob=1.0 — auto-finalize using
-            # the speculative result so the answer is not lost.
-            # Otherwise wait up to _IDLE_REWARM_S: a long silence in an
-            # interview lets the GPU drop to idle clocks and the first real
-            # decode then re-pays autotune/spin-up (field 2026-09-27 23:22:
-            # 9.9 s for 0.6 s of audio after a 7-minute pause). A throwaway
-            # decode on synthetic audio keeps the context hot.
-            if self._speculative is not None:
-                timeout = 5.0
-            elif self._idle_rewarm_enabled and len(self._rolling) == 0:
-                timeout = _IDLE_REWARM_S
-            else:
-                timeout = None
             try:
-                cmd, payload = self._queue.get(timeout=timeout)
-            except queue.Empty:
+                self.on_ready(self.model_name)
+            except Exception:  # noqa: BLE001 — a throwing bridge must not kill the worker
+                log.exception("whisper: on_ready callback failed")
+        try:
+            while True:
+                # If a speculative decode is ready, wait at most 5 seconds for a
+                # speech_end (CMD_END) or new audio (CMD_AUDIO). If neither arrives
+                # — the audio callback likely stalled (pyaudiowpatch loopback bug)
+                # or VAD's LSTM state is stuck at prob=1.0 — auto-finalize using
+                # the speculative result so the answer is not lost.
+                # Otherwise wait up to _IDLE_REWARM_S: a long silence in an
+                # interview lets the GPU drop to idle clocks and the first real
+                # decode then re-pays autotune/spin-up (field 2026-09-27 23:22:
+                # 9.9 s for 0.6 s of audio after a 7-minute pause). A throwaway
+                # decode on synthetic audio keeps the context hot.
                 if self._speculative is not None:
-                    log.warning("whisper: auto-finalize (no speech_end after 5s — stalled audio/VAD)")
+                    timeout = 5.0
+                elif self._idle_rewarm_enabled and len(self._rolling) == 0:
+                    timeout = _IDLE_REWARM_S
+                else:
+                    timeout = None
+                try:
+                    cmd, payload = self._queue.get(timeout=timeout)
+                except queue.Empty:
+                    if self._speculative is not None:
+                        log.warning("whisper: auto-finalize (no speech_end after 5s — stalled audio/VAD)")
+                        with self._lock:
+                            audio = self._rolling.copy()
+                            segment_id = self._segment_id
+                        if len(audio) > 0:
+                            self._finalize(audio, segment_id)
+                    elif (
+                        self._idle_rewarm_enabled
+                        and self._model is not None
+                        and not self._decoding
+                        and self._pending_final_cmds == 0
+                    ):
+                        self._idle_rewarm()
+                    continue
+                if cmd == _CMD_STOP:
+                    break
+                if cmd in (_CMD_END, _CMD_STOP_HINT, _CMD_FLUSH):
+                    with self._lock:
+                        self._pending_final_cmds = max(0, self._pending_final_cmds - 1)
+                if cmd == _CMD_AUDIO:
+                    with self._lock:
+                        self._rolling = np.concatenate([self._rolling, payload])
+                    # Segment-length cap: a monologue that never pauses must not
+                    # grow the buffer unbounded — the final decode then takes
+                    # 80-120 s, the transcript accumulates repetition-loop
+                    # garbage and the LLM context bloats. Split at ~45 s: emit
+                    # an intermediate final for the buffered audio and keep the
+                    # segment open (same segment_id; downstream the interview
+                    # engine's accumulation window re-joins adjacent finals).
+                    with self._lock:
+                        buffered = len(self._rolling) / self._sr
+                    if buffered >= _MAX_OPEN_SEGMENT_S:
+                        log.info(
+                            "whisper: segment cap %.0fs reached — emitting intermediate final "
+                            "(segment stays open)",
+                            buffered,
+                        )
+                        with self._lock:
+                            audio = self._rolling.copy()
+                            segment_id = self._segment_id
+                        self._finalize(audio, segment_id)
+                    self._maybe_decode()
+                elif cmd == _CMD_END:
+                    audio, segment_id = payload
+                    self._finalize(audio, segment_id)
+                elif cmd == _CMD_STOP_HINT:
+                    self._handle_stop_hint()
+                elif cmd == _CMD_RESUME:
+                    self._speculative = None
+                    self._spec_partial_emitted = False
+                    # Speech resumed after the snapshot: any speculative taken
+                    # later would cover NEW speech — reuse must fall back to the
+                    # conservative delta budget until proven clean again.
+                    self._spec_dirty = True
+                elif cmd == _CMD_FLUSH:
                     with self._lock:
                         audio = self._rolling.copy()
                         segment_id = self._segment_id
                     if len(audio) > 0:
                         self._finalize(audio, segment_id)
-                elif (
-                    self._idle_rewarm_enabled
-                    and self._model is not None
-                    and not self._decoding
-                    and self._pending_final_cmds == 0
-                ):
-                    self._idle_rewarm()
-                continue
-            if cmd == _CMD_STOP:
-                break
-            if cmd in (_CMD_END, _CMD_STOP_HINT, _CMD_FLUSH):
-                self._pending_final_cmds = max(0, self._pending_final_cmds - 1)
-            if cmd == _CMD_AUDIO:
-                with self._lock:
-                    self._rolling = np.concatenate([self._rolling, payload])
-                # Segment-length cap: a monologue that never pauses must not
-                # grow the buffer unbounded — the final decode then takes
-                # 80-120 s, the transcript accumulates repetition-loop
-                # garbage and the LLM context bloats. Split at ~45 s: emit
-                # an intermediate final for the buffered audio and keep the
-                # segment open (same segment_id; downstream the interview
-                # engine's accumulation window re-joins adjacent finals).
-                with self._lock:
-                    buffered = len(self._rolling) / self._sr
-                if buffered >= _MAX_OPEN_SEGMENT_S:
-                    log.info(
-                        "whisper: segment cap %.0fs reached — emitting intermediate final "
-                        "(segment stays open)",
-                        buffered,
-                    )
-                    with self._lock:
-                        audio = self._rolling.copy()
-                        segment_id = self._segment_id
-                    self._finalize(audio, segment_id)
-                self._maybe_decode()
-            elif cmd == _CMD_END:
-                audio, segment_id = payload
-                self._finalize(audio, segment_id)
-            elif cmd == _CMD_STOP_HINT:
-                self._handle_stop_hint()
-            elif cmd == _CMD_RESUME:
-                self._speculative = None
-                self._spec_partial_emitted = False
-                # Speech resumed after the snapshot: any speculative taken
-                # later would cover NEW speech — reuse must fall back to the
-                # conservative delta budget until proven clean again.
-                self._spec_dirty = True
-            elif cmd == _CMD_FLUSH:
-                with self._lock:
-                    audio = self._rolling.copy()
-                    segment_id = self._segment_id
-                if len(audio) > 0:
-                    self._finalize(audio, segment_id)
+
+        except Exception as exc:  # noqa: BLE001
+            # An unhandled exception here silently kills the worker thread:
+            # the session looks alive (audio flows, UI idle) but no finals
+            # ever arrive again. Surface the error instead (audit 2026-10-01).
+            log.exception("whisper: worker loop crashed")
+            self._decoding = False
+            if self.on_error:
+                try:
+                    self.on_error(f"whisper worker failed: {exc}")
+                except Exception:  # noqa: BLE001
+                    log.exception("whisper: on_error callback failed")
 
     def _load_model(self) -> None:
         def report(message: str, percent: float) -> None:
             if self.on_progress:
                 self.on_progress(message, percent)
 
-        # Clear any cancel flag left over from a previous cancelled attempt:
-        # the Event is persistent (never replaced), so a stale set() would
-        # abort this fresh download instantly.
-        self._cancel_download.clear()
+        # R-06/R-22: a cancel that is ALREADY set when a new load starts is
+        # the user's live intent (e.g. clicked during the previous attempt's
+        # teardown, or the retry raced a second Cancel click) — honour it
+        # instead of silently erasing. Only a genuinely stale flag is cleared,
+        # and only via the public helper (never replace the Event object:
+        # download threads capture the exact object at start).
+        if self._cancel_download.is_set():
+            self._raise_if_cancelled()
         report(f"Loading {self._cfg.model_size} whisper model…", -1.0)
         model_path = resolve_model_path(
             self._cfg, progress_cb=report, cancel_event=self._cancel_download
@@ -1862,6 +1948,10 @@ class WhisperEngine:
             if "model.bin" in str(exc) or "Unable to open" in str(exc):
                 log.warning("whisper: model.bin missing/corrupt, re-downloading...")
                 report("Модель повреждена, повторная загрузка…", -1.0)
+                # R-22: honour a Cancel that landed during the failed load
+                # before starting the re-download (same rule as _load_model's
+                # entry guard — the flag is live user intent, not stale).
+                self._raise_if_cancelled()
                 _remove_snapshot(model_path)
                 model_path = resolve_model_path(
                     self._cfg, report, cancel_event=self._cancel_download
@@ -1931,6 +2021,7 @@ class WhisperEngine:
             window = int(self._cfg.window_seconds * self._sr)
             audio = self._rolling[-window:].copy()
             segment_id = self._segment_id
+            generation_id = self._generation_id
         if len(audio) < int(self._sr * 0.5):
             return
         self._decoding = True
@@ -1938,6 +2029,10 @@ class WhisperEngine:
             text, _confidence, duration = self._transcribe(
                 audio, kind="partial", beam_size=self._cfg.beam_size
             )
+            if generation_id != self._generation_id:
+                # R-18: a new segment started while this decode ran — the
+                # text belongs to the previous question, drop it.
+                return
             self._last_decode = time.monotonic()
             if text:
                 self._last_partial_text = text
@@ -2032,6 +2127,7 @@ class WhisperEngine:
                 return
             audio = self._rolling.copy()
             segment_id = self._segment_id
+            generation_id = self._generation_id
         if len(audio) < int(self._sr * 0.5):
             return
         # Short-buffer hallucination guard (field case 2026-09-28 13:03:56):
@@ -2060,6 +2156,10 @@ class WhisperEngine:
                     tail, kind="speculative", beam_size=self._cfg.final_beam_size
                 )
                 self._decoded_audio_len = len(audio)
+                if generation_id != self._generation_id:
+                    # R-18: segment changed mid-decode — speculative result
+                    # is stale, do not latch it into _speculative.
+                    return
                 prefix = " ".join(self._chunk_texts).strip()
                 if text:
                     text = merge_chunk_texts([prefix, text]) if prefix else text
@@ -2097,6 +2197,10 @@ class WhisperEngine:
             # short buffers — otherwise every re-fired hint re-decodes the
             # same 2-second tail.
             self._decoded_audio_len = len(audio)
+            if generation_id != self._generation_id:
+                # R-18: segment changed mid-decode — stale speculative
+                # result, do not latch/emit it.
+                return
             if text:
                 self._prev_full_text = self._last_partial_text or ""
                 self._speculative = {
@@ -2163,6 +2267,14 @@ class WhisperEngine:
 
     def _finalize(self, audio: np.ndarray, segment_id: str | None) -> None:
         if self._model is None:
+            return
+        # R-20: the user pressed Stop while this command sat in the queue.
+        # The segment's audio is already lost to the next session anyway
+        # (state is reset on start_segment); burning a 5–15 s decode on it
+        # only keeps stop()/start() blocked for no benefit.
+        if self._stopping_event.is_set():
+            log.debug("whisper: finalize skipped — stop requested (R-20)")
+            self._cleanup_segment()
             return
         if len(audio) < int(self._sr * 0.25):
             self._cleanup_segment()
