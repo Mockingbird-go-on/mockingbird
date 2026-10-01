@@ -11,7 +11,7 @@ from __future__ import annotations
 import base64
 import logging
 
-from PySide6.QtCore import Qt, QRect, Signal
+from PySide6.QtCore import QSize, Qt, QRect, Signal
 from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QApplication, QLabel, QWidget
 
@@ -172,9 +172,6 @@ class ScreenshotQuestionDialog(QWidget):
 
         root = QW(self)
         root.setObjectName("mddCard")
-        # Let mouse events fall through to the frameless top-level window
-        # (dragging); interactive children still get their own events.
-        root.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         lay = QVBoxLayout(root)
         lay.setContentsMargins(20, 16, 20, 14)
         lay.setSpacing(10)
@@ -193,9 +190,12 @@ class ScreenshotQuestionDialog(QWidget):
         title.setObjectName("mddTitle")
         head.addWidget(glyph)
         head.addWidget(title, 1)
-        close = QPushButton("×")
+        close = QPushButton()
+        close.setIcon(lucide_icon("circle-x"))
+        close.setIconSize(QSize(16, 16))
         close.setFixedSize(24, 24)
         close.setFlat(True)
+        close.setToolTip(t("Закрыть"))
         close.clicked.connect(self.close)
         head.addWidget(close)
         lay.addLayout(head)
