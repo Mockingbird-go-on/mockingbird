@@ -306,5 +306,8 @@
   "пустой кадр (окно свёрнуто?)": "fotograma vacío (¿ventana minimizada?)",
   "LLM не настроен — задайте модель в настройках": "LLM no configurado — defina un modelo en Ajustes",
   "новая страница · ответ через {sec:.0f} с…": "nueva página · respuesta en {sec:.0f}s…",
-  "ждём — идёт голосовой ответ…": "esperando — hay una respuesta de voz en curso…"
+  "ждём — идёт голосовой ответ…": "esperando — hay una respuesta de voz en curso…",
+  "Режим «Тест» недоступен: текущая LLM не поддерживает изображения.\nИзмените модель в «Настройки».": "Modo Test no disponible: el LLM actual no admite imágenes.\nCambia el modelo en Ajustes.",
+  "Режим «Тест»: проблема с LLM": "Modo Test: problema con el LLM",
+  "Не удалось получить ответ от модели: проверьте подключение (сеть, API-ключ, модель) в «Настройки». Наблюдение продолжится с повторами.": "No se pudo obtener respuesta del modelo: comprueba la conexión (red, clave API, modelo) en Ajustes. La observación continuará con reintentos."
 }
