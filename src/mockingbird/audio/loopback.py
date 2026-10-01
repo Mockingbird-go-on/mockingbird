@@ -325,18 +325,24 @@ class _WasapiLoopbackCapture:
         if self._stream is None:
             return (None, self._pa_module.paComplete if self._pa_module else None)
         try:
-            audio = np.frombuffer(in_data, dtype=np.float32)
+            try:
+                audio = np.frombuffer(in_data, dtype=np.float32)
+            except Exception:  # noqa: BLE001
+                audio = np.asarray(in_data, dtype=np.float32).reshape(-1)
+            if audio.ndim == 1 and self._channels > 1 and len(audio) % self._channels == 0:
+                audio = audio.reshape(-1, self._channels)[:, 0]
+            resampler = self._resampler
+            resampled = resampler.process(audio) if resampler is not None else audio
+            if self._agc is not None:
+                resampled = self._agc.process(resampled)
+            if self._callback is not None:
+                ts = time_info.get("currentTime") if isinstance(time_info, dict) else 0.0
+                self._callback(resampled, ts)
         except Exception:  # noqa: BLE001
-            audio = np.asarray(in_data, dtype=np.float32).reshape(-1)
-        if audio.ndim == 1 and self._channels > 1 and len(audio) % self._channels == 0:
-            audio = audio.reshape(-1, self._channels)[:, 0]
-        resampled = self._resampler.process(audio) if self._resampler is not None else audio
-        if self._agc is not None:
-            resampled = self._agc.process(resampled)
-        if self._callback is not None:
-            ts = time_info.get("currentTime") if isinstance(time_info, dict) else 0.0
-            self._callback(resampled, ts)
-        return (None, self._pa_module.paContinue)
+            # pyaudiowpatch aborts the stream on an unhandled callback
+            # exception (silent capture death). Log loudly and bail out.
+            log.exception("loopback callback failed — dropping block")
+        return (None, self._pa_module.paContinue if self._pa_module else None)
 
 
 def list_loopback_devices() -> list[str]:

@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 
 from mockingbird.ui import theme
 from mockingbird.ui import icons
+from mockingbird.i18n import t
 
 
 class _ResumeImportThread(QThread):
@@ -72,22 +73,30 @@ class ResumePanel(QWidget):
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(12)
 
-        group = QGroupBox("Резюме")
+        group = QGroupBox(t("Резюме"))
         group_layout = QVBoxLayout(group)
 
         self._status = QLabel("")
         self._status.setWordWrap(True)
         self._status.setStyleSheet(f"color:{theme.TEXT_SECONDARY};padding:4px;")
-        group_layout.addWidget(self._status)
+        # Native status icon in front of the text (replaces ✅/⬜ emoji).
+        self._status_icon = QLabel("")
+        self._status_icon.setFixedSize(18, 18)
+        self._status_icon.setVisible(False)
+        status_row = QHBoxLayout()
+        status_row.setContentsMargins(0, 0, 0, 0)
+        status_row.addWidget(self._status_icon)
+        status_row.addWidget(self._status, stretch=1)
+        group_layout.addLayout(status_row)
 
         btn_row = QHBoxLayout()
         self._btn_load = _IconButton(
             icons.icon("folder-open"),
-            "Загрузить PDF-резюме",
+            t("Загрузить PDF-резюме"),
         )
         self._btn_remove = _IconButton(
             icons.icon("trash-2", color=theme.current.status_error),
-            "Удалить резюме",
+            t("Удалить резюме"),
         )
         self._btn_load.clicked.connect(self._on_load)
         self._btn_remove.clicked.connect(self._on_remove)
@@ -101,8 +110,7 @@ class ResumePanel(QWidget):
         group_layout.addWidget(self._progress)
 
         hint = QLabel(
-            "Резюме используется для personal-вопросов («что ты делал?»). "
-            "Поддерживается PDF с текстовым слоем; сканы не обрабатываются."
+            t("Резюме используется для personal-вопросов («что ты делал?»). Поддерживается PDF с текстовым слоем; сканы не обрабатываются.")
         )
         hint.setStyleSheet(f"color:{theme.TEXT_SECONDARY};font-size:11px;")
         group_layout.addWidget(hint)
@@ -117,27 +125,43 @@ class ResumePanel(QWidget):
 
             info = ResumeLoader.get_info()
             if info:
-                self._status.setText(
-                    f"✅ Резюме загружено: {info['blocks']} блоков\n"
-                    f"Обновлено: {info['modified']}"
+                self._set_status(
+                    t("Резюме загружено: {n} блоков\nОбновлено: {m}", n=info['blocks'], m=info['modified']),
+                    ok=True,
                 )
             else:
-                self._status.setText(
-                    "⬜ Резюме не загружено. Personal-вопросы работают в constructive-режиме."
+                self._set_status(
+                    t("Резюме не загружено. Personal-вопросы работают в constructive-режиме."),
+                    ok=False,
                 )
         except Exception:
-            self._status.setText("Статус резюме недоступен.")
+            self._set_status(t("Статус резюме недоступен."), ok=None)
+
+    def _set_status(self, message: str, ok: bool | None) -> None:
+        """Status text + native Lucide icon (ok=True check / False empty box)."""
+        self._status.setText(message)
+        self._status.setStyleSheet(
+            f"color:{theme.current.text if ok else theme.TEXT_SECONDARY};padding:4px;"
+        )
+        if ok is None:
+            self._status_icon.setVisible(False)
+            return
+        name, color = (
+            ("circle-check", theme.current.status_running) if ok
+            else ("circle-alert", theme.current.status_muted)
+        )
+        self._status_icon.setPixmap(icons.icon(name, size=18, color=color).pixmap(18, 18))
+        self._status_icon.setVisible(True)
 
     def _on_load(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Выберите PDF-резюме", "", "PDF (*.pdf)")
+        path, _ = QFileDialog.getOpenFileName(self, t("Выберите PDF-резюме"), "", "PDF (*.pdf)")
         if not path:
             return
         llm = getattr(self._app, "llm", None)
         if llm is None or not getattr(llm, "available", False):
             QMessageBox.warning(
-                self, "LLM недоступен",
-                "Для обработки резюме нужен настроенный LLM.\n"
-                "Проверьте Настройки → LLM (API ключ и URL).",
+                self, t("LLM недоступен"),
+                t("Для обработки резюме нужен настроенный LLM.\nПроверьте Настройки → LLM (API ключ и URL)."),
             )
             return
         self._btn_load.setEnabled(False)
@@ -162,18 +186,19 @@ class ResumePanel(QWidget):
         self._progress.setVisible(False)
         self._btn_load.setEnabled(True)
         QMessageBox.information(
-            self, "Резюме загружено",
-            f"Обработано блоков: {result['blocks']}. Резюме готово к использованию.",
+            self,
+            t("Резюме загружено"),
+            t("Обработано блоков: {n}. Резюме готово к использованию.", n=result['blocks']),
         )
         self.refresh()
 
     def _on_error(self, error: str) -> None:
         self._progress.setVisible(False)
         self._btn_load.setEnabled(True)
-        QMessageBox.warning(self, "Ошибка загрузки резюме", f"Не удалось обработать PDF:\n\n{error}")
+        QMessageBox.warning(self, t("Ошибка загрузки резюме"), t("Не удалось обработать PDF:\n\n{error}", error=error))
 
     def _on_remove(self) -> None:
-        reply = QMessageBox.question(self, "Удалить резюме", "Удалить загруженное резюме?")
+        reply = QMessageBox.question(self, t("Удалить резюме"), t("Удалить загруженное резюме?"))
         if reply == QMessageBox.StandardButton.Yes:
             try:
                 from mockingbird.kb.resume_loader import ResumeLoader

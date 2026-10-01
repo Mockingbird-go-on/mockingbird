@@ -1,7 +1,33 @@
 """Shared test fixtures."""
 from __future__ import annotations
 
+import sys
+
 import pytest
+
+# Pin the REAL whisper_engine module at import time: several test files
+# (app_lifecycle, no_mic_pipeline, stability_p0) temporarily swap
+# sys.modules["mockingbird.stt.whisper_engine"] with a fake module and
+# restore it in teardown — but a failure mid-test leaks the fake, and every
+# later test importing the engine gets _FakeEngine. The autouse fixture
+# below self-heals sys.modules from this pinned reference.
+import mockingbird.stt.whisper_engine as _real_whisper_engine  # noqa: E402
+
+_REAL_ENGINE_MODULES = {
+    "mockingbird.stt.whisper_engine": _real_whisper_engine,
+}
+
+
+@pytest.fixture(autouse=True)
+def _restore_real_engine_modules():
+    """Undo any leaked fake whisper_engine module from earlier tests."""
+    for name, mod in _REAL_ENGINE_MODULES.items():
+        if sys.modules.get(name) is not mod:
+            sys.modules[name] = mod
+    yield
+    for name, mod in _REAL_ENGINE_MODULES.items():
+        if sys.modules.get(name) is not mod:
+            sys.modules[name] = mod
 
 
 @pytest.fixture(autouse=True)

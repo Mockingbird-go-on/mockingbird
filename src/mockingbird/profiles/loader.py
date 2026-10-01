@@ -32,6 +32,23 @@ class Profile:
     calibrated: bool = False
     user_defined: bool = False
     source_path: Path | None = field(default=None, repr=False)
+    # Optional English variants — used for prompts/UI when the interface
+    # language is "en". Missing fields fall back to the Russian ones.
+    title_en: str | None = None
+    persona_en: str | None = None
+    persona_senior_en: str | None = None
+    stack_en: str | None = None
+
+    def display_title(self) -> str:
+        """Title localized for the active UI language (fallback: Russian)."""
+        try:
+            from mockingbird import i18n as _i18n
+
+            if _i18n.current_language() in ("en", "es") and self.title_en:
+                return self.title_en
+        except Exception:  # noqa: BLE001 — i18n not initialised
+            pass
+        return self.title
 
 
 @dataclass
@@ -40,6 +57,11 @@ class BrokenProfile:
 
     path: Path
     error: str
+
+
+def _opt_en(data: dict, field_name: str) -> str | None:
+    val = str(data.get(field_name) or "").strip()
+    return val or None
 
 
 def _parse_profile(data: dict, *, user_defined: bool, source_path: Path | None) -> Profile | None:
@@ -58,6 +80,10 @@ def _parse_profile(data: dict, *, user_defined: bool, source_path: Path | None) 
             calibrated=bool(data.get("calibrated", False)),
             user_defined=user_defined,
             source_path=source_path,
+            title_en=_opt_en(data, "title_en"),
+            persona_en=_opt_en(data, "persona_en"),
+            persona_senior_en=_opt_en(data, "persona_senior_en"),
+            stack_en=_opt_en(data, "stack_en"),
         )
     except Exception as exc:  # noqa: BLE001
         log.warning("profiles: skipped invalid profile %s: %s", source_path or "?", exc)
@@ -153,6 +179,10 @@ def save_profile(prof: Profile) -> Path:
         "persona": prof.persona,
         "persona_senior": prof.persona_senior,
         "stack": prof.stack,
+        "title_en": prof.title_en,
+        "persona_en": prof.persona_en,
+        "persona_senior_en": prof.persona_senior_en,
+        "stack_en": prof.stack_en,
         "glossary": prof.glossary,
         "calibrated": prof.calibrated,
     }

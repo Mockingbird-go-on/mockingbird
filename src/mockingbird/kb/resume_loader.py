@@ -119,11 +119,22 @@ class ResumeLoader:
             from pypdf import PdfReader
         except ImportError:
             raise RuntimeError("Библиотека pypdf не установлена.")
-        reader = PdfReader(pdf_path)
-        parts: list[str] = []
-        for page in reader.pages:
-            text = page.extract_text() or ""
-            parts.append(text)
+        try:
+            reader = PdfReader(pdf_path)
+            parts: list[str] = []
+            for page in reader.pages:
+                text = page.extract_text() or ""
+                parts.append(text)
+        except Exception as exc:  # noqa: BLE001 — pypdf raises assorted errors
+            # Broken/encrypted/scanned PDFs surface as PdfReadError and
+            # friends — translate to a human-readable message instead of a
+            # raw pypdf traceback in the UI (audit 2026-10-01).
+            log.exception("resume_loader: PDF extraction failed for %r", pdf_path)
+            raise RuntimeError(
+                "Не удалось прочитать PDF. Убедитесь, что файл не повреждён и не "
+                "защищён паролем; поддерживаются PDF с текстовым слоем "
+                f"(без сканов). Причина: {exc}"
+            ) from exc
         return "\n\n".join(parts)
 
     @staticmethod

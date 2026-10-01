@@ -65,23 +65,32 @@ def test_iss_version_from_exe():
     assert "GetVersionNumbersString" in iss
 
 
-def test_iss_is_russian_only_and_utf8_bom():
-    """REGRESSION 2026-09-22: the installer offered an EN/RU language-selection
-    page even though the app UI is Russian-only. With a single [Languages]
-    entry Inno skips the dialog (ShowLanguageDialog=auto). The Cyrillic strings
-    require UTF-8 WITH a BOM — without it Inno renders them as mojibake."""
+def test_iss_has_ru_and_en_languages_and_utf8_bom():
+    """Installer now ships RU + EN (since 1.0.4.0). Russian-only entry used to
+    be the design (skipped the language dialog), but EN audience pushed for a
+    second language. The cyrillic CustomMessages still need UTF-8 WITH BOM —
+    without it Inno renders them as mojibake."""
     raw = open(os.path.join(SCRIPTS, "installer.iss"), "rb").read()
     assert raw[:3] == b"\xef\xbb\xbf", "installer.iss must be UTF-8 with BOM"
     iss = _read("installer.iss")
-    # Strip comment lines first: a comment mentioning "[Languages]" would
-    # otherwise terminate the section slice early.
     body = "\n".join(
         ln for ln in iss.splitlines() if not ln.lstrip().startswith(";")
     )
     langs = body.split("[Languages]", 1)[1].split("[", 1)[0]
-    assert langs.count("Name:") == 1, langs
-    assert 'Name: "russian"' in langs
-    assert "english" not in langs.lower()
+    assert langs.count('Name: "russian"') == 1, langs
+    assert langs.count('Name: "english"') == 1, langs
+    assert langs.count('Name: "spanish"') == 1, langs
+    # CustomMessages: localized strings must exist for EVERY language so
+    # Inno can resolve {cm:DeleteData} in either installer variant.
+    assert "russian.DeleteData" in iss, "Russian delete-data prompt missing"
+    assert "english.DeleteData" in iss, "English delete-data prompt missing"
+    assert "spanish.DeleteData" in iss, "Spanish delete-data prompt missing"
+    # Inno MsgBox in [Code] must use {cm:DeleteData}, NOT hard-coded text,
+    # otherwise Cyrillic strings would leak into the English installer.
+    assert "{cm:DeleteData}" in iss, "{cm:DeleteData} reference missing in [Code]"
+    # Bare Russian in MsgBox arguments is a regression marker.
+    assert "MsgBox(" not in iss or "ExpandConstant('{cm:DeleteData}')" in iss, \
+        "MsgBox still uses hard-coded Russian — replace with {cm:DeleteData}"
 
 
 def test_specs_have_only_one_exe():

@@ -5,3 +5,7 @@ glossary: glossary.yaml
 persona: "DevOps-инженер с 5-летним опытом"
 persona_senior: "DevOps-инженер 6+ лет, руководил техотделом 1 год 10 мес, проводит blameless post-mortem, менторит, пишет runbooks"
 stack: "Linux/Windows, Kubernetes/Docker, Terraform/Ansible, Prometheus/VictoriaMetrics/Grafana, GitLab CI, Vault, Cloud.ru/VK Cloud, PostgreSQL/Patroni, Python"
+title_en: "DevOps / SRE"
+persona_en: "DevOps engineer with 5 years of experience"
+persona_senior_en: "DevOps engineer with 6+ years, led a tech team for 1 year 10 months, runs blameless post-mortems, mentors, writes runbooks"
+stack_en: "Linux/Windows, Kubernetes/Docker, Terraform/Ansible, Prometheus/VictoriaMetrics/Grafana, GitLab CI, Vault, Cloud.ru/VK Cloud, PostgreSQL/Patroni, Python"

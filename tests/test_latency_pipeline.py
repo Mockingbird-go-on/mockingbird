@@ -51,6 +51,7 @@ def _engine_stub():
     eng._last_decode = 0.0
     eng._segment_id = "seg-t"
     eng._stop_hint_pending = False
+    eng._generation_id = 0  # R-18: stale-decode guard snapshot
     eng._cfg = MagicMock()
     eng._cfg.partial_interval_ms = 0
     eng._cfg.window_seconds = 3.5

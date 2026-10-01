@@ -9,6 +9,7 @@ from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import QWidget
 
 from mockingbird.ui import theme
+from mockingbird.i18n import t
 
 
 def _resolve_logo() -> QPixmap | None:
@@ -107,19 +108,19 @@ class LoaderSplash(QWidget):
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        t = theme.current
+        tm = theme.current
 
         # Background circle (card)
         rect = QRectF(20, 20, 240, 240)
-        bg = QColor(t.bg)
+        bg = QColor(tm.bg)
         bg.setAlpha(230)
         painter.setBrush(bg)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawRoundedRect(rect, 20, 20)
+        painter.drawRoundedRect(rect, 10, 10)
 
         # Spinner ring (background track) — sized so the logo fits inside.
         cx, cy, r = 140, 110, 42
-        track_color = QColor(t.border)
+        track_color = QColor(tm.border)
         track_pen_width = 4
         painter.setPen(QPen(track_color, track_pen_width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
         painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -133,7 +134,7 @@ class LoaderSplash(QWidget):
         )
 
         # Spinner arc (rotating)
-        arc_color = QColor(t.accent)
+        arc_color = QColor(tm.accent)
         painter.setPen(QPen(arc_color, track_pen_width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
         painter.drawArc(
             int(cx - r),
@@ -149,7 +150,7 @@ class LoaderSplash(QWidget):
             lw = self._logo.width()
             painter.drawPixmap(int(cx - lw / 2), int(cy - lw / 2), self._logo)
         else:
-            painter.setPen(QColor(t.accent))
+            painter.setPen(QColor(tm.accent))
             font = painter.font()
             font.setPointSize(22)
             font.setBold(True)
@@ -161,12 +162,12 @@ class LoaderSplash(QWidget):
             )
 
         # Text
-        painter.setPen(QColor(t.text_secondary))
+        painter.setPen(QColor(tm.text_secondary))
         font = painter.font()
         font.setPointSize(12)
         painter.setFont(font)
         painter.drawText(
             QRectF(20, 175, 240, 30),
             Qt.AlignmentFlag.AlignCenter,
-            "Загрузка…",
+            t("Загрузка…"),
         )

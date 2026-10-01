@@ -10,6 +10,7 @@ from PySide6.QtWidgets import QApplication
 
 from mockingbird.app import App
 from mockingbird.config import load_config
+from mockingbird.i18n import t
 from mockingbird.logging_setup import setup_logging
 from mockingbird.ui.main_window import MainWindow
 from mockingbird.ui.theme import apply_theme
@@ -41,7 +42,7 @@ def _show_system_warnings(parent, warnings: list) -> None:
     }
 
     dlg = QDialog(parent)
-    dlg.setWindowTitle("Проверка системы")
+    dlg.setWindowTitle(t("Проверка системы"))
     # Stay above the (always-on-top) model-download overlay: without this
     # the overlay stacks over this modal dialog on some platforms.
     dlg.setWindowFlags(dlg.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
@@ -67,7 +68,7 @@ def _show_system_warnings(parent, warnings: list) -> None:
         row.addWidget(text, 1)
         layout.addLayout(row)
 
-    btn = QPushButton("Понятно")
+    btn = QPushButton(t("Понятно"))
     btn.setProperty("primary", True)
     btn.setFixedWidth(120)
     btn.clicked.connect(dlg.accept)
@@ -305,6 +306,12 @@ def main() -> int:
     theme_name = settings.value("ui/theme", "dark")
     apply_theme(app, theme_name)
 
+    # i18n: activate the persisted UI language (or auto-detect on first run)
+    # BEFORE any widget is constructed.
+    from mockingbird import i18n
+
+    i18n.load_initial_language(settings)
+
     # Splash screen — show immediately while App initializes.
     from mockingbird.ui.splash import LoaderSplash
 
@@ -427,6 +434,11 @@ def main() -> int:
             return 0
         # Persist onboarding choices
         context.save_settings()
+        # Language picked on the wizard's first step — store it so the next
+        # launch (and the LLM prompt language) follow the user's choice.
+        lang_choice = getattr(wizard, "language_choice", "") or i18n.current_language()
+        settings.setValue("ui/lang", lang_choice)
+        i18n.set_language(lang_choice)
         # The checks ran BEFORE the wizard (with the LLM still unconfigured);
         # re-run them now that onboarding has filled in base_url/api_key —
         # otherwise the stale «LLM не настроен» warning greets a user who
@@ -451,30 +463,38 @@ def main() -> int:
         def _collect_and_report() -> None:
             try:
                 zip_path = diagnostics.collect_diagnostics(config)
-                notify_bus.info("Готово", f"Архив создан:\n{zip_path}")
+                if zip_path is None:
+                    raise RuntimeError("collect_diagnostics returned None")
+                notify_bus.info(t("Готово"), t("Архив создан:\n{path}", path=zip_path))
             except Exception:
                 log.exception("diagnostics collection failed")
                 notify_bus.error(
-                    "Ошибка",
-                    "Не удалось собрать архив диагностики "
-                    "(подробности в файле лога).",
+                    t("Ошибка"),
+                    t("Не удалось собрать архив диагностики (подробности в файле лога)."),
                 )
 
         notify_bus.push(
-            "Аварийное завершение",
-            "Предыдущий запуск Mockingbird завершился аварийно.\n"
-            "Собрать архив с логами для диагностики?",
+            t("Аварийное завершение"),
+            t("Предыдущий запуск Mockingbird завершился аварийно.\nСобрать архив с логами для диагностики?"),
             severity="warning",
             scope="startup",
-            buttons=(("Да", _collect_and_report), ("Нет", None)),
+            buttons=((t("Да"), _collect_and_report), (t("Нет"), None)),
         )
     if sys_warnings:
-        notify_bus.push(
-            "Проверка системы",
-            "\n\n".join(f"• {w.title}\n{w.message}" for w in sys_warnings),
-            severity="warning",
-            scope="startup",
-        )
+        from PySide6.QtCore import QTimer
+
+        def _show_sys_warnings() -> None:
+            notify_bus.push(
+                t("Проверка системы"),
+                "\n\n".join(f"• {w.title}\n{w.message}" for w in sys_warnings),
+                severity="warning",
+                scope="runtime",
+            )
+
+        # Defer the system-check dialog by 10 s AFTER the window is up: it
+        # used to fire while the splash/loader was still on screen (and the
+        # «резюме не загружено» warning is pointless noise at that moment).
+        QTimer.singleShot(10_000, _show_sys_warnings)
     notify_bus.flush_startup()
 
     # Kick the STT model load off as early as possible: the worker thread
