@@ -233,7 +233,7 @@ def test_test_mode_config_defaults():
     assert cfg.stable_threshold == 1.0
     assert cfg.min_send_interval_s == 5.0
     assert cfg.backoff_s == 15.0
-    assert cfg.max_image_dim == 1600
+    assert cfg.max_image_dim == 1280
 
 
 def test_config_has_test_mode_section():
