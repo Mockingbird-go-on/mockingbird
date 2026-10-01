@@ -818,7 +818,7 @@ class MainWindow(QMainWindow):
         self._picker.picked.connect(self._on_test_window_picked)
         self._picker.region_picked.connect(self._on_test_region_picked)
         self._picker.cancelled.connect(self._on_test_pick_cancelled)
-        self._picker.show()
+        self._picker.start()
 
     def _stop_test_mode(self) -> None:
         self._picker = None
