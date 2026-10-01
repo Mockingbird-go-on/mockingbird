@@ -276,5 +276,17 @@
   "Распаковка модели…": "Extracting the model…",
   "Загрузка модели уже идёт в другом потоке — дождитесь её завершения или нажмите «Отмена» перед повтором.": "A model download is already running in another thread — wait for it to finish or press “Cancel” before retrying.",
   "URL и ключ не заданы": "URL and API key are not set",
-  "Подключение работает!": "Connection works!"
+  "Подключение работает!": "Connection works!",
+  "Режим «Тест»: следить за окном и подсказывать ответы": "Test mode: watch a window and hint answers",
+  "область экрана": "screen region",
+  "наблюдение за {title}…": "watching {title}…",
+  "ошибка LLM, повтор через пару секунд…": "LLM error, retrying in a few seconds…",
+  "тест не распознан на кадре": "no test detected in the frame",
+  "Кликните по окну с тестом (Esc — отмена)": "Click the window with the test (Esc to cancel)",
+  "Ожидание стабильного кадра…": "Waiting for a stable frame…",
+  "Точных ответов не найдено": "No exact answers found",
+  "Тест": "Test",
+  "Сейчас": "Now",
+  "{0} ответов · обновлено": "{0} answers · updated",
+  "{0} ответов · без изменений": "{0} answers · unchanged"
 }

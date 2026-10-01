@@ -165,6 +165,27 @@ class ScreenshotConfig(BaseModel):
     jpeg_quality: int = 80
 
 
+class TestModeConfig(BaseModel):
+    """Live test-answerer: watch a window/region, detect question change,
+    ask the vision LLM, show "1 -> B" style answers in an overlay.
+
+    Anti-spam methodology (see TestWatcher):
+    - stability window: send only after N consecutive stable captures
+    - change gate vs last SENT frame (dHash hamming, weighted to top 2/3)
+    - min interval between real sends regardless of detection
+    - backoff after LLM/network errors
+    """
+
+    enabled: bool = True
+    interval_s: float = 2.5  # capture tick
+    stable_frames: int = 2  # consecutive identical captures before send
+    change_threshold: int = 12  # dHash hamming bits (of 64) vs last SENT frame
+    min_send_interval_s: float = 10.0
+    backoff_s: float = 15.0
+    max_image_dim: int = 1600
+    jpeg_quality: int = 80
+
+
 class Config(BaseModel):
     audio: AudioConfig = Field(default_factory=AudioConfig)
     vad: VadConfig = Field(default_factory=VadConfig)
@@ -177,6 +198,7 @@ class Config(BaseModel):
     storage: StorageConfig = Field(default_factory=StorageConfig)
     kgen: KGenConfig = Field(default_factory=KGenConfig)
     screenshot: ScreenshotConfig = Field(default_factory=ScreenshotConfig)
+    test_mode: TestModeConfig = Field(default_factory=TestModeConfig)
     profile_id: str = "devops"
 
 

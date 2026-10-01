@@ -78,6 +78,9 @@ class MainWindow(QMainWindow):
         # button must re-send the IMAGE too — routing it through the regular
         # text-only regenerate path would answer from the question text alone.
         self._last_screenshot: tuple[bytes, str] | None = None
+        self._test_overlay = None
+        self._picker = None
+        self._last_test_text = ""
         self._session_timer = QTimer(self)
         self._session_timer.setInterval(1000)
         self._session_timer.timeout.connect(self._tick_session)
@@ -185,6 +188,16 @@ class MainWindow(QMainWindow):
         # vision-capable / text-only model is reflected without waiting for
         # the next probe.
         self._refresh_screenshot_button()
+        # Live test mode: watch a window/region and answer quiz questions.
+        self._test_btn = QPushButton()
+        self._test_btn.setIcon(lucide_icon("clipboard-check"))
+        self._test_btn.setIconSize(QSize(18, 18))
+        self._test_btn.setToolTip(t("Режим «Тест»: следить за окном и подсказывать ответы"))
+        self._test_btn.setCheckable(True)
+        self._test_btn.clicked.connect(self._on_test_mode_toggle)
+        if not getattr(self._app.config, "test_mode", None) or not self._app.config.test_mode.enabled:
+            self._test_btn.hide()
+        self._test_overlay = None
         self._timer_label = QLabel("00:00")
         self._timer_label.setObjectName("sessionTimer")
         self._timer_label.setStyleSheet(
@@ -202,6 +215,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._source_badge)
         layout.addWidget(self._status)
         layout.addWidget(self._shot_btn)
+        layout.addWidget(self._test_btn)
         layout.addWidget(self._settings_btn)
         layout.addWidget(self._logo)
         return bar
@@ -306,6 +320,10 @@ class MainWindow(QMainWindow):
         self._sig.screenshot_answer_done.connect(self._on_screenshot_answer_done)
         self._sig.vision_probe_result.connect(self._on_vision_probe_result)
         self._sig.screenshot_request.connect(self._on_screenshot)
+        self._sig.test_mode_request.connect(
+            lambda: self._on_test_mode_toggle(not self._test_btn.isChecked())
+        )
+        self._sig.test_answer.connect(self._on_test_answer)
 
     def _on_vision_probe_result(self, ok) -> None:
         self._vision_state = bool(ok)
@@ -777,6 +795,118 @@ class MainWindow(QMainWindow):
         if query:
             self._interview._history.add_entry(f"📸 {query}", "screenshot")
             self._pending_screenshot_question = ""
+
+    # ------------------------------------------------------------------
+    # Live test mode
+    # ------------------------------------------------------------------
+    def _on_test_mode_toggle(self, checked: bool) -> None:
+        if checked:
+            self._start_test_mode()
+        else:
+            self._stop_test_mode()
+
+    def _start_test_mode(self) -> None:
+        from mockingbird.ui.window_picker import WindowPickOverlay
+
+        self._picker = WindowPickOverlay()
+        self._picker.picked.connect(self._on_test_window_picked)
+        self._picker.region_picked.connect(self._on_test_region_picked)
+        self._picker.cancelled.connect(self._on_test_pick_cancelled)
+        self._picker.show()
+
+    def _stop_test_mode(self) -> None:
+        self._test_btn.setChecked(False)
+        ov = self._test_overlay
+        self._test_overlay = None
+        self._app.stop_test_mode()
+        if ov is not None:
+            ov.close()
+            ov.deleteLater()
+
+    def _on_test_pick_cancelled(self) -> None:
+        self._test_btn.setChecked(False)
+
+    def _on_test_window_picked(self, hwnd: int, title: str, rect) -> None:
+        self._launch_test_watcher(title, lambda: self._capture_window(hwnd))
+
+    def _on_test_region_picked(self, rect) -> None:
+        self._launch_test_watcher(t("область экрана"), lambda: self._capture_region(rect))
+
+    def _launch_test_watcher(self, title: str, capture_fn) -> None:
+        from mockingbird.ui.test_overlay import TestModeOverlay
+        from mockingbird.vision.test_watcher import TestWatcher
+
+        self._app.stop_test_mode()
+        watcher = self._app.start_test_mode(capture_fn)
+        ov = TestModeOverlay(title)
+        ov.stop_requested.connect(self._stop_test_mode)
+        ov.force_requested.connect(self._app.force_test_frame)
+        watcher.frame_skipped.connect(ov.set_status)
+        watcher.frame_pending.connect(ov.set_status)
+        self._test_overlay = ov
+        ov.show()
+        ov.set_status(t("наблюдение за {title}…", title=title))
+        # Exclude the overlay itself from capture (Windows) so it never
+        # feeds itself into the frame.
+        try:
+            from mockingbird.ui.capture_guard import set_exclude_from_capture
+
+            set_exclude_from_capture(int(ov.winId()))
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _capture_window(self, hwnd: int):
+        import sys
+
+        from PySide6.QtGui import QGuiApplication
+        from PySide6.QtCore import QBuffer, QIODevice, Qt
+        from PySide6.QtGui import QImage
+
+        cfg = self._app.config.test_mode
+        screen = QGuiApplication.primaryScreen()
+        if screen is None:
+            raise RuntimeError("нет экрана")
+        pix = screen.grabWindow(int(hwnd))
+        if pix.isNull() or pix.width() < 10:
+            raise RuntimeError("пустой кадр (окно свёрнуто?)")
+        image: QImage = pix.toImage()
+        if max(image.width(), image.height()) > cfg.max_image_dim:
+            pix = pix.scaled(
+                cfg.max_image_dim, cfg.max_image_dim,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            image = pix.toImage()
+        buf = QBuffer()
+        buf.open(QIODevice.OpenModeFlag.WriteOnly)
+        pix.save(buf, "JPEG", cfg.jpeg_quality)
+        return image, bytes(buf.data()), pix
+
+    def _capture_region(self, rect):
+        from mockingbird.ui.screenshot import grab_screen_region
+
+        cfg = self._app.config.test_mode
+        jpeg, pix = grab_screen_region(
+            rect, max_dim=cfg.max_image_dim, jpeg_quality=cfg.jpeg_quality
+        )
+        return pix.toImage(), jpeg, pix
+
+    def _on_test_answer(self, ok: bool, text: str) -> None:
+        ov = self._test_overlay
+        if ov is None:
+            return
+        if not ok:
+            ov.set_status(t("ошибка LLM, повтор через пару секунд…"))
+            return
+        from mockingbird.vision.test_watcher import parse_test_answers
+
+        pairs = parse_test_answers(text)
+        changed = text != self._last_test_text
+        self._last_test_text = text
+        if not pairs:
+            ov.set_status(t("тест не распознан на кадре"))
+            return
+        ov.set_answers(pairs, changed=changed)
 
     def _on_cuda_fallback(self, detail: str) -> None:
         """Configured CUDA turned out unusable; the engine already reloaded
