@@ -503,8 +503,10 @@ class App:
                     log.info("test-mode: frame skipped — answer stream busy")
                     w = self.test_watcher
                     if w is not None:
-                        w.mark_result(True, "")
-                    self.signals.test_answer.emit(True, "")
+                        w.mark_result(True, "", was_send=False)
+                    # ok=True with empty text but NOT parsed as "no test":
+                    # dedicated payload marker keeps the overlay honest.
+                    self.signals.test_answer.emit(True, "\u23f3")  # ⏳ busy marker
                     return
             except Exception:  # noqa: BLE001
                 pass  # gate is best-effort; never block the test frame

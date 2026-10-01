@@ -305,5 +305,6 @@
   "нет экрана": "no screen available",
   "пустой кадр (окно свёрнуто?)": "empty frame (window minimised?)",
   "LLM не настроен — задайте модель в настройках": "LLM is not configured — set a model in Settings",
-  "новая страница · ответ через {sec:.0f} с…": "new page · answer in {sec:.0f}s…"
+  "новая страница · ответ через {sec:.0f} с…": "new page · answer in {sec:.0f}s…",
+  "ждём — идёт голосовой ответ…": "waiting — a voice answer is streaming…"
 }

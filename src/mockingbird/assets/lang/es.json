@@ -305,5 +305,6 @@
   "нет экрана": "no hay pantalla disponible",
   "пустой кадр (окно свёрнуто?)": "fotograma vacío (¿ventana minimizada?)",
   "LLM не настроен — задайте модель в настройках": "LLM no configurado — defina un modelo en Ajustes",
-  "новая страница · ответ через {sec:.0f} с…": "nueva página · respuesta en {sec:.0f}s…"
+  "новая страница · ответ через {sec:.0f} с…": "nueva página · respuesta en {sec:.0f}s…",
+  "ждём — идёт голосовой ответ…": "esperando — hay una respuesta de voz en curso…"
 }
