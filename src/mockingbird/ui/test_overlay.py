@@ -31,13 +31,14 @@ class TestModeOverlay(QWidget):
         self.setWindowTitle("Mockingbird — тест")
         self.setFixedSize(340, 420)
         self._drag_pos = None
+        self._target = target_title or t("Тест")
 
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 10, 12, 10)
         root.setSpacing(6)
 
         header = QHBoxLayout()
-        self._title = QLabel(target_title or t("Тест"))
+        self._title = QLabel(self._target)
         self._title.setStyleSheet("font-weight: bold;")
         header.addWidget(self._title, 1)
         btn_force = QPushButton(t("Сейчас"))
@@ -60,6 +61,26 @@ class TestModeOverlay(QWidget):
         self._status = QLabel("запуск…")
         self._status.setStyleSheet("color: gray; font-size: 11px;")
         root.addWidget(self._status)
+
+        # Liveness indicator: shows tick count / uptime every second, so a
+        # dead watcher loop is immediately visible (status line stops).
+        from PySide6.QtCore import QTimer
+
+        self._started_at = None
+        self._alive = QTimer(self)
+        self._alive.setInterval(1000)
+        self._alive.timeout.connect(self._tick_alive)
+        self._alive.start()
+
+    def _tick_alive(self) -> None:
+        from time import monotonic
+
+        if self._started_at is None:
+            return
+        secs = int(monotonic() - self._started_at)
+        self._title.setText(
+            f"{self._target} · {secs//60:02d}:{secs%60:02d}"
+        )
 
     # -- drag by header ---------------------------------------------------
     def mousePressEvent(self, event) -> None:  # noqa: N802

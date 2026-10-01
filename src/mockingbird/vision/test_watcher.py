@@ -170,6 +170,8 @@ class TestWatcher(QObject):
 
     # -- core tick ---------------------------------------------------------
     def _tick(self) -> None:
+        self._tick_count = getattr(self, "_tick_count", 0) + 1
+        tick = self._tick_count
         if self._capture is None:
             return
         if self._in_flight:
@@ -182,42 +184,70 @@ class TestWatcher(QObject):
         try:
             image, jpeg, _preview = self._capture()
         except Exception as exc:  # capture failure (window closed etc.)
-            log.warning("test-mode: capture failed: %s", exc)
+            log.warning("test-mode[%d]: capture failed: %s", tick, exc)
             self.frame_skipped.emit("захват не удался (окно закрыто?)")
             return
         bits = dhash_bits(image)
         # 1. stability window
-        if self._last_candidate is not None and hamming(bits, self._last_candidate) <= 2:
+        dist_stable = (
+            hamming(bits, self._last_candidate) if self._last_candidate else -1
+        )
+        if self._last_candidate is not None and dist_stable <= 2:
             self._stable_run += 1
         else:
             self._stable_run = 1 if self._last_candidate is None else 0
         self._last_candidate = bits
         forced = self._force_next
         if not forced and self._stable_run < self._cfg.stable_frames:
-            self.frame_pending.emit(
-                f"стабилизация кадра… ({self._stable_run}/{self._cfg.stable_frames})"
+            msg = (
+                f"кадр {tick} · стабилизация "
+                f"({self._stable_run}/{self._cfg.stable_frames})"
             )
+            log.info(
+                "test-mode[%d]: not stable yet (run=%d dist=%s)",
+                tick, self._stable_run, dist_stable,
+            )
+            self.frame_pending.emit(msg)
             return
         # 2. change gate vs last SENT frame
+        dist_sent = (
+            hamming(bits, self._last_sent_hash) if self._last_sent_hash else -1
+        )
         if (
             not forced
             and self._last_sent_hash is not None
-            and hamming(bits, self._last_sent_hash) <= self._cfg.change_threshold
+            and dist_sent <= self._cfg.change_threshold
         ):
-            self.frame_skipped.emit("без изменений")
+            log.info(
+                "test-mode[%d]: skip — no change (dist=%d <= %d)",
+                tick, dist_sent, self._cfg.change_threshold,
+            )
+            self.frame_skipped.emit(f"кадр {tick} · без изменений (d={dist_sent})")
             return
         # 3. min send interval
+        since = now - self._last_sent_at if self._last_sent_at else None
         if (
             not forced
-            and self._last_sent_at
-            and now - self._last_sent_at < self._cfg.min_send_interval_s
+            and since is not None
+            and since < self._cfg.min_send_interval_s
         ):
-            self.frame_skipped.emit("слишком часто, ждём…")
+            log.info(
+                "test-mode[%d]: skip — rate limit (%.1fs since last send)",
+                tick, since,
+            )
+            self.frame_skipped.emit(f"кадр {tick} · слишком часто, ждём…")
             return
         # passed all layers -> send
         self._force_next = False
         self._in_flight = True
         self._last_sent_hash = bits
+        log.info(
+            "test-mode[%d]: SENDING frame to LLM (jpeg=%dB, stable_run=%d, "
+            "dist_vs_last_sent=%s%s)",
+            tick, len(jpeg), self._stable_run,
+            dist_sent if dist_sent >= 0 else "first",
+            ", forced" if forced else "",
+        )
         self.send_frame.emit(_preview_of(jpeg), jpeg)
         self.stable_detected.emit()
 
