@@ -179,7 +179,10 @@ class TestModeConfig(BaseModel):
     enabled: bool = True
     interval_s: float = 2.5  # capture tick
     stable_frames: int = 2  # consecutive identical captures before send
-    change_threshold: int = 12  # dHash hamming bits (of 64) vs last SENT frame
+    # dHash hamming threshold vs last SENT frame. The hash is nominally 64
+    # bits but the top 5 rows are duplicated for weighting (104 bits total),
+    # so the threshold is scaled accordingly (~17% of bits).
+    change_threshold: int = 18
     min_send_interval_s: float = 10.0
     backoff_s: float = 15.0
     max_image_dim: int = 1600

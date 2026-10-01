@@ -102,14 +102,16 @@ class WindowPickOverlay(QWidget):
             log.warning("test-mode: WindowFromPoint returned nothing")
         if self._fallback:
             # Non-Windows / failed pick: fall back to the rubber-band
-            # region selector from the screenshot feature.
+            # region selector from the screenshot feature. parent=None —
+            # ``self`` is already closed and would hide the child overlay;
+            # the attribute keeps the Qt object alive (GC guard).
             from mockingbird.ui.screenshot import ScreenGrabOverlay
 
-            ov = ScreenGrabOverlay(self)
-            ov.finished.connect(
+            self._region_ov = ScreenGrabOverlay(None)
+            self._region_ov.finished.connect(
                 lambda r: self.region_picked.emit(r) if r.isValid() else self.cancelled.emit()
             )
-            ov.cancelled.connect(self.cancelled)
-            ov.start()
+            self._region_ov.cancelled.connect(self.cancelled)
+            self._region_ov.start()
         else:
             self.cancelled.emit()

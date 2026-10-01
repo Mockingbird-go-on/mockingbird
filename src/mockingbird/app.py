@@ -467,6 +467,20 @@ class App:
             ok = False
             text = ""
             t0 = _time.monotonic()
+            # Single-flight priority: a voice answer stream must not compete
+            # with a test frame. Short wait; on timeout the frame is DROPPED
+            # (not an error — no backoff) — the change gate will re-send it
+            # once the content changes again, or the user can force it.
+            try:
+                if not self.llm._yield_to_answer_stream(timeout=5.0):
+                    log.info("test-mode: frame skipped — answer stream busy")
+                    w = self.test_watcher
+                    if w is not None:
+                        w.mark_result(True, "")
+                    self.signals.test_answer.emit(True, "")
+                    return
+            except Exception:  # noqa: BLE001
+                pass  # gate is best-effort; never block the test frame
             # Debug dump: the exact frame the LLM sees (log dir), so the
             # user can verify the capture content when answers look wrong.
             try:
@@ -1251,6 +1265,7 @@ class App:
 
     def shutdown(self) -> None:
         log.info("shutting down")
+        self.stop_test_mode()
         if self._log_handler is not None:
             logging.getLogger().removeHandler(self._log_handler)
             self._log_handler = None
