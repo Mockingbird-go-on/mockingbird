@@ -78,7 +78,7 @@ class TestModeOverlay(QWidget):
         )
         root.addWidget(self._updated_at)
 
-        self._status = QLabel("запуск…")
+        self._status = QLabel(t("запуск…"))
         self._status.setStyleSheet("color: gray; font-size: 11px;")
         root.addWidget(self._status)
 
