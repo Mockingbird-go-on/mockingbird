@@ -164,8 +164,16 @@ class TestWatcher(QObject):
         self._not_before = 0.0
 
     # -- feedback ---------------------------------------------------------
-    def mark_result(self, ok: bool, answer_text: str = "") -> None:
+    def mark_result(self, ok: bool, answer_text: str = "", *, was_send: bool = True) -> None:
+        """Report the outcome of a dispatched frame.
+
+        ``was_send=False`` marks a NON-send outcome (frame dropped because
+        the voice answer stream was busy): it must neither advance the
+        rate-limit window nor count as an answer for dedup.
+        """
         self._in_flight = False
+        if not was_send:
+            return
         if ok:
             self._last_sent_at = time.monotonic()
             if answer_text and answer_text != self._last_answer_text:
@@ -231,7 +239,7 @@ class TestWatcher(QObject):
             and dist_sent <= self._cfg.change_threshold
         ):
             log.info(
-                "test-mode[%d]: skip — no change (dist=%d <= %d)",
+                "test-mode[%d]: skip — no change (dist=%.2f <= %.1f)",
                 tick, dist_sent, self._cfg.change_threshold,
             )
             self.frame_skipped.emit(t("кадр {tick} · без изменений (d={dist})").format(tick=tick, dist=dist_sent))
@@ -243,7 +251,7 @@ class TestWatcher(QObject):
             and since is not None
             and since < self._cfg.min_send_interval_s
         ):
-            wait = max(0.0, self._cfg.min_send_interval_s - (since or 0.0))
+            wait = max(1.0, self._cfg.min_send_interval_s - (since or 0.0))
             log.info(
                 "test-mode[%d]: skip — rate limit (%.1fs since last send)",
                 tick, since,

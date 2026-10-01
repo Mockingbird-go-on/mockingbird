@@ -488,3 +488,18 @@ def test_parse_unknown_answer_marker():
         ("1", "B", "TLS"),
         ("2", "?", "вопрос виден не полностью, проскроль экран"),
     ]
+
+
+def test_busy_drop_does_not_advance_rate_limit():
+    """was_send=False (voice stream busy) must not touch _last_sent_at."""
+    w = _make_watcher(stable_frames=1, change_threshold=0.0, min_send_interval_s=100.0)
+    sent = _W()
+    w.send_frame.connect(sent)
+    w.set_capture(lambda: (_grad(), b"j", None))
+    w._tick()
+    assert len(sent.events) == 1
+    w.mark_result(True, "1 → B")
+    import time as _t
+    w._last_sent_at = _t.monotonic() - 200.0  # simulate long-ago last send
+    w.mark_result(True, "", was_send=False)  # busy drop must not move it
+    assert w._last_sent_at < _t.monotonic() - 100.0

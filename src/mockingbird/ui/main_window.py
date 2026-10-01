@@ -923,6 +923,9 @@ class MainWindow(QMainWindow):
         ov = self._test_overlay
         if ov is None:
             return
+        if text == "\u23f3":  # busy marker: frame deferred, voice answer streaming
+            ov.set_status(t("ждём — идёт голосовой ответ…"))
+            return
         if not ok:
             ov.set_status(t("ошибка LLM, повтор через пару секунд…"))
             return
