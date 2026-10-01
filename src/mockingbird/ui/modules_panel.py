@@ -74,6 +74,16 @@ class ResumePanel(QWidget):
         layout.setSpacing(12)
 
         group = QGroupBox(t("Резюме"))
+        # Opaque card background like the Interview/Log tabs: the window's
+        # background image otherwise bleeds through and makes the hint
+        # labels hard to read.
+        group.setStyleSheet(
+            f"QGroupBox {{ background-color: {theme.current.surface};"
+            " border: 1px solid palette(mid); border-radius: 4px;"
+            " margin-top: 12px; padding: 8px 6px 6px 6px; }}"
+            "QGroupBox::title { subcontrol-origin: margin;"
+            " left: 10px; padding: 0 4px; }"
+        )
         group_layout = QVBoxLayout(group)
 
         self._status = QLabel("")
