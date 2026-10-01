@@ -482,10 +482,21 @@ class SettingsDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
 
+        # About footer: version + site link (standard desktop pattern).
+        from mockingbird import __version__
+
+        footer = QLabel(
+            f"<a href='https://mocking.ru/' style='color:{theme.current.accent};"
+            "text-decoration:none;'>mocking.ru</a>"
+            f" <span style='color:{theme.TEXT_SECONDARY};'>· Mockingbird v{__version__}</span>"
+        )
+        footer.setOpenExternalLinks(True)
+
         layout = QVBoxLayout(self)
         layout.addWidget(tabs, 1)
         layout.addWidget(note)
         layout.addWidget(buttons)
+        layout.addWidget(footer)
 
     # --- Tab builders ---
 
