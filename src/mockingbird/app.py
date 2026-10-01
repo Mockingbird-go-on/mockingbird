@@ -440,6 +440,9 @@ class App:
         from mockingbird.vision.test_watcher import TestWatcher
 
         self.stop_test_mode()
+        # Generation counter: a restart while an LLM request is in flight
+        # must not let the STALE worker's answer land in the NEW overlay.
+        self._test_generation = getattr(self, "_test_generation", 0) + 1
         watcher = TestWatcher(self.config.test_mode)
         watcher.set_capture(capture_fn)
         watcher.send_frame.connect(self._on_test_frame)
@@ -463,10 +466,34 @@ class App:
         import threading
         import time as _time
 
+        generation = getattr(self, "_test_generation", 0)
+
+        def _stale() -> bool:
+            return (
+                generation != getattr(self, "_test_generation", 0)
+                or self.test_watcher is None
+            )
+
         def _worker() -> None:
             ok = False
             text = ""
             t0 = _time.monotonic()
+            # Stale guard: the watcher was restarted while this frame was in
+            # flight — drop silently, the new run owns the state now.
+            if _stale():
+                log.info("test-mode: stale frame dropped (watcher restarted)")
+                return
+            # Unconfigured LLM must not become an endless silent backoff —
+            # stop the watcher and tell the user what to fix.
+            if self.llm is None or not getattr(self.llm, "available", False):
+                log.warning("test-mode: LLM not configured — stopping watcher")
+                w = self.test_watcher
+                if w is not None:
+                    w.stop()
+                self.signals.test_answer.emit(
+                    False, t("LLM не настроен — задайте модель в настройках")
+                )
+                return
             # Single-flight priority: a voice answer stream must not compete
             # with a test frame. Short wait; on timeout the frame is DROPPED
             # (not an error — no backoff) — the change gate will re-send it
@@ -483,12 +510,20 @@ class App:
                 pass  # gate is best-effort; never block the test frame
             # Debug dump: the exact frame the LLM sees (log dir), so the
             # user can verify the capture content when answers look wrong.
+            # Only the last 5 dumps are kept (a long session would otherwise
+            # accumulate hundreds of files).
             try:
                 from pathlib import Path
 
                 d = Path(self.config.storage.log_dir or "")
                 d.mkdir(parents=True, exist_ok=True)
                 (d / f"test-mode-{int(t0)}.jpg").write_bytes(jpeg_bytes)
+                dumps = sorted(d.glob("test-mode-*.jpg"))
+                for old in dumps[:-5]:
+                    try:
+                        old.unlink()
+                    except OSError:
+                        pass
             except Exception:  # noqa: BLE001
                 pass
             try:
@@ -505,10 +540,12 @@ class App:
                 text = ""
                 ok = False
             finally:
+                if _stale():
+                    return  # new run owns the watcher; don't touch its state
                 w = self.test_watcher
                 if w is not None:
                     w.mark_result(ok, text)
-            self.signals.test_answer.emit(ok, text)
+                self.signals.test_answer.emit(ok, text)
 
         threading.Thread(target=_worker, name="test-mode-llm", daemon=True).start()
 

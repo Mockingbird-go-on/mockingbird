@@ -166,12 +166,15 @@ def capture_window(hwnd: int, max_dim: int = 1600, jpeg_quality: int = 80):
             raise RuntimeError(t("пустой кадр (окно свёрнуто?)"))
         image = pix.toImage()
         if _is_blank(image):
+            # BOTH methods produced a uniform frame — the capture is dead
+            # (minimised window, secured content). Raise so the watcher's
+            # capture-fail counter can auto-stop instead of spinning
+            # forever on a constant hash.
             log.warning(
-                "test-mode: BitBlt frame blank (GPU-composited window?) — "
-                "PrintWindow also failed"
+                "test-mode: both PrintWindow and BitBlt returned a blank frame"
             )
-        else:
-            log.info("test-mode: captured via BitBlt fallback")
+            raise RuntimeError(t("пустой кадр (окно свёрнуто?)"))
+        log.info("test-mode: captured via BitBlt fallback")
 
     image = pix.toImage()
     if max(image.width(), image.height()) > max_dim:

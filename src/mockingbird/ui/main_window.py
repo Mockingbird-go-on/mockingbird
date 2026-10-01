@@ -808,6 +808,12 @@ class MainWindow(QMainWindow):
     def _start_test_mode(self) -> None:
         from mockingbird.ui.window_picker import WindowPickOverlay
 
+        # A stale picker from a previous toggle must not linger fullscreen.
+        old = getattr(self, "_picker", None)
+        self._picker = None
+        if old is not None:
+            old.close()
+            old.deleteLater()
         self._picker = WindowPickOverlay()
         self._picker.picked.connect(self._on_test_window_picked)
         self._picker.region_picked.connect(self._on_test_region_picked)
