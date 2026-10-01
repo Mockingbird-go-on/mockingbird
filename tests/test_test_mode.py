@@ -227,8 +227,8 @@ def test_dedup_answer_text():
 
 def test_test_mode_config_defaults():
     cfg = TestModeConfig()
-    assert cfg.interval_s == 2.5
-    assert cfg.stable_frames == 2
+    assert cfg.interval_s == 1.2
+    assert cfg.stable_frames == 1
     assert cfg.change_threshold == 5.0
     assert cfg.stable_threshold == 1.0
     assert cfg.min_send_interval_s == 5.0

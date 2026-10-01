@@ -177,8 +177,13 @@ class TestModeConfig(BaseModel):
     """
 
     enabled: bool = True
-    interval_s: float = 2.5  # capture tick
-    stable_frames: int = 2  # consecutive identical captures before send
+    # Latency budget (measured): detection ≈ interval × stable_frames,
+    # LLM ≈ 2-4s dominated by image size. PrintWindow capture is
+    # deterministic (no cursor/noise flicker), so a single stable frame
+    # suffices — cursor blink measures <1.0 diff, already below the
+    # stable_threshold.
+    interval_s: float = 1.2  # capture tick
+    stable_frames: int = 1  # consecutive identical captures before send
     # Change detection is a mean-abs grayscale diff of 48x48 fingerprints
     # (0..255 scale). Measured: different text pages ~17, identical 0,
     # scroll ~17, mouse cursor blink < 1. dHash was BLIND to text pages
@@ -187,8 +192,8 @@ class TestModeConfig(BaseModel):
     change_threshold: float = 5.0  # vs last SENT frame — below = no change
     min_send_interval_s: float = 5.0
     backoff_s: float = 15.0
-    max_image_dim: int = 1600
-    jpeg_quality: int = 80
+    max_image_dim: int = 1280  # px, longest side sent to the LLM (text stays readable, payload -40%)
+    jpeg_quality: int = 72
 
 
 class Config(BaseModel):
