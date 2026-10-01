@@ -790,3 +790,30 @@ def test_build_windows_sweeps_stale_bundle_trees():
         "sweep must run after the flatten step"
     )
     ps1.encode("ascii")  # ps1 must stay ASCII-only (PowerShell 5.1 parser)
+
+
+def test_app_icon_is_multisize_square_ico():
+    """The Windows app icon must be a square multi-size .ico.
+
+    Regression 2026-10-01: the previous file was a single non-square
+    256x233 image — Windows shell refused to render it and showed a
+    generic icon in "Installed apps" / taskbar.
+    """
+    import struct
+
+    ico = Path(__file__).resolve().parents[1] / "scripts" / "logo_mockingbird.ico"
+    data = ico.read_bytes()
+    assert data[:4] == b"\x00\x00\x01\x00", "not an ICO file"
+    n = struct.unpack("<H", data[4:6])[0]
+    assert n >= 4, f"too few sizes ({n}) — need small sizes for shell/taskbar"
+    sizes = []
+    off = 6
+    for _ in range(n):
+        w, h, _, _, _, bpp, _size, _offset = struct.unpack("<BBBBHHII", data[off:off+16])
+        W, H = w or 256, h or 256
+        assert W == H, f"non-square icon size {W}x{H} — Windows shell ignores it"
+        assert bpp == 32, f"{W}x{H} has bpp={bpp}, need 32 (alpha)"
+        sizes.append(W)
+        off += 16
+    for required in (16, 32, 48, 256):
+        assert required in sizes, f"missing {required}px size (have {sizes})"
