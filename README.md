@@ -10,6 +10,8 @@
 💬 **Чат сообщества в Telegram: <https://t.me/MOCKINGBird_release>** —
 вопросы, обсуждение релизов, помощь.
 
+> 🇷🇺 Русский · 🇬🇧 [README_EN.md (English)](langs/README_EN.md) · 🇪🇸 [README_ES.md (Español)](langs/README_ES.md)
+
 Десктопный ассистент для технических интервью: распознавание речи в реальном
 времени и подсказки ответов из базы знаний и LLM. Аудио проходит через Silero
 VAD → faster-whisper (large-v3-turbo, локально, CUDA с автоматическим
