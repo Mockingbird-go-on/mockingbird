@@ -474,6 +474,19 @@ class _AnswerPane(QWidget):
         """Store the current query for regeneration."""
         self._current_query = query
 
+    def retheme(self) -> None:
+        """Repaint the regenerate button with the current theme.
+
+        The icon and border stylesheet are inline-styled; without this the
+        old theme's colors linger after a switch. ``show_regenerate``
+        panes have no button at all — guard for them.
+        """
+        btn = getattr(self, "_regenerate_btn", None)
+        if btn is None:
+            return
+        btn.setStyleSheet(_regen_btn_style())
+        btn.set_icon_color(theme.current.text_secondary)
+
     def _on_anchor_clicked(self, url) -> None:
         """Handle clicks on ``<a>`` links inside the answer browser.
 
@@ -718,10 +731,9 @@ class InterviewPanel(QWidget):
 
     def retheme(self) -> None:
         """Re-apply theme colors to the live widget styles and re-render content."""
-        # Regenerate button: icon + border stylesheet are themed inline —
-        # refresh both or the old theme's colors linger after a switch.
-        self._regenerate_btn.setStyleSheet(_regen_btn_style())
-        self._regenerate_btn.set_icon_color(theme.current.text_secondary)
+        # Regenerate button (owned by the LLM answer pane, not this panel):
+        # refresh its icon color and border stylesheet on theme switch.
+        self._answer_llm.retheme()
         self._set_question_placeholder(
             self._question.property("placeholder") or self._question.text() == _PLACEHOLDER_FN()
         )
