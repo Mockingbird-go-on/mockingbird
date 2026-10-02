@@ -80,8 +80,12 @@ class ResumePanel(QWidget):
         # labels hard to read.
         group.setStyleSheet(
             f"QGroupBox {{ background-color: {theme.current.surface};"
-            " border: 1px solid palette(mid); border-radius: 4px;"
-            " margin-top: 12px; padding: 8px 6px 6px 6px; }}"
+            # NOTE: palette(mid) in a border declaration makes Qt's
+            # stylesheet parser fail ("Could not parse stylesheet") and
+            # drop the WHOLE rule — use a real color instead.
+            f" border: 1px solid {theme.current.border};"
+            " border-radius: 4px;"
+            " margin-top: 12px; padding: 8px 6px 6px 6px; }"
             "QGroupBox::title { subcontrol-origin: margin;"
             " left: 10px; padding: 0 4px; }"
         )
@@ -225,8 +229,12 @@ class ResumePanel(QWidget):
         # re-apply with the current theme or the old colors linger.
         self._group.setStyleSheet(
             f"QGroupBox {{ background-color: {theme.current.surface};"
-            " border: 1px solid palette(mid); border-radius: 4px;"
-            " margin-top: 12px; padding: 8px 6px 6px 6px; }}"
+            # NOTE: palette(mid) in a border declaration makes Qt's
+            # stylesheet parser fail ("Could not parse stylesheet") and
+            # drop the WHOLE rule — use a real color instead.
+            f" border: 1px solid {theme.current.border};"
+            " border-radius: 4px;"
+            " margin-top: 12px; padding: 8px 6px 6px 6px; }"
             "QGroupBox::title { subcontrol-origin: margin;"
             " left: 10px; padding: 0 4px; }"
         )

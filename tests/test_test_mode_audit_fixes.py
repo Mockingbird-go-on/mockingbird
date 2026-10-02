@@ -453,11 +453,13 @@ def test_retheme_covers_regenerate_button_and_resume_panel():
     import mockingbird.ui.interview_panel as ip
     import mockingbird.ui.modules_panel as mp
 
-    # Regenerate button: icon color AND stylesheet refreshed in retheme().
+    # Regenerate button: icon color AND stylesheet refreshed on retheme.
+    # The button is owned by the LLM _AnswerPane; InterviewPanel delegates.
     src = inspect.getsource(ip.InterviewPanel.retheme)
-    assert "_regenerate_btn" in src
-    assert "set_icon_color" in src
-    assert "setStyleSheet" in src
+    assert "_answer_llm.retheme()" in src
+    psrc = inspect.getsource(ip._AnswerPane.retheme)
+    assert "set_icon_color" in psrc
+    assert "setStyleSheet" in psrc
 
     # ResumePanel.update_theme must repaint the group-box card and hint
     # label too (they were inline-styled at build time only).
@@ -468,3 +470,32 @@ def test_retheme_covers_regenerate_button_and_resume_panel():
     bsrc = inspect.getsource(mp.ResumePanel._build_ui)
     assert "self._group" in bsrc
     assert "self._hint" in bsrc
+
+
+def test_resume_groupbox_stylesheet_is_parseable():
+    """`}}` in a non-f-string literal left a stray brace -> Qt dropped the
+    whole rule (warning + the card border never themed)."""
+    import inspect
+
+    import mockingbird.ui.modules_panel as mp
+
+    src = inspect.getsource(mp.ResumePanel._build_ui) + inspect.getsource(
+        mp.ResumePanel.update_theme
+    )
+    assert 'padding: 8px 6px 6px 6px; }}"' not in src
+    # palette(mid) must not appear in actual style code (comment mentions OK)
+    assert '" border: 1px solid palette(mid);' not in src.replace("f\"", '"')
+
+
+def test_answer_pane_retheme_handles_missing_button():
+    """_AnswerPane(show_regenerate=False) has no _regenerate_btn — retheme
+    must not raise (regression: InterviewPanel.retheme touched the attr)."""
+    from PySide6.QtWidgets import QApplication
+
+    from mockingbird.ui import interview_panel as ip
+
+    app = QApplication.instance() or QApplication([])
+    pane = ip._AnswerPane("KB", show_regenerate=False)
+    pane.retheme()  # must be a silent no-op
+    pane2 = ip._AnswerPane("LLM", show_regenerate=True)
+    pane2.retheme()  # has the button — repaints fine
