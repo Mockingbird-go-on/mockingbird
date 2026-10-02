@@ -404,3 +404,24 @@ def test_idle_placeholder_translations_exist():
             (Path("src/mockingbird/assets/lang") / f"{lang}.json").read_text("utf-8")
         )
         assert key in d, lang
+
+
+# -- Screenshot question visible immediately (2026-10-02) ---------------------
+
+
+def test_screenshot_pending_signal_and_handler():
+    import inspect
+
+    import mockingbird.ui.interview_panel as ip
+    import mockingbird.ui.main_window as mw
+    from mockingbird import events
+
+    assert hasattr(events.AppSignals, "screenshot_pending")
+    assert hasattr(ip.InterviewPanel, "on_screenshot_pending")
+    # The handler must add the history entry immediately (before the LLM).
+    src = inspect.getsource(ip.InterviewPanel.on_screenshot_pending)
+    assert "_history.add_entry" in src
+    assert "_LLM_PLACEHOLDER_FN" in src
+    # And main_window wires the signal.
+    mw_src = inspect.getsource(mw.MainWindow)
+    assert "screenshot_pending" in mw_src
