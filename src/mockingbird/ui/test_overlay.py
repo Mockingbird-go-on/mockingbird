@@ -105,14 +105,16 @@ class TestModeOverlay(QWidget):
         self._status.setStyleSheet(
             f"color: {theme.current.text}; font-size: 9px;"
         )
-        root.addWidget(self._status)
-        # Manual resize handle (frameless window: no system resize borders).
+        # Manual resize handle (frameless window: no system resize borders)
+        # sits on the SAME row as the status text — no wasted bottom strip.
         from PySide6.QtWidgets import QSizeGrip
 
-        grip_row = QHBoxLayout()
-        grip_row.addStretch(1)
-        grip_row.addWidget(QSizeGrip(self))
-        root.addLayout(grip_row)
+        bottom_row = QHBoxLayout()
+        bottom_row.setContentsMargins(0, 0, 0, 0)
+        bottom_row.setSpacing(6)
+        bottom_row.addWidget(self._status, 1)
+        bottom_row.addWidget(QSizeGrip(self), 0, Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignRight)
+        root.addLayout(bottom_row)
 
         # Liveness indicator: uptime in the header, refreshed every second —
         # a dead watcher loop is immediately visible (clock stops).
