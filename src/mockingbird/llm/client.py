@@ -505,18 +505,29 @@ def _extract_yaml_list(text: str) -> list:
     else:
         # Drop leading prose up to the first list/mapping token.
         cleaned = re.sub(r"^.*?(\n- |\ntopics:|\nitems:|\nblocks:)", r"\1", cleaned, flags=re.DOTALL)
-    try:
-        data = yaml.safe_load(cleaned)
-    except yaml.YAMLError:
-        log.warning("llm: bad YAML from model")
+        try:
+            data = yaml.safe_load(cleaned)
+        except yaml.YAMLError as exc:
+            log.warning(
+                "llm: bad YAML from model: %s; head=%r tail=%r",
+                str(exc).splitlines()[0] if str(exc) else exc,
+                cleaned[:300],
+                cleaned[-200:],
+            )
+            return []
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            for key in ("topics", "blocks", "items"):
+                if isinstance(data.get(key), list):
+                    return data[key]
+        log.warning(
+            "llm: YAML parsed but not a topic list (type=%s, keys=%s); head=%r",
+            type(data).__name__,
+            list(data)[:10] if isinstance(data, dict) else "-",
+            cleaned[:300],
+        )
         return []
-    if isinstance(data, list):
-        return data
-    if isinstance(data, dict):
-        for key in ("topics", "blocks", "items"):
-            if isinstance(data.get(key), list):
-                return data[key]
-    return []
 
 
 def _extract_json_object(text: str) -> dict | None:
@@ -1757,7 +1768,16 @@ class LlmClient:
                 max_tokens=max_tokens,
             )
             text = (response.choices[0].message.content or "").strip()
-            return _extract_yaml_list(text)
+            parsed = _extract_yaml_list(text)
+            if not parsed:
+                log.warning(
+                    "llm: generate_kb_topics — LLM answer did not yield topics "
+                    "(len=%d, finish=%s); head=%r",
+                    len(text),
+                    response.choices[0].finish_reason if response.choices else "?",
+                    text[:300],
+                )
+            return parsed
         except Exception as exc:  # noqa: BLE001
             log.warning("LLM generate_kb_topics failed: %s", exc)
             return []
