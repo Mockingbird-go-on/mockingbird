@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 
 from PySide6.QtCore import QSettings, QSize, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
@@ -40,6 +41,20 @@ def _format_elapsed(seconds: int) -> str:
     if seconds >= 3600:
         return f"{seconds // 3600}:{(seconds % 3600) // 60:02d}:{seconds % 60:02d}"
     return f"{seconds // 60:02d}:{seconds % 60:02d}"
+
+
+def _window_pid(hwnd: int) -> int | None:
+    """Owning process id of a Win32 window (None off-Windows/on failure)."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+
+        pid = ctypes.c_ulong()
+        ctypes.windll.user32.GetWindowThreadProcessId(int(hwnd), ctypes.byref(pid))
+        return int(pid.value) or None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 class MainWindow(QMainWindow):
@@ -81,6 +96,7 @@ class MainWindow(QMainWindow):
         self._test_overlay = None
         self._picker = None
         self._last_test_text = ""
+        self._test_llm_error_notified_at = 0.0
         self._session_timer = QTimer(self)
         self._session_timer.setInterval(1000)
         self._session_timer.timeout.connect(self._tick_session)
@@ -838,7 +854,7 @@ class MainWindow(QMainWindow):
         self._picker.start()
 
     def _stop_test_mode(self) -> None:
-        self._picker = None
+        self._dispose_picker()
         self._test_btn.setChecked(False)
         ov = self._test_overlay
         self._test_overlay = None
@@ -847,8 +863,19 @@ class MainWindow(QMainWindow):
             ov.close()
             ov.deleteLater()
 
-    def _on_test_pick_cancelled(self) -> None:
+    def _dispose_picker(self) -> None:
+        """Close and schedule deletion of a live window picker (if any)."""
+        p = getattr(self, "_picker", None)
         self._picker = None
+        if p is not None:
+            try:
+                p.close()
+                p.deleteLater()
+            except RuntimeError:  # already deleted (C++ object gone)
+                pass
+
+    def _on_test_pick_cancelled(self) -> None:
+        self._dispose_picker()
         self._test_btn.setChecked(False)
 
     def _on_test_capture_failed(self, msg: str) -> None:
@@ -871,6 +898,10 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(3000, _close)  # let the user read the status
 
     def _on_test_window_picked(self, hwnd: int, title: str, rect) -> None:
+        # Windows reuses hwnd values: remember the owning PID and verify it
+        # on every capture — a closed target whose hwnd got reassigned to an
+        # unrelated window must not leak into the LLM frames.
+        self._test_hwnd_pid = _window_pid(hwnd)
         self._launch_test_watcher(title, lambda: self._capture_window(hwnd))
 
     def _on_test_region_picked(self, rect) -> None:
@@ -889,6 +920,7 @@ class MainWindow(QMainWindow):
             old.deleteLater()
         self._app.stop_test_mode()
         watcher = self._app.start_test_mode(capture_fn)
+        self._test_llm_error_notified_at = 0.0  # fresh warning budget per run
         ov = TestModeOverlay(title)
         ov.stop_requested.connect(self._stop_test_mode)
         ov.force_requested.connect(self._app.force_test_frame)
@@ -914,6 +946,13 @@ class MainWindow(QMainWindow):
     def _capture_window(self, hwnd: int):
         from mockingbird.ui.window_capture import capture_window
 
+        expected_pid = getattr(self, "_test_hwnd_pid", None)
+        if expected_pid is not None:
+            actual_pid = _window_pid(hwnd)
+            if actual_pid is not None and actual_pid != expected_pid:
+                raise RuntimeError(
+                    t("окно закрыто или недоступно — наблюдение остановлено")
+                )
         cfg = self._app.config.test_mode
         image, jpeg, pix = capture_window(
             hwnd, max_dim=cfg.max_image_dim, jpeg_quality=cfg.jpeg_quality
@@ -941,6 +980,17 @@ class MainWindow(QMainWindow):
             return
         if text == "\u23f3":  # busy marker: frame deferred, voice answer streaming
             ov.set_status(t("ждём — идёт голосовой ответ…"))
+            return
+        if not ok and text == t("LLM не настроен — задайте модель в настройках"):
+            # Terminal outcome from the worker: the watcher would spin
+            # silently — stop the mode cleanly and tell the user what to fix.
+            ov.set_status(text)
+            from mockingbird.ui.notify import bus as notify_bus_local
+
+            notify_bus_local.warning(
+                t("Режим «Тест»"), text,
+            )
+            self._stop_test_mode()
             return
         if not ok:
             ov.set_status(t("ошибка LLM, повтор через пару секунд…"))

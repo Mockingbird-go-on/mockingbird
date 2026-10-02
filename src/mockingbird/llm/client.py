@@ -825,8 +825,11 @@ class LlmClient:
             )
         return not self.is_streaming
 
-    # -- B1: background inflight slots ----------------------------------------
+    # Public alias: App code (test mode) must not reach into the private
+    # method — if the gate is refactored, this shim keeps callers honest.
+    try_yield_to_answer_stream = _yield_to_answer_stream
 
+    # -- B1: background inflight slots ----------------------------------------
     _BG_DRAIN_WAIT_S = 1.5
 
     @contextlib.contextmanager
@@ -1040,13 +1043,18 @@ class LlmClient:
             ok = bool(response.choices)
         except Exception as exc:  # noqa: BLE001
             low = str(exc).lower()
-            # Provider rejected the image content — definitive "no vision".
+            # Provider rejected the image content — definitive "no vision"
+            # (worth caching for the session).
             if any(t in low for t in ("image", "modality", "content type", "vision", "multimodal")):
                 log.info("llm: model %s does not support images (%s)", self._cfg.model, exc)
                 ok = False
             else:
-                log.warning("llm: vision probe failed (%s) — assuming no vision", exc)
-                ok = False
+                # Transient failure (network timeout, 5xx, auth hiccup):
+                # report False to the caller but DO NOT cache — a single
+                # offline moment must not permanently disable the
+                # screenshot/test buttons for the whole session.
+                log.warning("llm: vision probe failed (%s) — transient, not cached", exc)
+                return False
         self._vision_cache[key] = ok
         return ok
 

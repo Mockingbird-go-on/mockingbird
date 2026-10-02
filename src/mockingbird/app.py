@@ -334,16 +334,25 @@ class App:
 
     def check_vision_async(self) -> None:
         """Probe vision support of the current LLM off the GUI thread."""
+        # Single-flight: three call sites (window show, session start,
+        # settings apply) must not stack concurrent probe threads — each
+        # would fire its own HTTP request before the cache lands.
+        if getattr(self, "_vision_probe_inflight", False):
+            return
+        self._vision_probe_inflight = True
 
         def _worker() -> None:
-            if not self.llm.available:
-                self.signals.vision_probe_result.emit(None)
-                return
             try:
-                ok = self.llm.probe_vision()
-            except Exception:  # noqa: BLE001
-                ok = False
-            self.signals.vision_probe_result.emit(ok)
+                if not self.llm.available:
+                    self.signals.vision_probe_result.emit(None)
+                    return
+                try:
+                    ok = self.llm.probe_vision()
+                except Exception:  # noqa: BLE001
+                    ok = False
+                self.signals.vision_probe_result.emit(ok)
+            finally:
+                self._vision_probe_inflight = False
 
         threading.Thread(target=_worker, name="vision-probe", daemon=True).start()
 
@@ -452,10 +461,22 @@ class App:
 
     def stop_test_mode(self) -> None:
         w = getattr(self, "_test_watcher", None)
+        # Bump the generation FIRST so any in-flight LLM worker sees itself
+        # as stale and drops its result without touching the state.
+        self._test_generation = getattr(self, "_test_generation", 0) + 1
         if w is not None:
             w.stop()
             w.deleteLater()
             self._test_watcher = None
+        # Join the in-flight worker (bounded): a stop→start cycle must not
+        # leave two concurrent answer_test_screen requests fighting for the
+        # same provider connection (the voice-answer gate does not
+        # serialize test frames against each other).
+        t = getattr(self, "_test_worker_thread", None)
+        if t is not None and t.is_alive() and t is not threading.current_thread():
+            t.join(timeout=5.0)
+            if t.is_alive():
+                log.warning("test-mode: LLM worker did not stop within 5s")
 
     @property
     def test_watcher(self):
@@ -467,11 +488,16 @@ class App:
         import time as _time
 
         generation = getattr(self, "_test_generation", 0)
+        # Identity guard (runs on the GUI thread — signal dispatch — so
+        # reading the watcher here is race-free). The worker compares by
+        # identity later, closing the TOCTOU window where a stop→start
+        # cycle lands between the stale-check and mark_result.
+        watcher_ref = self._test_watcher
 
         def _stale() -> bool:
             return (
                 generation != getattr(self, "_test_generation", 0)
-                or self.test_watcher is None
+                or self.test_watcher is not watcher_ref
             )
 
         def _worker() -> None:
@@ -483,27 +509,25 @@ class App:
             if _stale():
                 log.info("test-mode: stale frame dropped (watcher restarted)")
                 return
-            # Unconfigured LLM must not become an endless silent backoff —
-            # stop the watcher and tell the user what to fix.
+            # Unconfigured LLM must not become an endless silent backoff.
+            # Cross-thread QTimer.stop() is UB — terminate via the GUI-side
+            # terminal marker instead: main_window reacts by stopping the
+            # watcher and unchecking the button.
             if self.llm is None or not getattr(self.llm, "available", False):
-                log.warning("test-mode: LLM not configured — stopping watcher")
-                w = self.test_watcher
-                if w is not None:
-                    w.stop()
+                log.warning("test-mode: LLM not configured — requesting stop")
                 self.signals.test_answer.emit(
                     False, t("LLM не настроен — задайте модель в настройках")
                 )
                 return
             # Single-flight priority: a voice answer stream must not compete
             # with a test frame. Short wait; on timeout the frame is DROPPED
-            # (not an error — no backoff) — the change gate will re-send it
-            # once the content changes again, or the user can force it.
+            # (not an error — no backoff, no fingerprint commit) — the
+            # change gate will re-send it once the voice stream is free.
             try:
-                if not self.llm._yield_to_answer_stream(timeout=5.0):
+                if not self.llm.try_yield_to_answer_stream(timeout=5.0):
                     log.info("test-mode: frame skipped — answer stream busy")
-                    w = self.test_watcher
-                    if w is not None:
-                        w.mark_result(True, "", was_send=False)
+                    if not _stale():
+                        watcher_ref.mark_result(True, "", was_send=False)
                     # ok=True with empty text but NOT parsed as "no test":
                     # dedicated payload marker keeps the overlay honest.
                     self.signals.test_answer.emit(True, "\u23f3")  # ⏳ busy marker
@@ -544,12 +568,12 @@ class App:
             finally:
                 if _stale():
                     return  # new run owns the watcher; don't touch its state
-                w = self.test_watcher
-                if w is not None:
-                    w.mark_result(ok, text)
+                watcher_ref.mark_result(ok, text)
                 self.signals.test_answer.emit(ok, text)
 
-        threading.Thread(target=_worker, name="test-mode-llm", daemon=True).start()
+        th = threading.Thread(target=_worker, name="test-mode-llm", daemon=True)
+        self._test_worker_thread = th
+        th.start()
 
     def force_test_frame(self) -> None:
         w = self.test_watcher

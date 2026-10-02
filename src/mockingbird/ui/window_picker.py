@@ -33,7 +33,15 @@ def pick_window_under_cursor() -> tuple[int, str, QRect] | None:
         _fields_ = [("x", wintypes.LONG), ("y", wintypes.LONG)]
 
     pos = QCursor.pos()
-    pt = POINT(pos.x(), pos.y())
+    # Use the native cursor position directly: QCursor.pos() returns Qt
+    # virtual-desktop coordinates which can mismatch physical pixels under
+    # mixed-DPI monitors — GetCursorPos is always physical.
+    import ctypes.wintypes as _wt
+
+    native = _wt.POINT()
+    if not ctypes.windll.user32.GetCursorPos(ctypes.byref(native)):
+        return None
+    pt = POINT(native.x, native.y)
     hwnd = ctypes.windll.user32.WindowFromPoint(pt)
     if not hwnd:
         return None
@@ -80,17 +88,21 @@ class WindowPickOverlay(QWidget):
         self._fallback = allow_region_fallback and sys.platform != "win32"
         self.setCursor(Qt.CursorShape.CrossCursor)
         self._shot: QPixmap | None = None
-        screen = QApplication.primaryScreen()
-        geo = screen.availableGeometry() if screen else QRect(0, 0, 1920, 1080)
+        # Multi-monitor: cover the screen the cursor is on (the user is
+        # about to pick a window THERE); fall back to the primary screen.
+        from PySide6.QtGui import QCursor as _QC
+
+        scr = QApplication.screenAt(_QC.pos()) or QApplication.primaryScreen()
+        geo = scr.availableGeometry() if scr else QRect(0, 0, 1920, 1080)
         self.setGeometry(geo)
         self._hint = t("Кликните по окну с тестом (Esc — отмена)")
 
     def start(self) -> None:
-        screen = QApplication.primaryScreen()
-        if screen is None:
+        scr = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+        if scr is None:
             self.cancelled.emit()
             return
-        self._shot = screen.grabWindow(0)
+        self._shot = scr.grabWindow(0)
         self.showFullScreen()
         self.activateWindow()
         self.raise_()

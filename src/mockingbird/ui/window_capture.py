@@ -158,7 +158,22 @@ def capture_window(hwnd: int, max_dim: int = 1600, jpeg_quality: int = 80):
 
     if pix is None or pix.isNull():
         # Fallback: legacy BitBlt via Qt (works for non-GPU windows).
+        # Pick the screen the window lives on — grabWindow on the primary
+        # screen mangles windows that live on secondary monitors.
         screen = QGuiApplication.primaryScreen()
+        if rect is not None and sys.platform == "win32":
+            import ctypes
+            from ctypes import wintypes
+
+            rc = wintypes.RECT()
+            if ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rc)):
+                center_x = (rc.left + rc.right) // 2
+                center_y = (rc.top + rc.bottom) // 2
+                from PySide6.QtCore import QPoint
+
+                scr = QGuiApplication.screenAt(QPoint(center_x, center_y))
+                if scr is not None:
+                    screen = scr
         if screen is None:
             raise RuntimeError(t("нет экрана"))
         pix = screen.grabWindow(int(hwnd))
