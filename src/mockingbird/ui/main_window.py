@@ -274,12 +274,13 @@ class MainWindow(QMainWindow):
         if getattr(self, "_capture_filter", None) is not None:
             return
         from PySide6.QtCore import QEvent
+        from PySide6.QtWidgets import QWidget
 
         main = self
 
         class _CaptureAffinityFilter(QObject):
             def eventFilter(self, obj, ev):  # noqa: N802 — Qt naming
-                if ev.type() == QEvent.Type.Show and obj.isWindow():
+                if ev.type() == QEvent.Type.Show and isinstance(obj, QWidget) and obj.isWindow():
                     try:
                         main._apply_capture_affinity_to(obj)
                     except Exception:  # noqa: BLE001 — must never crash UI
