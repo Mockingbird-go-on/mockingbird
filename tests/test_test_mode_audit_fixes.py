@@ -627,6 +627,9 @@ def test_capture_affinity_event_filter_syncs_dialogs():
     fsrc = inspect.getsource(mw.MainWindow._install_capture_filter)
     assert "QEvent.Type.Show" in fsrc
     assert "installEventFilter" in fsrc
+    # app-wide filters see QWindow/QObject too — isWindow() only exists on
+    # QWidget; without the isinstance guard the filter crashes at startup
+    assert "isinstance(obj, QWidget)" in fsrc
 
     # filter installed before applying (also on showEvent path)
     asrc = inspect.getsource(mw.MainWindow._apply_capture_affinity)
