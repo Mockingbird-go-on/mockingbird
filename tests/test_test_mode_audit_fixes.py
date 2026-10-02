@@ -499,3 +499,42 @@ def test_answer_pane_retheme_handles_missing_button():
     pane.retheme()  # must be a silent no-op
     pane2 = ip._AnswerPane("LLM", show_regenerate=True)
     pane2.retheme()  # has the button — repaints fine
+
+
+def test_toolbar_icons_refreshed_on_theme_switch():
+    """All themed toolbar buttons must be re-rendered in _refresh_toolbar_icons
+    and the call must come AFTER theme.apply_theme + retheme() (order guard:
+    a crash or reorder used to leave stale-colored icons)."""
+    import inspect
+
+    import mockingbird.ui.main_window as mw
+
+    src = inspect.getsource(mw.MainWindow._refresh_toolbar_icons)
+    for btn in ("_start_btn", "_stop_btn", "_mute_btn", "_settings_btn",
+                "_shot_btn", "_test_btn", "_cancel_load_btn"):
+        assert btn in src, f"{btn} missing from _refresh_toolbar_icons"
+
+    apply_src = inspect.getsource(mw.MainWindow._apply_theme)
+    i_theme = apply_src.index("theme.apply_theme")
+    i_retheme = apply_src.index("self._interview.retheme()")
+    i_refresh = apply_src.index("self._refresh_toolbar_icons()")
+    assert i_theme < i_refresh and i_retheme < i_refresh
+
+
+def test_default_icon_color_follows_theme():
+    """icons.icon() with no explicit color must render with the CURRENT
+    theme's text color (sanity: dark vs light produce different pixels)."""
+    from PySide6.QtGui import QImage
+    from PySide6.QtWidgets import QApplication
+
+    import mockingbird.ui.theme as th
+    from mockingbird.ui.icons import render_svg
+
+    app = QApplication.instance() or QApplication([])
+    th.apply_theme(app, "dark")
+    dark_img = render_svg("settings-2", th.current.text, 20).pixmap(20, 20).toImage()
+    th.apply_theme(app, "light")
+    light_img = render_svg("settings-2", th.current.text, 20).pixmap(20, 20).toImage()
+    d = sum(dark_img.pixelColor(x, y).red() for x in range(20) for y in range(20))
+    l = sum(light_img.pixelColor(x, y).red() for x in range(20) for y in range(20))
+    assert d != l

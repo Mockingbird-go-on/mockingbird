@@ -291,6 +291,11 @@ class MainWindow(QMainWindow):
         self._settings_btn.setIcon(lucide_icon("settings-2"))
         self._shot_btn.setIcon(lucide_icon("camera"))
         self._test_btn.setIcon(lucide_icon("clipboard-check"))
+        # The model-load cancel cross uses text_secondary — repaint it too,
+        # or it keeps the old theme's shade when visible.
+        self._cancel_load_btn.setIcon(
+            lucide_icon("circle-x", color=theme.current.text_secondary)
+        )
 
     def _apply_theme(self, name: str) -> None:
         theme.apply_theme(QApplication.instance(), name)
