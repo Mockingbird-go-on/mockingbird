@@ -50,7 +50,9 @@ def test_onboarding_test_llm_names_are_module_imported():
 def test_no_shadowed_pyside_imports_in_onboarding():
     src = (SRC / "ui" / "onboarding.py").read_text(encoding="utf-8")
     # The lazy local imports are gone; the module imports own these names.
-    assert "from PySide6.QtCore import Qt, QEvent, QThread, QTimer, Signal" in src
+    # QEvent was dropped from onboarding in 1.0.4.0 (no local key-event
+    # filters left); the anchor tracks the module-level QtCore import.
+    assert "from PySide6.QtCore import Qt, QThread, QTimer, Signal" in src
     # Проверяем что импорт QProgressBar добавлен правильно
     assert "from PySide6.QtWidgets import QProgressBar" in src or "QProgressBar" in src
 

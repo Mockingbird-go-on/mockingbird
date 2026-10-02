@@ -505,29 +505,29 @@ def _extract_yaml_list(text: str) -> list:
     else:
         # Drop leading prose up to the first list/mapping token.
         cleaned = re.sub(r"^.*?(\n- |\ntopics:|\nitems:|\nblocks:)", r"\1", cleaned, flags=re.DOTALL)
-        try:
-            data = yaml.safe_load(cleaned)
-        except yaml.YAMLError as exc:
-            log.warning(
-                "llm: bad YAML from model: %s; head=%r tail=%r",
-                str(exc).splitlines()[0] if str(exc) else exc,
-                cleaned[:300],
-                cleaned[-200:],
-            )
-            return []
-        if isinstance(data, list):
-            return data
-        if isinstance(data, dict):
-            for key in ("topics", "blocks", "items"):
-                if isinstance(data.get(key), list):
-                    return data[key]
+    try:
+        data = yaml.safe_load(cleaned)
+    except yaml.YAMLError as exc:
         log.warning(
-            "llm: YAML parsed but not a topic list (type=%s, keys=%s); head=%r",
-            type(data).__name__,
-            list(data)[:10] if isinstance(data, dict) else "-",
+            "llm: bad YAML from model: %s; head=%r tail=%r",
+            str(exc).splitlines()[0] if str(exc) else exc,
             cleaned[:300],
+            cleaned[-200:],
         )
         return []
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        for key in ("topics", "blocks", "items"):
+            if isinstance(data.get(key), list):
+                return data[key]
+    log.warning(
+        "llm: YAML parsed but not a topic list (type=%s, keys=%s); head=%r",
+        type(data).__name__,
+        list(data)[:10] if isinstance(data, dict) else "-",
+        cleaned[:300],
+    )
+    return []
 
 
 def _extract_json_object(text: str) -> dict | None:

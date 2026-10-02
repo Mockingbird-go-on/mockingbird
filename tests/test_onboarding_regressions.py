@@ -65,7 +65,7 @@ def test_main_reruns_checks_after_onboarding():
     )
     # And it must actually REPLACE sys_warnings before the notify push.
     assert main.index("sys_warnings = _rsc(config)") < main.index(
-        'notify_bus.push(\n                t("Проверка системы")'
+        'notify_bus.push(\n                t("Проверка системы"'
     )
 
 
@@ -73,9 +73,18 @@ def test_main_reruns_checks_after_onboarding():
 
 
 def _extract_group_style(source: str, title: str) -> str:
-    """Pull the setStyleSheet block that follows the QGroupBox(title) line."""
-    anchor = f'QGroupBox(t("{title}"))'
-    start = source.index(anchor)
+    """Pull the setStyleSheet block that follows the QGroupBox(title) line.
+
+    The source uses the i18n wrapper: QGroupBox(t("Настройки Whisper")) —
+    the anchor matches either the raw or the wrapped form."""
+    for anchor in (f'QGroupBox(t("{title}"))', f'QGroupBox("{title}")'):
+        try:
+            start = source.index(anchor)
+            break
+        except ValueError:
+            continue
+    else:
+        raise AssertionError(f"QGroupBox({title!r}) not found in source")
     call = source.index(".setStyleSheet(", start)
     # Walk balanced parentheses to the closing paren of the call.
     depth = 0
