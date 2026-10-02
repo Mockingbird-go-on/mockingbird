@@ -495,8 +495,13 @@ class SettingsDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(tabs, 1)
         layout.addWidget(note)
-        layout.addWidget(buttons)
-        layout.addWidget(footer)
+        # Footer (site + version) shares the row with the dialog buttons —
+        # saves a line and sits closer to the content instead of dangling
+        # at the very bottom of the dialog.
+        bottom = QHBoxLayout()
+        bottom.addWidget(footer, 1, Qt.AlignmentFlag.AlignVCenter)
+        bottom.addWidget(buttons, 0, Qt.AlignmentFlag.AlignVCenter)
+        layout.addLayout(bottom)
 
     # --- Tab builders ---
 
