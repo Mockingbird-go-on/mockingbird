@@ -176,11 +176,16 @@ class TestWatcher(QObject):
         would make the change gate swallow the question until the content
         changes again).
         """
+        # Read+clear the pending fingerprint BEFORE releasing the in-flight
+        # slot: the opposite order lets a GUI-tick scheduled in between pass
+        # the _in_flight check, latch a NEW _pending_fp, and this thread then
+        # commits the new frame's fingerprint before its send even started
+        # (the change gate would swallow that question).
+        pending = self._pending_fp
+        self._pending_fp = None
         self._in_flight = False
         if not was_send:
             return  # pending fp stays uncommitted — identical frames re-send
-        pending = self._pending_fp
-        self._pending_fp = None
         if ok:
             # Commit the in-flight fingerprint only now — a real send happened.
             self._last_sent_fp = pending

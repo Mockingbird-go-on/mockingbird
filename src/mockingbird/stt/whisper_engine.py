@@ -886,48 +886,93 @@ def _download_from_github(
             progress_cb(message, percent)
 
     _report("Подключение к GitHub (релиз моделей)…", 0.0)
-    try:
-        req = urllib.request.Request(url, method="GET")
-        # Follow the redirect to objects.githubusercontent.com ourselves so
-        # we can stream with progress + cancel (urlopen follows redirects but
-        # hides the intermediate response; a direct urlopen is fine too).
-        resp = urllib.request.urlopen(req, timeout=30)
-    except Exception as exc:  # noqa: BLE001
-        log.info("whisper: GitHub model release unavailable (%s) — falling back to HuggingFace", exc)
-        return None
-
-    total = float(resp.headers.get("Content-Length") or 0)
+    url_attempts = 3
+    resp = None
+    total = 0.0
+    done = 0.0
+    truncated = False
     zip_path = root / ".github-model-pack.zip"
     root.mkdir(parents=True, exist_ok=True)
     try:
-        if total > 0:
-            # zip + unpacked snapshot coexist during installation → ~2x needed.
-            _ensure_free_space(str(root), total * 2.0, "загрузки модели распознавания")
-        done = 0.0
-        try:
-            with open(zip_path, "wb") as f:
-                while True:
-                    if cancel_event is not None and cancel_event.is_set():
-                        raise RuntimeError("whisper model download cancelled by user")
-                    chunk = resp.read(_CHUNK)
-                    if not chunk:
-                        break
-                    f.write(chunk)
-                    done += len(chunk)
-                    if total > 0:
-                        pct = min(99.0, done / total * 100.0)
-                        _report(
-                            f"Скачивание model-pack.zip: {done / 1e6:.0f} из {total / 1e6:.0f} МБ",
-                            pct,
-                        )
-                    else:
-                        _report(f"Скачивание model-pack.zip: {done / 1e6:.0f} МБ", -1.0)
-        except Exception:
+        for attempt in range(url_attempts):
+            if cancel_event is not None and cancel_event.is_set():
+                raise RuntimeError("whisper model download cancelled by user")
             try:
-                zip_path.unlink()
-            except OSError:
-                pass
-            raise
+                req = urllib.request.Request(url, method="GET")
+                # Follow the redirect to objects.githubusercontent.com ourselves
+                # so we can stream with progress + cancel.
+                resp = urllib.request.urlopen(req, timeout=30)
+            except Exception as exc:  # noqa: BLE001
+                if attempt + 1 < url_attempts:
+                    log.warning(
+                        "whisper: GitHub release fetch failed (%s, attempt %d/%d) — retrying",
+                        exc, attempt + 1, url_attempts,
+                    )
+                    time.sleep(1.5 * (attempt + 1))
+                    continue
+                log.info(
+                    "whisper: GitHub model release unavailable (%s) — falling back to HuggingFace",
+                    exc,
+                )
+                return None
+
+            total = float(resp.headers.get("Content-Length") or 0)
+            try:
+                if total > 0:
+                    # zip + unpacked snapshot coexist during installation → ~2x needed.
+                    _ensure_free_space(str(root), total * 2.0, "загрузки модели распознавания")
+                done = 0.0
+                try:
+                    with open(zip_path, "wb") as f:
+                        while True:
+                            if cancel_event is not None and cancel_event.is_set():
+                                raise RuntimeError(
+                                    "whisper model download cancelled by user"
+                                )
+                            chunk = resp.read(_CHUNK)
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                            done += len(chunk)
+                            if total > 0:
+                                pct = min(99.0, done / total * 100.0)
+                                _report(
+                                    f"Скачивание model-pack.zip: {done / 1e6:.0f} "
+                                    f"из {total / 1e6:.0f} МБ",
+                                    pct,
+                                )
+                            else:
+                                _report(f"Скачивание model-pack.zip: {done / 1e6:.0f} МБ", -1.0)
+                except Exception:
+                    try:
+                        zip_path.unlink()
+                    except OSError:
+                        pass
+                    raise
+            finally:
+                try:
+                    resp.close()
+                except Exception:  # noqa: BLE001
+                    pass
+
+            # Truncation detect: a severed connection also produces a clean EOF —
+            # verify we actually got what Content-Length promised (tolerance 10 MB).
+            truncated = total > 0 and (total - done) > 10 * 1024 * 1024
+            if truncated:
+                log.warning(
+                    "whisper: GitHub model pack truncated: got %.0f MB, expected %.0f MB "
+                    "(attempt %d/%d)",
+                    done / 1e6, total / 1e6, attempt + 1, url_attempts,
+                )
+                try:
+                    zip_path.unlink()
+                except OSError:
+                    pass
+                if attempt + 1 < url_attempts:
+                    time.sleep(1.5 * (attempt + 1))
+                    continue
+                return None
+            break
 
         log.info(
             "whisper: GitHub model pack downloaded: %.0f MB (expected %.0f MB)",
@@ -951,10 +996,11 @@ def _download_from_github(
                 pass
 
     finally:
-        try:
-            resp.close()
-        except Exception:  # noqa: BLE001
-            pass
+        if resp is not None:
+            try:
+                resp.close()
+            except Exception:  # noqa: BLE001
+                pass
     snapshot = _resolve_unpacked_snapshot(root, repo_id)
     if snapshot is not None:
         log.info("whisper: model installed from GitHub release: %s", snapshot)
@@ -1213,43 +1259,45 @@ def resolve_model_path(cfg: WhisperConfig, progress_cb=None, cancel_event=None) 
             "завершения или нажмите «Отмена» перед повтором."
         )
 
-    # ---- primary source: s3.cloud.ru public bucket --------------------------
-    # s3.cloud.ru is our own bucket under our control — faster CDN than
-    # huggingface.co from Russian / CIS networks and not subject to GitHub's
-    # 2 GiB asset cap. Falls back to GitHub, then huggingface_hub.
-    if repo_id in _S3_ASSETS:
-        try:
-            s3_path = _download_from_s3(
-                cfg, repo_id, download_root,
-                progress_cb=progress_cb, cancel_event=cancel_event,
-            )
-            if s3_path is not None:
-                problem = _model_dir_problem(s3_path)
-                if problem is None:
-                    return s3_path
-                log.error(
-                    "whisper: s3-installed model at %s is corrupted (%s) — "
-                    "falling back to GitHub",
-                    s3_path, problem,
-                )
-                _remove_snapshot(s3_path)
-        except Exception as exc:  # noqa: BLE001
-            if cancel_event is not None and cancel_event.is_set():
-                raise
-            if "Недостаточно места" in str(exc):
-                raise
-            log.warning(
-                "whisper: s3.cloud.ru download failed (%s) — trying GitHub", exc,
-            )
-
-    # ---- secondary source: OUR GitHub release (models tag) ------------------
-    # huggingface.co's CDN proved unreachable from frozen Windows builds on
-    # some machines (transfer stalls at 0 bytes while the API works);
-    # github.com release assets are under our control and reliable. Falls
-    # back to the huggingface_hub path below when the release is unreachable
-    # or yields a corrupt snapshot. The flight lock is held throughout and
-    # released by the finally below on every exit path.
+    # The flight lock is held throughout and released by the finally below on
+    # EVERY exit path (including the S3 branch — a leaked lock would
+    # permanently dead-lock retries of this repo until process restart).
     try:
+        # ---- primary source: s3.cloud.ru public bucket ----------------------
+        # s3.cloud.ru is our own bucket under our control — faster CDN than
+        # huggingface.co from Russian / CIS networks and not subject to GitHub's
+        # 2 GiB asset cap. Falls back to GitHub, then huggingface_hub.
+        if repo_id in _S3_ASSETS:
+            try:
+                s3_path = _download_from_s3(
+                    cfg, repo_id, download_root,
+                    progress_cb=progress_cb, cancel_event=cancel_event,
+                )
+                if s3_path is not None:
+                    problem = _model_dir_problem(s3_path)
+                    if problem is None:
+                        return s3_path
+                    log.error(
+                        "whisper: s3-installed model at %s is corrupted (%s) — "
+                        "falling back to GitHub",
+                        s3_path, problem,
+                    )
+                    _remove_snapshot(s3_path)
+            except Exception as exc:  # noqa: BLE001
+                if cancel_event is not None and cancel_event.is_set():
+                    raise
+                if "Недостаточно места" in str(exc):
+                    raise
+                log.warning(
+                    "whisper: s3.cloud.ru download failed (%s) — trying GitHub", exc,
+                )
+
+        # ---- secondary source: OUR GitHub release (models tag) --------------
+        # huggingface.co's CDN proved unreachable from frozen Windows builds
+        # on some machines (transfer stalls at 0 bytes while the API works);
+        # github.com release assets are under our control and reliable. Falls
+        # back to the huggingface_hub path below when the release is
+        # unreachable or yields a corrupt snapshot.
         try:
             if repo_id in _MODEL_RELEASE_ASSETS:
                 gh_path = _download_from_github(
