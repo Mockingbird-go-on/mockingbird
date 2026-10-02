@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/Mockingbird-go-on/mockingbird/actions/workflows/tests.yml/badge.svg)](https://github.com/Mockingbird-go-on/mockingbird/actions/workflows/tests.yml)
 [![Python](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/release/python-3120/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](../LICENSE)
 [![Telegram](https://img.shields.io/badge/chat-Telegram-26A5E4.svg)](https://t.me/MOCKINGBird_release)
 
 💬 **Community chat on Telegram: <https://t.me/MOCKINGBird_release>** —
@@ -20,11 +20,20 @@ fallback); recognized questions are handled by an OpenAI-compatible LLM
 
 **Privacy:** speech recognition and the knowledge base are fully local —
 audio never leaves your machine. The only thing sent out is the **text of the
-questions** to your LLM API (configurable `OPENAI_BASE_URL`); without an API
-key the app works as a local transcriber without hints.
+questions** (or a screenshot for screenshot-to-answer / Test mode) to your LLM
+API (configurable `OPENAI_BASE_URL`); without an API key the app works as a
+local transcriber without hints.
 
 **Primary platform: Windows (single `.exe`).** Linux is supported from
 source.
+
+### Hardware requirements
+
+| Configuration | Minimum | Comfortable |
+|---|---|---|
+| **CUDA (NVIDIA GPU)** | 4 GB VRAM, GTX 1050+ | 6+ GB VRAM (float32), answer in ~5–6 s |
+| **CPU** | 8 GB RAM | 16 GB RAM (int8), answer in ~20–60 s per question |
+| Disk | ~3 GB (CPU build + ~1.6 GB model) | ~4 GB (CUDA build ~2.2 GB) |
 
 ---
 
@@ -35,6 +44,7 @@ source.
 - [Architecture](#architecture)
 - [Install & Run](#install--run)
 - [Configuration](#configuration)
+- [FAQ](#faq)
 - [Building the Windows .exe](#building-the-windows-exe)
 - [Tests](#tests)
 - [Project Structure](#project-structure)
@@ -71,6 +81,23 @@ source.
 - Question detection: explicit markers, short implicit questions
   ("Prometheus."), LLM classification of long markerless finals, merging
   "tell me about" + pause + "Kubernetes".
+
+**Screenshot-to-answer and Test mode**
+
+- Ctrl+Shift+S or the 📷 button → select a screen region → ask a question
+  about the screenshot; the answer streams into the AI answer panel (requires
+  a vision-capable LLM).
+- Test mode: watches a selected window (your testing system), detects task
+  changes, shows a floating always-on-top overlay "1 → B, 2 → D …".
+- LLM vision support is probed at startup; screenshots are stored locally in
+  `~/.mockingbird/screenshots`.
+
+**Diagnostics**
+
+- On crash — an offer to collect a log archive
+  (`mockingbird-diagnostics-*.zip`, API keys redacted).
+- The log file is always written; the Log tab is optional (zero overhead
+  while disabled).
 
 **Audio capture**
 
@@ -165,12 +192,34 @@ Changing the backend/model requires a restart.
 | Variable | Purpose |
 |---|---|
 | `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `OPENAI_MODEL` | OpenAI-compatible LLM (answers and term explanations; the glossary works offline) |
-| `MOCKINGBIRD_STT_BACKEND` | only `whisper` (the `gigaam` value from old configs is silently migrated) |
 | `MOCKINGBIRD_WHISPER_MODEL` | e.g. `large-v3-turbo` |
 | `MOCKINGBIRD_WHISPER_COMPUTE_TYPE` | `int8` / `int8_float32` / `float32` / `float16` (GTX 1070 / Pascal: `float32`; `int8_float32` degrades RU WER) |
 | `MOCKINGBIRD_WHISPER_WINDOW_SECONDS` / `MOCKINGBIRD_WHISPER_PARTIAL_INTERVAL_MS` | latency knobs |
 | `MOCKINGBIRD_VAD_MIN_SILENCE_MS` / `MOCKINGBIRD_VAD_MIN_SPEECH_MS` | VAD sensitivity, segment finalization |
 | `MOCKINGBIRD_TERMS_LLM_MIN_CHARS` | finals shorter than (default 40) go to the glossary only, without the LLM |
+
+## FAQ
+
+**Where is the app installed and where is my data?**
+The app goes to Program Files; all user data (model, SQLite database, logs,
+screenshots, settings) lives in `%USERPROFILE%\.mockingbird`
+(Linux: `~/.mockingbird`). The uninstaller asks whether to remove it.
+
+**Model download fails with an SSL error / is stuck at 0 %.**
+Usually a corporate proxy or antivirus with SSL inspection. Exclude
+`huggingface.co`, `s3.cloud.ru` and `github.com` from inspection, or download
+the [model pack](https://github.com/Mockingbird-go-on/mockingbird/releases/tag/models)
+manually and place `cache/` next to the installer (see above). The log
+contains a hint on TLS failures.
+
+**Does it work without an LLM key?**
+Yes — as a local transcriber: transcripts and history are recorded, no hints.
+The DevOps glossary works offline.
+
+**My LLM doesn't support images.**
+Screenshot-to-answer and Test mode require a vision-capable model (e.g.
+`gpt-4o-mini`, `qwen-vl-*`). The 📷 button gets disabled with a tooltip;
+the voice assistant keeps working as usual.
 
 ## Building the Windows .exe
 
@@ -196,7 +245,7 @@ model is downloaded on first launch and is not included in the distribution
 ## Tests
 
 ```bash
-QT_QPA_PLATFORM=offscreen PYTHONPATH=src pytest -q              # non-Qt suite (568 tests)
+QT_QPA_PLATFORM=offscreen PYTHONPATH=src pytest -q              # non-Qt suite (1250+ tests)
 MOCKINGBIRD_TEST_WHISPER=1 pytest tests/test_whisper_engine.py  # integration
 ```
 

@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/Mockingbird-go-on/mockingbird/actions/workflows/tests.yml/badge.svg)](https://github.com/Mockingbird-go-on/mockingbird/actions/workflows/tests.yml)
 [![Python](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/release/python-3120/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](../LICENSE)
 [![Telegram](https://img.shields.io/badge/chat-Telegram-26A5E4.svg)](https://t.me/MOCKINGBird_release)
 
 💬 **Chat de la comunidad en Telegram: <https://t.me/MOCKINGBird_release>** —
@@ -20,12 +20,21 @@ las procesa un LLM compatible con OpenAI (DeepSeek por defecto).
 
 **Privacidad:** el reconocimiento de voz y la base de conocimiento son
 completamente locales — el audio nunca sale de tu máquina. Lo único que se
-envía al exterior es el **texto de las preguntas** a tu API de LLM
-(configurable con `OPENAI_BASE_URL`); sin clave de API la aplicación funciona
-como transcriptor local sin sugerencias.
+envía al exterior es el **texto de las preguntas** (o una captura de pantalla
+para screenshot-to-answer / modo «Test») a tu API de LLM (configurable con
+`OPENAI_BASE_URL`); sin clave de API la aplicación funciona como transcriptor
+local sin sugerencias.
 
 **Plataforma principal: Windows (un solo `.exe`).** Linux se soporta desde
 el código fuente.
+
+### Requisitos de hardware
+
+| Configuración | Mínimo | Cómodo |
+|---|---|---|
+| **CUDA (GPU NVIDIA)** | 4 GB VRAM, GTX 1050+ | 6+ GB VRAM (float32), respuesta en ~5–6 s |
+| **CPU** | 8 GB RAM | 16 GB RAM (int8), respuesta en ~20–60 s por pregunta |
+| Disco | ~3 GB (build CPU + modelo ~1.6 GB) | ~4 GB (build CUDA ~2.2 GB) |
 
 ---
 
@@ -36,6 +45,7 @@ el código fuente.
 - [Arquitectura](#arquitectura)
 - [Instalación y ejecución](#instalación-y-ejecución)
 - [Configuración](#configuración)
+- [FAQ](#faq)
 - [Compilación del .exe para Windows](#compilación-del-exe-para-windows)
 - [Pruebas](#pruebas)
 - [Estructura del proyecto](#estructura-del-proyecto)
@@ -76,6 +86,24 @@ el código fuente.
 - Detección de preguntas: marcadores explícitos, preguntas implícitas cortas
   («Prometheus.»), clasificación por LLM de finales largos sin marcadores,
   fusión de «hablame de» + pausa + «Kubernetes».
+
+**Captura de pantalla a respuesta y modo «Test»**
+
+- Ctrl+Shift+S o el botón 📷 → selecciona una región de pantalla → pregunta
+  sobre la captura; la respuesta se transmite al panel «Respuesta de la IA»
+  (requiere un LLM con capacidad de visión).
+- Modo «Test»: vigila una ventana seleccionada (tu plataforma de tests),
+  detecta cambios de tarea, muestra un overlay flotante «1 → B, 2 → D …»
+  siempre visible.
+- La compatibilidad de visión del LLM se comprueba al inicio; las capturas
+  se guardan localmente en `~/.mockingbird/screenshots`.
+
+**Diagnóstico**
+
+- Ante un fallo — oferta de recopilar un archivo de registros
+  (`mockingbird-diagnostics-*.zip`, claves API redactadas).
+- El archivo de registro se escribe siempre; la pestaña «Log» es opcional
+  (coste cero mientras está desactivada).
 
 **Captura de audio**
 
@@ -176,12 +204,35 @@ ruta del glosario). Cambiar el backend/modelo requiere reiniciar.
 | Variable | Propósito |
 |---|---|
 | `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `OPENAI_MODEL` | LLM compatible con OpenAI (respuestas y explicaciones de términos; el glosario funciona offline) |
-| `MOCKINGBIRD_STT_BACKEND` | solo `whisper` (el valor `gigaam` de configuraciones antiguas se migra silenciosamente) |
 | `MOCKINGBIRD_WHISPER_MODEL` | p. ej. `large-v3-turbo` |
 | `MOCKINGBIRD_WHISPER_COMPUTE_TYPE` | `int8` / `int8_float32` / `float32` / `float16` (GTX 1070 / Pascal: `float32`; `int8_float32` empeora el WER de ruso) |
 | `MOCKINGBIRD_WHISPER_WINDOW_SECONDS` / `MOCKINGBIRD_WHISPER_PARTIAL_INTERVAL_MS` | controles de latencia |
 | `MOCKINGBIRD_VAD_MIN_SILENCE_MS` / `MOCKINGBIRD_VAD_MIN_SPEECH_MS` | sensibilidad del VAD, finalización de segmentos |
 | `MOCKINGBIRD_TERMS_LLM_MIN_CHARS` | los finales más cortos que (por defecto 40) van solo al glosario, sin LLM |
+
+## FAQ
+
+**¿Dónde se instala la aplicación y dónde están mis datos?**
+La aplicación se instala en Archivos de programa; todos los datos de usuario
+(modelo, base SQLite, registros, capturas, ajustes) están en
+`%USERPROFILE%\.mockingbird` (Linux: `~/.mockingbird`). El desinstalador
+pregunta si eliminarlos.
+
+**La descarga del modelo falla con error SSL / se queda al 0 %.**
+Normalmente es un proxy corporativo o un antivirus con inspección SSL.
+Excluye `huggingface.co`, `s3.cloud.ru` y `github.com` de la inspección, o
+descarga el [paquete de modelo](https://github.com/Mockingbird-go-on/mockingbird/releases/tag/models)
+manualmente y coloca `cache/` junto al instalador (ver arriba). El registro
+contiene una pista ante fallos TLS.
+
+**¿Funciona sin clave de LLM?**
+Sí — como transcriptor local: se registran transcripciones e historial, sin
+sugerencias. El glosario DevOps funciona offline.
+
+**Mi LLM no soporta imágenes.**
+Screenshot-to-answer y el modo «Test» requieren un modelo con capacidad de
+visión (p. ej. `gpt-4o-mini`, `qwen-vl-*`). El botón 📷 se desactiva con una
+pista; el asistente de voz sigue funcionando con normalidad.
 
 ## Compilación del .exe para Windows
 
@@ -207,7 +258,7 @@ releases — `bash scripts/build.sh publish` (ver [BUILD.md](../BUILD.md) §6).
 ## Pruebas
 
 ```bash
-QT_QPA_PLATFORM=offscreen PYTHONPATH=src pytest -q              # suite sin Qt (568 pruebas)
+QT_QPA_PLATFORM=offscreen PYTHONPATH=src pytest -q              # suite sin Qt (1250+ pruebas)
 MOCKINGBIRD_TEST_WHISPER=1 pytest tests/test_whisper_engine.py  # integración
 ```
 
