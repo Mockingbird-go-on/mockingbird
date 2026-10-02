@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 import sys
 
-from PySide6.QtCore import QSettings, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QObject, QSettings, QSize, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -254,23 +254,66 @@ class MainWindow(QMainWindow):
 
     def _apply_capture_affinity(self) -> None:
         """Apply or remove capture exclusion on this window + visible dialogs."""
+        self._install_capture_filter()
+        self._apply_capture_affinity_to(self)
+        for w in QApplication.topLevelWidgets():
+            if w is not self and w.isWindow() and w.isVisible():
+                self._apply_capture_affinity_to(w)
+
+    def _install_capture_filter(self) -> None:
+        """Install an app-wide event filter syncing capture affinity.
+
+        ``_apply_capture_affinity`` alone only touches windows that are
+        visible AT THE MOMENT of a settings change. Dialogs opened later
+        (Settings, model download overlay, ...) kept a stale affinity: if
+        the privacy mode was ON when they were first shown and OFF now,
+        they stayed invisible to OBS until restart. The filter applies
+        the CURRENT config to every top-level window on each Show event —
+        both set and clear.
+        """
+        if getattr(self, "_capture_filter", None) is not None:
+            return
+        from PySide6.QtCore import QEvent
+
+        main = self
+
+        class _CaptureAffinityFilter(QObject):
+            def eventFilter(self, obj, ev):  # noqa: N802 — Qt naming
+                if ev.type() == QEvent.Type.Show and obj.isWindow():
+                    try:
+                        main._apply_capture_affinity_to(obj)
+                    except Exception:  # noqa: BLE001 — must never crash UI
+                        log.exception("capture affinity filter failed")
+                return False
+
+        self._capture_filter = _CaptureAffinityFilter(self)
+        QApplication.instance().installEventFilter(self._capture_filter)
+        log.info("capture-affinity: event filter installed")
+
+    def _apply_capture_affinity_to(self, widget) -> None:
+        """Apply the CURRENT hide_from_capture setting to one window."""
         from mockingbird.ui import capture_guard
 
         if not capture_guard.is_supported():
             return
         enabled = self._app.config.window.hide_from_capture
-        hwnd = int(self.winId())
+        if not enabled and getattr(widget, "_mb_keep_capture_exclude", False):
+            return  # region-capture overlay: exclusion is intentional
+        try:
+            hwnd = int(widget.winId())
+        except Exception:  # noqa: BLE001 — native handle may not exist yet
+            return
         if enabled:
-            capture_guard.set_exclude_from_capture(hwnd)
+            ok = capture_guard.set_exclude_from_capture(hwnd)
         else:
-            capture_guard.clear(hwnd)
-        for w in QApplication.topLevelWidgets():
-            if w is not self and w.isWindow() and w.isVisible():
-                wh = int(w.winId())
-                if enabled:
-                    capture_guard.set_exclude_from_capture(wh)
-                else:
-                    capture_guard.clear(wh)
+            ok = capture_guard.clear(hwnd)
+        if not ok:
+            log.warning(
+                "capture-affinity: %s failed for %s (hwnd=%s)",
+                "WDA_EXCLUDEFROMCAPTURE" if enabled else "WDA_NONE(clear)",
+                type(widget).__name__,
+                hwnd,
+            )
 
     # -- icon helpers --
 
@@ -949,6 +992,10 @@ class MainWindow(QMainWindow):
         # — overlapping windows can't appear, no exclusion needed: the user
         # may want the overlay visible in screen sharing/streaming.
         if is_region:
+            # Marker: the capture-affinity event filter must NOT clear the
+            # exclusion on this overlay even when privacy mode is off —
+            # region capture would feed the overlay into its own frames.
+            ov._mb_keep_capture_exclude = True
             try:
                 from mockingbird.ui.capture_guard import set_exclude_from_capture
 
