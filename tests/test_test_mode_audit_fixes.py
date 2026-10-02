@@ -538,3 +538,41 @@ def test_default_icon_color_follows_theme():
     d = sum(dark_img.pixelColor(x, y).red() for x in range(20) for y in range(20))
     l = sum(light_img.pixelColor(x, y).red() for x in range(20) for y in range(20))
     assert d != l
+
+
+def test_screenshot_history_added_once():
+    """One screenshot question must produce exactly ONE history entry.
+
+    Regression (2026-10-02): `on_screenshot_pending` (instant feedback) and
+    `_on_screenshot_answer_done` BOTH added a history entry — the user saw
+    two items with different tags ("Скриншот" vs "screenshot") per question.
+    The done-handler must NOT touch history anymore."""
+    import inspect
+
+    import mockingbird.ui.main_window as mw
+    import mockingbird.ui.interview_panel as ip
+
+    done_src = inspect.getsource(mw.MainWindow._on_screenshot_answer_done)
+    assert "add_entry" not in done_src, (
+        "_on_screenshot_answer_done must not add history entries — "
+        "on_screenshot_pending already does (was a duplicate)"
+    )
+
+    pend_src = inspect.getsource(ip.InterviewPanel.on_screenshot_pending)
+    assert pend_src.count("add_entry") == 1
+    assert 't("Скриншот")' in pend_src  # localized tag, not raw "screenshot"
+
+
+def test_image_answer_uses_raised_max_tokens():
+    """Vision answers must not inherit the tiny per-mode max_tokens
+    (technical=300): reasoning tokens ate the budget and the answer came
+    back empty with finish_reason=length. The stream call must pass a
+    raised budget (>= 4000) in BOTH stream and non-stream paths."""
+    import inspect
+
+    import mockingbird.llm.client as lc
+
+    src = inspect.getsource(lc.LlmClient.answer_image_question_stream)
+    assert "4000" in src
+    # non-stream fallback inside the same method shares `gen`
+    assert src.count("max_tokens=gen[") >= 2

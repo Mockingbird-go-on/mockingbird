@@ -1075,7 +1075,11 @@ class LlmClient:
         if client is None:
             raise RuntimeError("LLM не настроен (нет base_url/api_key)")
         system = _SYSTEM_BY_MODE.get(mode, _SYSTEM_BY_MODE["technical"])
-        gen = _GEN_PARAMS_BY_MODE.get(mode, _GEN_PARAMS_BY_MODE["technical"])
+        gen = dict(_GEN_PARAMS_BY_MODE.get(mode, _GEN_PARAMS_BY_MODE["technical"]))
+        # Vision models spend tokens on internal reasoning before emitting
+        # visible text — the per-mode budget (technical=300) got consumed by
+        # reasoning and the answer came back empty with finish_reason=length.
+        gen["max_tokens"] = max(gen["max_tokens"], 4000)
         text_part = (
             f"Вопрос по содержимому скриншота: {question}"
             + (f"\n\nКонтекст из базы знаний:\n{context}" if context else "")
