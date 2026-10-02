@@ -119,8 +119,21 @@ class _FakeSignals:
         return object.__getattribute__(self, name)
 
 
-def test_stop_test_mode_joins_worker():
+def test_stop_test_mode_returns_fast_without_join():
+    """Closing the overlay must not freeze the GUI for the in-flight LLM call.
+
+    stop_test_mode no longer joins _test_worker_thread (a request takes
+    2-10s); it only bumps the generation. start_test_mode does the join.
+    """
+    import inspect
+    import time as _time
+
     from mockingbird.app import App
+
+    stop_src = inspect.getsource(App.stop_test_mode)
+    start_src = inspect.getsource(App.start_test_mode)
+    assert "join" not in stop_src.split("NOTE:")[0].replace("no join", "")
+    assert "t.join(timeout=5.0)" in start_src
 
     app = App.__new__(App)
     app.signals = _FakeSignals()
@@ -150,11 +163,15 @@ def test_stop_test_mode_joins_worker():
     app._test_watcher = watcher
     app._test_generation = 1
 
-    watcher._tick()  # dispatch
-    assert holder  # send_frame fired -> worker started
-    # stop must not hang: it joins (max 5s), then bumps the generation.
-    app.stop_test_mode()
+    watcher._tick()  # dispatch -> worker enters the 5s yield gate
+    assert holder
+    started.wait(1)
+
+    t0 = _time.monotonic()
+    app.stop_test_mode()  # must return immediately, NOT join the worker
+    elapsed = _time.monotonic() - t0
     release.set()
+    assert elapsed < 0.5, f"stop_test_mode blocked the caller for {elapsed:.2f}s"
     assert not watcher.running
     assert getattr(app, "_test_watcher", None) is None
 

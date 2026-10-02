@@ -450,6 +450,19 @@ class App:
         ``send_frame`` is dispatched to a daemon LLM worker; results come
         back through ``signals.test_answer``.
         """
+        # Join any in-flight worker BEFORE arming the new watcher: a
+        # stop→start cycle must not leave two concurrent answer_test_screen
+        # requests fighting for the same provider connection (the
+        # voice-answer gate does not serialize test frames against each
+        # other). Plain stop does NOT join — it would freeze the GUI thread
+        # for up to 5s on every close; the generation bump above already
+        # makes the stale worker's result a no-op.
+        t = getattr(self, "_test_worker_thread", None)
+        if t is not None and t.is_alive() and t is not threading.current_thread():
+            t.join(timeout=5.0)
+            if t.is_alive():
+                log.warning("test-mode: LLM worker did not stop within 5s")
+
         from mockingbird.vision.test_watcher import TestWatcher
 
         self.stop_test_mode()
@@ -472,15 +485,10 @@ class App:
             w.stop()
             w.deleteLater()
             self._test_watcher = None
-        # Join the in-flight worker (bounded): a stop→start cycle must not
-        # leave two concurrent answer_test_screen requests fighting for the
-        # same provider connection (the voice-answer gate does not
-        # serialize test frames against each other).
-        t = getattr(self, "_test_worker_thread", None)
-        if t is not None and t.is_alive() and t is not threading.current_thread():
-            t.join(timeout=5.0)
-            if t.is_alive():
-                log.warning("test-mode: LLM worker did not stop within 5s")
+        # NOTE: no join of _test_worker_thread here on purpose — this runs
+        # on the GUI thread (overlay close) and an in-flight LLM request
+        # takes 2-10s. The generation bump above already invalidates its
+        # result; start_test_mode joins before arming a new watcher.
 
     @property
     def test_watcher(self):
