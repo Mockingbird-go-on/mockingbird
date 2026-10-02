@@ -38,7 +38,13 @@ class TestModeOverlay(QWidget):
             | Qt.WindowType.Tool,
         )
         self.setWindowTitle("Mockingbird — тест")
-        self.setFixedSize(340, 420)
+        # Adaptive: the frameless window starts compact, grows with the
+        # answer content (auto-fit, bounded) and can be resized by hand
+        # via the size grip (frameless windows have no native resize edge).
+        self.setMinimumSize(260, 160)
+        self._fitting = True  # programmatic sizing phase (init + auto-fit)
+        self.resize(340, 300)
+        self._user_height = None  # None = auto-fit mode
         self._drag_pos = None
         self._target = target_title or t("Тест")
 
@@ -76,21 +82,34 @@ class TestModeOverlay(QWidget):
         mono.setStyleHint(QFont.StyleHint.Monospace)
         self._answers.setFont(mono)
         self._answers.setPlaceholderText(t("Ожидание стабильного кадра…"))
+        # Let the document height drive the browser's size hint (the
+        # pane auto-grows with the answer); _StableBrowser-style fixed
+        # height is NOT wanted here.
+        self._answers.document().documentLayout().documentSizeChanged.connect(
+            self._fit_height
+        )
         root.addWidget(self._answers, 1)
 
         # "Updated HH:MM:SS" — bright, bold: instantly tells the user the
         # answers below belong to THIS page version, not a stale one.
         self._updated_at = QLabel("")
         self._updated_at.setStyleSheet(
-            f"color:{_ANSWER_COLOR}; font-size: 11px; font-weight: bold;"
+            f"color:{_ANSWER_COLOR}; font-size: 9px; font-weight: bold;"
         )
         root.addWidget(self._updated_at)
 
         self._status = QLabel(t("запуск…"))
         self._status.setStyleSheet(
-            f"color: {theme.current.text}; font-size: 11px;"
+            f"color: {theme.current.text}; font-size: 9px;"
         )
         root.addWidget(self._status)
+        # Manual resize handle (frameless window: no system resize borders).
+        from PySide6.QtWidgets import QSizeGrip
+
+        grip_row = QHBoxLayout()
+        grip_row.addStretch(1)
+        grip_row.addWidget(QSizeGrip(self))
+        root.addLayout(grip_row)
 
         # Liveness indicator: uptime in the header, refreshed every second —
         # a dead watcher loop is immediately visible (clock stops).
@@ -101,6 +120,37 @@ class TestModeOverlay(QWidget):
         self._alive.setInterval(1000)
         self._alive.timeout.connect(self._tick_alive)
         self._alive.start()
+
+    _AUTO_MAX_HEIGHT = 560  # cap so a huge answer list can't eat the screen
+
+    def _fit_height(self, *_args) -> None:
+        """Auto-fit the window height to the rendered answers (bounded).
+
+        Disabled once the user resizes manually — their size wins."""
+        if self._user_height is not None:
+            return
+        doc_h = self._answers.document().size().toSize().height()
+        wanted = int(doc_h + 150)  # header + footers + margins
+        h = max(160, min(wanted, self._AUTO_MAX_HEIGHT))
+        if abs(h - self.height()) > 8:
+            self._fitting = True
+            try:
+                self.resize(self.width(), h)
+            finally:
+                self._fitting = False
+
+    def showEvent(self, event) -> None:  # noqa: N802 — Qt naming
+        super().showEvent(event)
+        # The init programmatic-resize phase is over — user resizes from
+        # here on switch the overlay to manual mode.
+        self._fitting = False
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 — Qt naming
+        super().resizeEvent(event)
+        # A resize that did not come from _fit_height = user action →
+        # switch to manual mode (heuristic: only stamp once).
+        if not getattr(self, "_fitting", False):
+            self._user_height = self.height()
 
     def _tick_alive(self) -> None:
         from time import monotonic
