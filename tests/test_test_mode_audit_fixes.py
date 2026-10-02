@@ -607,3 +607,27 @@ def test_resume_pipeline_logs_where_topics_are_lost():
     # resume_loader: summary error before the generic RuntimeError
     rsrc = inspect.getsource(rl.ResumeLoader.load_pdf)
     assert "returned 0 topics" in rsrc
+
+
+def test_capture_affinity_event_filter_syncs_dialogs():
+    """Dialogs opened AFTER the privacy toggle kept a stale capture affinity:
+    `_apply_capture_affinity` only touched windows visible at toggle time —
+    Settings/model-download stayed invisible to OBS even with privacy OFF.
+    Regression: an app-wide Show-event filter must re-apply the CURRENT
+    setting (set or clear) to every top-level window; region-capture
+    overlays marked _mb_keep_capture_exclude must never be cleared."""
+    import inspect
+
+    import mockingbird.ui.main_window as mw
+
+    src = inspect.getsource(mw.MainWindow._apply_capture_affinity_to)
+    assert "_mb_keep_capture_exclude" in src
+    assert "clear" in src and "set_exclude_from_capture" in src
+
+    fsrc = inspect.getsource(mw.MainWindow._install_capture_filter)
+    assert "QEvent.Type.Show" in fsrc
+    assert "installEventFilter" in fsrc
+
+    # filter installed before applying (also on showEvent path)
+    asrc = inspect.getsource(mw.MainWindow._apply_capture_affinity)
+    assert "_install_capture_filter" in asrc
