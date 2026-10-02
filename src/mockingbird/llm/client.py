@@ -753,6 +753,19 @@ def _close_quietly(stream) -> None:
         pass
 
 
+class LlmEmptyAnswerError(RuntimeError):
+    """The model exhausted retries without a parsable visible answer.
+
+    ``finish_reason`` discriminates the cause: "length" → hidden reasoning
+    ate the token budget (reasoning models), "content_filter" → provider
+    refused, "error: …" → transport/API exception.
+    """
+
+    def __init__(self, finish_reason: str = "?"):
+        super().__init__(f"LLM returned no parsable answer (finish_reason={finish_reason})")
+        self.finish_reason = finish_reason
+
+
 class LlmClient:
     def __init__(self, config: LlmConfig):
         self._cfg = config
@@ -1752,11 +1765,15 @@ class LlmClient:
         """Generate KB topic dicts (YAML schema) from a text chunk.
 
         ``context_hint`` gives the LLM context about the document type/source
-        (e.g. "ТК РФ — трудовое право"). Returns [] on failure.
+        (e.g. "ТК РФ — трудовое право"). Raises LlmEmptyAnswerError when the
+        model exhausted retries without a parsable answer — the caller can
+        inspect ``finish_reason`` ("length" → reasoning budget, "error: …"
+        → transport/API failure) and react (e.g. halve the chunk).
         """
         client = self._ensure()
         if client is None:
             return []
+        last_finish = "?"
         # max_tokens generous: reasoning-style models (deepseek-flash etc.)
         # spend tokens on hidden thinking BEFORE the content — a tight
         # budget yields finish_reason=length with an EMPTY visible answer
@@ -1811,9 +1828,11 @@ class LlmClient:
                     attempt + 1,
                     text[:300],
                 )
+                last_finish = finish
             except Exception as exc:  # noqa: BLE001
                 log.warning("LLM generate_kb_topics failed (attempt %d): %s", attempt + 1, exc)
-        return []
+                last_finish = f"error: {exc}"
+        raise LlmEmptyAnswerError(last_finish or "?")
 
 
 

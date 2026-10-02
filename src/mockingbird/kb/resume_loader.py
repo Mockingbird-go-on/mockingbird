@@ -70,7 +70,45 @@ class ResumeLoader:
             temperature=0.3,
             max_tokens=2000,
         )
-        topics = gen.generate_from_text(text)
+        topics: list[dict]
+        try:
+            topics = gen.generate_from_text(text)
+        except Exception as exc:  # noqa: BLE001 — translated into user text
+            from mockingbird.llm.client import LlmEmptyAnswerError
+
+            model = getattr(getattr(self._llm, "_cfg", None), "model", "?")
+            reason = getattr(exc, "finish_reason", "")
+            if isinstance(exc, LlmEmptyAnswerError) and reason == "length":
+                log.error(
+                    "resume_loader: token budget exhausted even after chunk "
+                    "halving (pdf=%s, text_chars=%d, model=%s)",
+                    pdf_path, len(text), model,
+                )
+                raise RuntimeError(
+                    f"Модель «{model}» израсходовала лимит токенов на "
+                    "«размышления» и не выдала ответ — даже после автоматического "
+                    "дробления резюме на части.\n\n"
+                    "Что делать:\n"
+                    "• Возьмите не-reasoning модель (например deepseek-chat) "
+                    "в Настройки → LLM\n"
+                    "• Сократите резюме (сейчас в нём "
+                    f"{len(text)} символов)"
+                ) from exc
+            if isinstance(exc, LlmEmptyAnswerError):
+                log.error(
+                    "resume_loader: LLM refused/failed (pdf=%s, model=%s, "
+                    "finish=%s)", pdf_path, model, reason,
+                )
+                raise RuntimeError(
+                    f"LLM не выдал ответ (finish_reason={reason}).\n"
+                    "Если это content_filter — провайдер отклонил содержимое "
+                    "PDF. Проверьте лог или попробуйте другой файл/модель."
+                ) from exc
+            log.exception("resume_loader: LLM pipeline failed for %r", pdf_path)
+            raise RuntimeError(
+                f"Ошибка при обращении к LLM:\n{exc}\n\n"
+                "Проверьте API-ключ и URL в Настройки → LLM."
+            ) from exc
 
         if not topics:
             log.error(

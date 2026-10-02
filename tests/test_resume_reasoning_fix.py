@@ -96,10 +96,27 @@ def test_reasoning_content_fallback(monkeypatch):
     assert client.generate_kb_topics("resume chunk text") != []
 
 
-def test_all_attempts_empty_returns_empty(monkeypatch):
+def test_all_attempts_empty_raises(monkeypatch):
+    """Exhausted retries → LlmEmptyAnswerError (see test_resume_pipeline_errors)."""
     responses = [
         _Resp([_Choice(_Msg(content="", reasoning="x"), "length")]),
         _Resp([_Choice(_Msg(content="", reasoning="x"), "length")]),
     ]
+    # second attempt streams — emulate an empty delta stream
+    class _D:
+        content = ""
+
+    class _DC:
+        delta = _D()
+        finish_reason = "length"
+
+    class _Stream:
+        def __iter__(self):
+            return iter([type("Delta", (), {"choices": [_DC()]})()])
+
+    responses[1] = _Stream()
     client = _make(monkeypatch, responses)
-    assert client.generate_kb_topics("chunk") == []
+    from mockingbird.llm.client import LlmEmptyAnswerError
+
+    with pytest.raises(LlmEmptyAnswerError):
+        client.generate_kb_topics("chunk")
