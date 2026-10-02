@@ -50,7 +50,7 @@ where = ["src"]
 version = { attr = "mockingbird.__version__" }
 
 [tool.setuptools.package-data]
-"mockingbird.assets" = ["*.yaml", "kb/*.yaml", "profiles/*.yaml", "icons/*.svg", "fonts/*.otf", "models/*.onnx"]
+"mockingbird.assets" = ["*.yaml", "kb/*.yaml", "profiles/*.yaml", "icons/*.svg", "fonts/*.otf", "models/*.onnx", "lang/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

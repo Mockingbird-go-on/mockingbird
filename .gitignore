@@ -55,3 +55,9 @@ STT_PATTERNS.md
 /installer/
 installer/Mockingbird-whisper-*-model.zip
 installer/Mockingbird-*-setup.exe
+
+# ─── Локальные build-assets инсталлятора ────────────────────────────
+# Регенерируются скриптом (Logo 256×233 → 164×314 / 55×58).
+# Хранятся рядом с installer.iss; в репо не нужны.
+scripts/wizard-side.bmp
+scripts/wizard-small.bmp
