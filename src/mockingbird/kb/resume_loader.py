@@ -8,6 +8,7 @@ modular loader on next KB rebuild.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -105,10 +106,24 @@ class ResumeLoader:
         # Step 3: Save to kb_override
         report("Сохранение…", 0.95)
         _OVERRIDE_DIR.mkdir(parents=True, exist_ok=True)
-        # Write first topic as resume_generated.yaml (merge if multiple)
+        # Write first topic as resume_generated.yaml (merge if multiple).
+        # Atomic (temp + os.replace): a crash mid-write must not leave a
+        # truncated resume_generated.yaml that the KB loader then parses
+        # (partially or failing) on the next start.
         data = topics[0] if len(topics) == 1 else self._merge_resume_topics(topics)
-        with open(_OUTPUT_FILE, "w", encoding="utf-8") as f:
-            yaml.dump(data, f, allow_unicode=True, sort_keys=False, default_flow_style=False)
+        tmp_file = _OUTPUT_FILE.with_suffix(".yaml.tmp")
+        try:
+            with open(tmp_file, "w", encoding="utf-8") as f:
+                yaml.dump(data, f, allow_unicode=True, sort_keys=False, default_flow_style=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_file, _OUTPUT_FILE)
+        except BaseException:
+            try:
+                tmp_file.unlink()
+            except OSError:
+                pass
+            raise
 
         report("Готово", 1.0)
         log.info(

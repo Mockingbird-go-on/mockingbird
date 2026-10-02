@@ -367,12 +367,14 @@ class InterviewEngine:
         self._thread.start()
         self._question_queue.start()
 
-    def stop(self) -> None:
+    def stop(self, drain_answers: bool = True) -> None:
         self._queue.put(_STOP)
         if self._thread is not None:
             self._thread.join(timeout=3)
             self._thread = None
-        self._question_queue.stop()
+        # drain_answers=False (app shutdown): late jobs would hit an
+        # already-closed SQLite store — drop them instead.
+        self._question_queue.stop(drain=drain_answers)
 
     def reset_session(self) -> None:
         self._generation += 1

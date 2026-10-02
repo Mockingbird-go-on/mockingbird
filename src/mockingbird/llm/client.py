@@ -5,6 +5,7 @@ import contextlib
 import json
 import logging
 import re
+import textwrap
 import threading
 import time
 from collections.abc import Iterator
@@ -499,9 +500,15 @@ def _extract_yaml_list(text: str) -> list:
     if not text:
         return []
     cleaned = text.strip()
-    fenced = re.search(r"```(?:ya?ml)?\s*(.*?)```", cleaned, re.DOTALL)
+    # [ \t]* (NOT \s*): \s* eats the newline + the first line's indent, which
+    # makes textwrap.dedent below a no-op and yaml.safe_load fail on the
+    # "mapping values are not allowed here" ScannerError.
+    fenced = re.search(r"```(?:ya?ml)?[ \t]*(.*?)```", cleaned, re.DOTALL)
     if fenced:
-        cleaned = fenced.group(1).strip()
+        # LLMs frequently indent the whole fenced block (esp. nested in a
+        # markdown answer) — dedent per-line or yaml.safe_load dies with a
+        # ScannerError and the whole chunk's topics are silently lost.
+        cleaned = textwrap.dedent(fenced.group(1)).strip()
     else:
         # Drop leading prose up to the first list/mapping token.
         cleaned = re.sub(r"^.*?(\n- |\ntopics:|\nitems:|\nblocks:)", r"\1", cleaned, flags=re.DOTALL)

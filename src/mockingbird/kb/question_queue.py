@@ -26,6 +26,17 @@ _STOP = object()
 
 _DEDUP_JACCARD = 0.7
 
+# Hard cap on pending jobs: a stalled LLM must not grow the queue (and the
+# memory each job's context snapshot holds) without bound during a long
+# session. The OLDEST jobs are dropped — with a slow provider they are long
+# past relevance anyway.
+_MAX_PENDING = 10
+
+# Age-based drop: a job older than this at pop time is answered long after
+# the conversation moved on — skip it (the segment stays in history, only
+# the stale LLM answer is skipped).
+_MAX_QUEUE_WAIT_S = 120.0
+
 # Russian+English function words excluded from dedup similarity: counting
 # them makes «как деплоить в k8s» and «как откатить деплой в k8s» look like
 # duplicates (J=0.75) and silently drops the second question. Dedup must
@@ -93,10 +104,25 @@ class QuestionQueue:
         if self._thread is None:
             self.start()
 
-    def stop(self, timeout: float = 3.0) -> None:
+    def stop(self, timeout: float = 3.0, drain: bool = True) -> None:
+        """Stop the worker.
+
+        ``drain=True`` (default) keeps the historical behaviour: in-flight
+        questions still get answered after stop. ``drain=False`` drops
+        pending jobs immediately — for app shutdown, where late jobs would
+        otherwise hit an already-closed SQLite store after the join times
+        out (the worker is a daemon thread that outlives the join).
+        """
         with self._cond:
             self._stopped = True
+            if not drain:
+                dropped = len(self._jobs)
+                self._jobs.clear()
+            else:
+                dropped = 0
             self._cond.notify_all()
+        if dropped:
+            log.info("question-queue: dropped %d pending job(s) on stop", dropped)
         if self._thread is not None:
             self._thread.join(timeout=timeout)
             self._thread = None
@@ -155,6 +181,15 @@ class QuestionQueue:
                 kept.append(j)
             self._jobs = kept
             self._jobs.append(job)
+            # Bounded queue: drop the OLDEST pending jobs past the cap.
+            while len(self._jobs) > _MAX_PENDING:
+                old_job = self._jobs.pop(0)
+                log.warning(
+                    "question-queue: pending cap %d reached — dropping oldest "
+                    "job (waited %.0fs, key=%r)",
+                    _MAX_PENDING, time.monotonic() - old_job.enqueued_at,
+                    old_job.key[:60],
+                )
             count = len(self._jobs)
             self._cond.notify_all()
         self._notify_pending(count)
@@ -194,6 +229,23 @@ class QuestionQueue:
                 # Drain queued jobs even after stop() — a stop only prevents
                 # NEW submissions, in-flight questions still get answered.
                 job = self._jobs.pop(0)
+                # Age gate: a job that sat in the queue past the relevance
+                # window is skipped — answering it minutes later renders a
+                # stale answer into a moved-on conversation.
+                if time.monotonic() - job.enqueued_at > _MAX_QUEUE_WAIT_S:
+                    log.info(
+                        "question-queue: job expired after %.0fs in queue — "
+                        "skipping (key=%r)",
+                        time.monotonic() - job.enqueued_at, job.key[:60],
+                    )
+                    self._running = True
+                    self._running_key = job.key
+                    count = len(self._jobs)
+                    self._notify_pending(count)
+                    with self._cond:
+                        self._running = False
+                        self._running_key = None
+                    continue
                 self._running = True
                 self._running_key = job.key
                 count = len(self._jobs)

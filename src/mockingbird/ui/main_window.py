@@ -774,10 +774,30 @@ class MainWindow(QMainWindow):
             return
         from mockingbird.ui.screenshot import ScreenGrabOverlay
 
-        self._shot_overlay = ScreenGrabOverlay()
-        self._shot_overlay.finished.connect(self._on_region_selected)
-        self._shot_overlay.cancelled.connect(lambda: setattr(self, "_shot_overlay", None))
-        self._shot_overlay.start()
+        # Re-entry guard: a second Ctrl+Shift+S while a grab overlay is up
+        # must not orphan the first overlay (leak + a stray fullscreen
+        # dim layer). Raise/flash the existing one instead.
+        existing = getattr(self, "_shot_overlay", None)
+        if existing is not None:
+            try:
+                existing.raise_()
+                existing.activateWindow()
+                return
+            except RuntimeError:
+                pass  # C++ side already deleted — fall through and create anew
+
+        overlay = ScreenGrabOverlay()
+        self._shot_overlay = overlay
+
+        def _forget(shown=overlay) -> None:
+            # Bound to THIS overlay: a shared lambda would let a stale
+            # overlay's cancel clear the reference of a newer one.
+            if getattr(self, "_shot_overlay", None) is shown:
+                self._shot_overlay = None
+
+        overlay.finished.connect(self._on_region_selected)
+        overlay.cancelled.connect(_forget)
+        overlay.start()
 
     def _on_region_selected(self, rect) -> None:
         from PySide6.QtCore import QRect
@@ -798,8 +818,12 @@ class MainWindow(QMainWindow):
         # that could then be garbage-collected on screen.
         old = getattr(self, "_shot_dlg", None)
         if old is not None:
-            old.close()
-            old.deleteLater()
+            try:
+                old.close()
+                old.deleteLater()
+            except RuntimeError:
+                pass  # already C++-deleted
+            self._shot_dlg = None
         self._shot_overlay = None
         dlg = ScreenshotQuestionDialog(jpeg, preview, vision_ok=self._vision_state)
         dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
@@ -871,6 +895,9 @@ class MainWindow(QMainWindow):
         if dlg is not None and dlg.isVisible():
             dlg.set_busy(False, t("Ответ — в панели «Ответ ИИ»"))
             dlg.close()
+        # Drop the retained reference: the dialog keeps its jpeg buffer
+        # alive for as long as we point at it (WA_DeleteOnClose is off).
+        self._shot_dlg = None
         # NOTE: no history entry here — `on_screenshot_pending` already adds
         # it the moment the question is asked (instant feedback). Adding a
         # second one here produced a duplicate entry with a different tag
@@ -935,13 +962,24 @@ class MainWindow(QMainWindow):
         self._test_overlay = None
         self._app.stop_test_mode()
         if ov is not None:
+            # Disconnect the dying overlay from _stop_test_mode NOW: its «×»
+            # is live for another 3 s (grace close) and a click during that
+            # window would tear down a NEWLY-started watcher/overlay.
+            try:
+                ov.stop_requested.disconnect(self._stop_test_mode)
+                ov.force_requested.disconnect(self._app.force_test_frame)
+            except (RuntimeError, TypeError):
+                pass
             from PySide6.QtCore import QTimer
 
             watcher_ptr = ov
 
             def _close() -> None:
-                watcher_ptr.close()
-                watcher_ptr.deleteLater()
+                try:
+                    watcher_ptr.close()
+                    watcher_ptr.deleteLater()
+                except RuntimeError:
+                    pass  # already deleted
 
             QTimer.singleShot(3000, _close)  # let the user read the status
 

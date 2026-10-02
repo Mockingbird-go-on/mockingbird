@@ -527,9 +527,15 @@ class App:
             # watcher and unchecking the button.
             if self.llm is None or not getattr(self.llm, "available", False):
                 log.warning("test-mode: LLM not configured — requesting stop")
-                self.signals.test_answer.emit(
-                    False, t("LLM не настроен — задайте модель в настройках")
-                )
+                if not _stale():
+                    # Release the in-flight slot FIRST: a stale emit into a
+                    # NEW run must never happen, and the fresh watcher must
+                    # not spin on «анализ предыдущего кадра…» forever when
+                    # the overlay is gone and the terminal marker is dropped.
+                    watcher_ref.mark_result(False, "", was_send=False)
+                    self.signals.test_answer.emit(
+                        False, t("LLM не настроен — задайте модель в настройках")
+                    )
                 return
             # Single-flight priority: a voice answer stream must not compete
             # with a test frame. Short wait; on timeout the frame is DROPPED
@@ -538,11 +544,13 @@ class App:
             try:
                 if not self.llm.try_yield_to_answer_stream(timeout=5.0):
                     log.info("test-mode: frame skipped — answer stream busy")
+                    # The ⏳ marker must never land in a NEW run's overlay
+                    # (stale worker after a stop→restart cycle).
                     if not _stale():
                         watcher_ref.mark_result(True, "", was_send=False)
-                    # ok=True with empty text but NOT parsed as "no test":
-                    # dedicated payload marker keeps the overlay honest.
-                    self.signals.test_answer.emit(True, "\u23f3")  # ⏳ busy marker
+                        # ok=True with empty text but NOT parsed as "no test":
+                        # dedicated payload marker keeps the overlay honest.
+                        self.signals.test_answer.emit(True, "\u23f3")  # ⏳ busy marker
                     return
             except Exception:  # noqa: BLE001
                 pass  # gate is best-effort; never block the test frame
@@ -1380,7 +1388,9 @@ class App:
         except Exception:
             log.exception("explainer stop failed")
         try:
-            self.interview.stop()
+            # drain=False: the store closes right below — a still-draining
+            # answer queue would write into a closed SQLite handle.
+            self.interview.stop(drain_answers=False)
         except Exception:
             log.exception("interview stop failed")
         try:
