@@ -102,6 +102,21 @@ class Toast(QWidget):
     def mousePressEvent(self, _event) -> None:  # noqa: N802 — Qt naming
         self.close()
 
+    def closeEvent(self, _event) -> None:  # noqa: N802 — Qt naming
+        # Auto-hide timer, click-dismiss and stack eviction all end here —
+        # forget the toast so it never gets resurrected by _show_toast.
+        try:
+            self._bus._forget_toast(self)
+        except Exception:
+            log.exception("toast forget failed")
+
+    def hideEvent(self, _event) -> None:  # noqa: N802 — Qt naming
+        # Some window managers hide (not close) on outside clicks — same fate.
+        try:
+            self._bus._forget_toast(self)
+        except Exception:
+            log.exception("toast forget failed")
+
 
 class NotificationBus:
     """Singleton FIFO queue for modal notifications + toasts."""
@@ -227,8 +242,20 @@ class NotificationBus:
         finally:
             self._modal_depth -= 1
 
+    def _toast_screen(self):
+        """Screen where toasts live: the screen under the mouse cursor,
+        falling back to the active window's screen, then the primary."""
+        from PySide6.QtGui import QCursor
+
+        scr = QApplication.screenAt(QCursor.pos())
+        if scr is None:
+            aw = QApplication.activeWindow()
+            if aw is not None:
+                scr = QApplication.screenAt(aw.frameGeometry().center())
+        return scr or QApplication.primaryScreen()
+
     def _show_toast(self, notif: Notification) -> None:
-        screen = QApplication.primaryScreen()
+        screen = self._toast_screen()
         if screen is None:
             return
         geo = screen.availableGeometry()
@@ -251,7 +278,7 @@ class NotificationBus:
             self._relayout_toasts()
 
     def _relayout_toasts(self) -> None:
-        screen = QApplication.primaryScreen()
+        screen = self._toast_screen()
         if screen is None:
             return
         geo = screen.availableGeometry()

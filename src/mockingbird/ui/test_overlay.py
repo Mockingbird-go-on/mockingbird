@@ -54,7 +54,6 @@ class TestModeOverlay(QWidget):
         btn_force.clicked.connect(self.force_requested)
         header.addWidget(btn_force)
 
-        btn_stop = QPushButton()
         from mockingbird.ui.icons import CloseButton
 
         btn_stop = CloseButton(size=15)

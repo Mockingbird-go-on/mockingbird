@@ -126,6 +126,7 @@ class TestWatcher(QObject):
         self._stable_run = 0
         self._last_candidate = None
         self._last_sent_fp = None
+        self._pending_fp = None
         self._last_answer_text: str = ""
         self._last_sent_at = 0.0
         self._not_before = 0.0
@@ -142,6 +143,7 @@ class TestWatcher(QObject):
         self._stable_run = 0
         self._last_candidate = None
         self._last_sent_fp = None
+        self._pending_fp = None
         self._in_flight = False
         self._not_before = 0.0
         self._tick_count = 0
@@ -169,12 +171,19 @@ class TestWatcher(QObject):
 
         ``was_send=False`` marks a NON-send outcome (frame dropped because
         the voice answer stream was busy): it must neither advance the
-        rate-limit window nor count as an answer for dedup.
+        rate-limit window nor count as an answer for dedup — and must NOT
+        commit the fingerprint (the frame was never sent; committing it
+        would make the change gate swallow the question until the content
+        changes again).
         """
         self._in_flight = False
         if not was_send:
-            return
+            return  # pending fp stays uncommitted — identical frames re-send
+        pending = self._pending_fp
+        self._pending_fp = None
         if ok:
+            # Commit the in-flight fingerprint only now — a real send happened.
+            self._last_sent_fp = pending
             self._last_sent_at = time.monotonic()
             if answer_text and answer_text != self._last_answer_text:
                 self._last_answer_text = answer_text
@@ -263,7 +272,11 @@ class TestWatcher(QObject):
         # passed all layers -> send
         self._force_next = False
         self._in_flight = True
-        self._last_sent_fp = fp
+        # PENDING fingerprint: committed to _last_sent_fp only when a real
+        # send outcome arrives (mark_result with was_send=True). A busy-drop
+        # leaves it uncommitted, so the change gate re-sends this content
+        # once the voice stream is free.
+        self._pending_fp = fp
         log.info(
             "test-mode[%d]: SENDING frame to LLM (jpeg=%dB, stable_run=%d, "
             "dist_vs_last_sent=%s%s)",
