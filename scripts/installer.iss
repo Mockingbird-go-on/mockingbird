@@ -55,7 +55,12 @@ SolidCompression=yes
 WizardStyle=modern
 ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=lowest
-PrivilegesRequiredOverridesAllowed=dialog
+; Per-user ONLY (no privilege-override prompt): the admin/all-users mode
+; broke uninstalls — mixed leftover installs produced an Add/Remove entry
+; pointing at C:\Program Files\Mockingbird\unins000.exe while the actual
+; files (and shortcut) lived in AppData\Local\Programs. The app is per-user
+; by design anyway: model pack -> {%USERPROFILE}\.mockingbird, data and
+; settings/logs -> ~/.mockingbird of the installing user.
 
 [Languages]
 ; Two languages: Russian (primary, UI is Russian-first) and English. With two
