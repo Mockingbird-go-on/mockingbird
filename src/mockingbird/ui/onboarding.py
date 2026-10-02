@@ -9,7 +9,7 @@ all wizard pages immediately (Russian is the default until chosen).
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QKeyEvent
+from PySide6.QtGui import QKeyEvent, QValidator
 from PySide6.QtWidgets import (
     QComboBox,
     QCompleter,
@@ -30,6 +30,20 @@ from mockingbird import i18n
 from mockingbird.config import Config
 from mockingbird.ui import theme
 from mockingbird.i18n import t
+
+
+class _ApiKeyValidator(QValidator):
+    """Accept only API-key-shaped input: ASCII printable, no whitespace.
+
+    Provider keys (sk-…, ghp_…, Bearer tokens) are single-token secrets;
+    spaces/newlines/non-ASCII indicate a paste mistake and are rejected
+    at input time (the user sees the key simply not appearing).
+    """
+
+    def validate(self, value: str, pos: int):  # noqa: N802 — Qt naming
+        if all(33 <= ord(ch) <= 126 for ch in value):
+            return QValidator.State.Acceptable, value, pos
+        return QValidator.State.Invalid, value, pos
 
 
 class OnboardingWizard(QDialog):
@@ -364,6 +378,11 @@ class OnboardingWizard(QDialog):
         self._llm_key = QLineEdit(self.config.llm.api_key or "")
         self._llm_key.setPlaceholderText("sk-...")
         self._llm_key.setEchoMode(QLineEdit.EchoMode.Password)
+        # API keys are single-token ASCII-printable secrets — no spaces,
+        # no newlines, no non-ASCII (a pasted «key» with whitespace or
+        # localized chars is always a paste mistake). Cap at a sane 255.
+        self._llm_key.setMaxLength(255)
+        self._llm_key.setValidator(_ApiKeyValidator(self))
         self._llm_model = QLineEdit(self.config.llm.model or "gpt-4o-mini")
         self._llm_model.setPlaceholderText("gpt-4o-mini")
         completer = QCompleter(self._LLM_MODEL_SUGGESTIONS, self._llm_model)
