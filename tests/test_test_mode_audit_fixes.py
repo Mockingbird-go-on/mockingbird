@@ -576,3 +576,34 @@ def test_image_answer_uses_raised_max_tokens():
     assert "4000" in src
     # non-stream fallback inside the same method shares `gen`
     assert src.count("max_tokens=gen[") >= 2
+
+
+def test_resume_pipeline_logs_where_topics_are_lost():
+    """The resume PDF pipeline used to fail with a generic error and NO log
+    lines: every stage that dropped topics (YAML parse, normalize_topic,
+    empty merge) returned silently. Regression: each drop-point must log
+    a warning with enough context to diagnose from the log file alone."""
+    import inspect
+
+    import mockingbird.llm.client as lc
+    import mockingbird.kb.generator as kg
+    import mockingbird.kb.resume_loader as rl
+
+    # client: empty parse result is logged with answer head + finish_reason
+    src = inspect.getsource(lc.LlmClient.generate_kb_topics)
+    assert "did not yield topics" in src
+    assert "finish" in src
+
+    # client: bad YAML / wrong shape logged with content head
+    ysrc = inspect.getsource(lc._extract_yaml_list)
+    assert "bad YAML" in ysrc
+    assert "not a topic list" in ysrc
+
+    # generator: per-chunk counts + rejection reasons
+    gsrc = inspect.getsource(kg.KbGenerator.generate_from_text)
+    assert "raw topics" in gsrc
+    assert "normalize_topic rejected" in gsrc
+
+    # resume_loader: summary error before the generic RuntimeError
+    rsrc = inspect.getsource(rl.ResumeLoader.load_pdf)
+    assert "returned 0 topics" in rsrc

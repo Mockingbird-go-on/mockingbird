@@ -263,7 +263,8 @@ class KbGenerator:
         type/source).
         """
         documents: list[dict] = []
-        for chunk in split_chunks(text, self._chunk_chars, self._overlap_chars):
+        chunks = split_chunks(text, self._chunk_chars, self._overlap_chars)
+        for idx, chunk in enumerate(chunks, 1):
             raw = self._llm.generate_kb_topics(
                 chunk,
                 max_topics=self._max_topics,
@@ -272,11 +273,44 @@ class KbGenerator:
                 max_tokens=self._max_tokens,
                 context_hint=context_hint,
             )
+            log.info(
+                "kb-generator: chunk %d/%d (%d chars) → %d raw topics",
+                idx, len(chunks), len(chunk), len(raw),
+            )
+            kept = 0
             for item in raw:
+                if not isinstance(item, dict):
+                    log.warning(
+                        "kb-generator: chunk %d dropped non-dict item %r",
+                        idx, type(item).__name__,
+                    )
+                    continue
                 doc = normalize_topic(item, self._max_blocks)
                 if doc is not None:
                     documents.append(doc)
-        return merge_topics(documents)
+                    kept += 1
+                else:
+                    log.warning(
+                        "kb-generator: chunk %d — normalize_topic rejected an item "
+                        "(topic=%r, sections=%r); head=%r",
+                        idx,
+                        _as_str(item.get("topic") or item.get("id")),
+                        [s.get("id") if isinstance(s, dict) else s
+                         for s in (item.get("sections") or [])][:5],
+                        str(item)[:300],
+                    )
+            if raw and kept == 0:
+                log.warning(
+                    "kb-generator: chunk %d — ALL %d raw topics rejected by "
+                    "normalize_topic (no valid sections with non-empty q/a)",
+                    idx, len(raw),
+                )
+        result = merge_topics(documents)
+        log.info(
+            "kb-generator: %d chunks → %d documents → %d merged topics",
+            len(chunks), len(documents), len(result),
+        )
+        return result
 
     def generate_book(self, pdf_path: str | Path) -> list[dict]:
         """Extract text from a PDF and generate topic documents from it."""

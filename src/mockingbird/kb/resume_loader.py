@@ -72,10 +72,20 @@ class ResumeLoader:
         topics = gen.generate_from_text(text)
 
         if not topics:
+            log.error(
+                "resume_loader: LLM pipeline returned 0 topics "
+                "(pdf=%s, text_chars=%d, llm_available=%s, model=%s). "
+                "See kb-generator/llm warnings above for the exact stage "
+                "where topics were lost.",
+                pdf_path,
+                len(text),
+                getattr(self._llm, "available", False),
+                getattr(getattr(self._llm, "_cfg", None), "model", "?"),
+            )
             raise RuntimeError(
                 "LLM не смог обработать резюме. Возможные причины:\n"
                 "• Неверный API-ключ или URL (проверьте в Настройки → LLM)\n"
-                "• LLM вернул некорректный формат данных\n"
+                "• LLM вернул некорректный формат данных (см. лог)\n"
                 "• Таймаут сервера. Попробуйте ещё раз или используйте другой PDF."
             )
 
