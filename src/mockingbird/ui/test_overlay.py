@@ -40,7 +40,7 @@ class TestModeOverlay(QWidget):
         self.setWindowTitle("Mockingbird — тест")
         # Reasonable translucency: 88% opacity — the watched window stays
         # faintly visible through the overlay without hurting readability.
-        self.setWindowOpacity(0.88)
+        self.setWindowOpacity(0.75)
         # Adaptive: the frameless window starts compact, grows with the
         # answer content (auto-fit, bounded) and can be resized by hand
         # via the size grip (frameless windows have no native resize edge).
