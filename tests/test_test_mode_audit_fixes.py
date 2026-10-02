@@ -442,3 +442,29 @@ def test_screenshot_pending_signal_and_handler():
     # And main_window wires the signal.
     mw_src = inspect.getsource(mw.MainWindow)
     assert "screenshot_pending" in mw_src
+
+
+# -- Theme switch repaints stale widgets (2026-10-02) -------------------------
+
+
+def test_retheme_covers_regenerate_button_and_resume_panel():
+    import inspect
+
+    import mockingbird.ui.interview_panel as ip
+    import mockingbird.ui.modules_panel as mp
+
+    # Regenerate button: icon color AND stylesheet refreshed in retheme().
+    src = inspect.getsource(ip.InterviewPanel.retheme)
+    assert "_regenerate_btn" in src
+    assert "set_icon_color" in src
+    assert "setStyleSheet" in src
+
+    # ResumePanel.update_theme must repaint the group-box card and hint
+    # label too (they were inline-styled at build time only).
+    src = inspect.getsource(mp.ResumePanel.update_theme)
+    assert "_group" in src
+    assert "_hint" in src
+    # build keeps references so update_theme can restyle them
+    bsrc = inspect.getsource(mp.ResumePanel._build_ui)
+    assert "self._group" in bsrc
+    assert "self._hint" in bsrc

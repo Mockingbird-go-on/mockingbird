@@ -74,6 +74,7 @@ class ResumePanel(QWidget):
         layout.setSpacing(12)
 
         group = QGroupBox(t("Резюме"))
+        self._group = group
         # Opaque card background like the Interview/Log tabs: the window's
         # background image otherwise bleeds through and makes the hint
         # labels hard to read.
@@ -122,6 +123,7 @@ class ResumePanel(QWidget):
         hint = QLabel(
             t("Резюме используется для personal-вопросов («что ты делал?»). Поддерживается PDF с текстовым слоем; сканы не обрабатываются.")
         )
+        self._hint = hint
         hint.setStyleSheet(f"color:{theme.TEXT_SECONDARY};font-size:11px;")
         group_layout.addWidget(hint)
 
@@ -219,6 +221,16 @@ class ResumePanel(QWidget):
             self.refresh()
 
     def update_theme(self) -> None:
+        # Group-box card + hint label were styled inline at build time —
+        # re-apply with the current theme or the old colors linger.
+        self._group.setStyleSheet(
+            f"QGroupBox {{ background-color: {theme.current.surface};"
+            " border: 1px solid palette(mid); border-radius: 4px;"
+            " margin-top: 12px; padding: 8px 6px 6px 6px; }}"
+            "QGroupBox::title { subcontrol-origin: margin;"
+            " left: 10px; padding: 0 4px; }"
+        )
+        self._hint.setStyleSheet(f"color:{theme.TEXT_SECONDARY};font-size:11px;")
         self._status.setStyleSheet(f"color:{theme.TEXT_SECONDARY};padding:4px;")
         self._btn_load.setIcon(icons.icon("folder-open"))
         self._btn_remove.setIcon(
