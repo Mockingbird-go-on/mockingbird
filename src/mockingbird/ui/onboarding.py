@@ -761,17 +761,24 @@ class OnboardingWizard(QDialog):
             self._update_nav()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
-        """Treat Return/Enter inside any QLineEdit as «Next».
+        """Keyboard navigation for every step, not just QLineEdit pages.
 
-        Without this, QDialog's default behaviour turns Enter on a child
-        input into accept() (closing the wizard) — the user is dropped
-        back to the Welcome step on the next show. Esc still rejects.
+        - Enter/Return = «Next» anywhere on any step (on a QLineEdit it
+          must not become QDialog.accept() — closing the wizard and
+          dropping the user back to Welcome on the next show).
+        - Esc = «Back» on steps > 0 (reject remains only on step 0).
         """
-        if (event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
-                and isinstance(self.focusWidget(), QLineEdit)):
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             self._go_next()
             event.accept()
             return
+        if event.key() == Qt.Key.Key_Escape:
+            if self._step > 0:
+                self._go_back()
+                event.accept()
+                return
+            # Step 0: no previous step — let the dialog reject (its usual
+            # «ask before closing» logic applies).
         super().keyPressEvent(event)
 
     # -- Apply settings ----------------------------------------------------

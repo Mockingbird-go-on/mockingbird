@@ -76,3 +76,21 @@ def test_api_key_validator_rejects_non_key_input():
     v = _ApiKeyValidator()
     for s in ("sk-abc def", "sk-abc\tdef", "ключ-123", "sk-abc\ndef"):
         assert v.validate(s, len(s))[0] == QValidator.State.Invalid
+
+
+# -- Keyboard navigation on every step (2026-10-02) --------------------------
+
+
+def test_enter_next_escape_back_on_all_steps():
+    """Enter must advance from ANY step (not only QLineEdit pages — the
+    language page is buttons, Enter used to close the wizard via
+    QDialog.accept()); Esc must go Back on steps > 0."""
+    import inspect
+
+    import mockingbird.ui.onboarding as ob
+
+    src = inspect.getsource(ob.OnboardingWizard.keyPressEvent)
+    assert "Key_Return" in src and "Key_Enter" in src
+    assert "Key_Escape" in src and "_go_back" in src
+    # The QLineEdit-only guard must be gone.
+    assert "isinstance(self.focusWidget(), QLineEdit)" not in src
