@@ -843,3 +843,13 @@ def test_displayicon_written_to_hkcu():
     for ln in displayicon_lines:
         assert "Root: HKCU" in ln, f"DisplayIcon must use HKCU: {ln}"
         assert "Root: HKLM" not in ln, f"DisplayIcon must NOT use HKLM: {ln}"
+
+
+def test_installer_is_per_user_only():
+    """No dual privilege mode: PrivilegesRequiredOverridesAllowed=dialog let
+    users pick "all users", which broke uninstalls (Add/Remove pointed at
+    Program Files while files lived in AppData\\Local\\Programs) and is
+    wrong by design — model pack and data are per-user (~/.mockingbird)."""
+    iss = _read("installer.iss")
+    assert "PrivilegesRequiredOverridesAllowed" not in iss
+    assert "PrivilegesRequired=lowest" in iss
