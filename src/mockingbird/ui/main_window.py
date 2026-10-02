@@ -558,6 +558,7 @@ class MainWindow(QMainWindow):
 
     def _on_status(self, state: str, detail: str) -> None:
         self._status.set_state(state, detail)
+        self._interview.set_session_active(state == "running")
         if state == "loading":
             self._activity.set_loading(detail or t("Загрузка модели…"), -1)
             # "stopping" is a teardown, not a model load — never offer Cancel.
