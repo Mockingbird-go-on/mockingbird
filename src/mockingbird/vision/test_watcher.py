@@ -292,10 +292,13 @@ class TestWatcher(QObject):
 
 
 def parse_test_answers(text: str) -> list[tuple[str, str, str]]:
-    """Parse "N -> X — note" lines from the LLM reply.
+    """Parse "N -> answer — note" lines from the LLM reply.
 
-    Accepts "1 -> B", "1 → B — заметка", "1) a", "12: 3". The trailing
-    note (2–4 words after —/-/) is optional and kept for display.
+    Accepts "1 -> B", "1 → SDS (Software Defined Storage) — заметка",
+    "1) a", "12: 3". The answer may be an arbitrary short phrase (the
+    LLM often returns the full option text, not a letter — DeepSeek
+    measured 2026-10-02). The trailing note after an em-dash/hyphen is
+    optional and kept for display.
     Returns a list of (number, answer, note) tuples.
     """
     import re
@@ -304,15 +307,24 @@ def parse_test_answers(text: str) -> list[tuple[str, str, str]]:
     seen: set[str] = set()
     # The line MUST start with the question number (leading whitespace ok) —
     # a leading prose prefix like «в 12: 30 минут» must NOT match.
-    pat = re.compile(
-        r"^\s*(\d{1,3})\s*(?:->|→|[:\-)\]])\s*([A-Za-zА-Яа-я0-9]{1,4}|\?{1,2})(?=[\s—\-–]|$)"
-        r"(?:\s*(?:—|-|–)\s*(.+?))?\s*$",
+    num_pat = re.compile(
+        r"^\s{0,8}(\d{1,3})\s*(?:->|→|[:\-)\]])\s*(\S.*)$",
         re.MULTILINE,
     )
-    for m in pat.finditer(text):
+    # Note separator: standalone em/en dash or hyphen between spaces.
+    note_split = re.compile(r"\s+[—–-]\s+")
+    for m in num_pat.finditer(text):
         num = m.group(1).strip()
-        ans = m.group(2).strip().upper()
-        note = (m.group(3) or "").strip()
+        rest = m.group(2).strip()
+        parts = note_split.split(rest, maxsplit=1)
+        ans = parts[0].strip()
+        note = parts[1].strip() if len(parts) > 1 else ""
+        if not ans or len(ans) > 80:
+            continue  # implausible answer — junk line
+        # Single-letter answers are display-uppercased ("b" -> "B");
+        # phrases keep their original casing.
+        if len(ans) == 1 and ans.isalpha():
+            ans = ans.upper()
         if num in seen:
             continue
         seen.add(num)

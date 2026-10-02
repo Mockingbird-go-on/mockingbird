@@ -317,3 +317,42 @@ def test_llm_client_has_public_gate_alias():
     from mockingbird.llm.client import LlmClient
 
     assert LlmClient.try_yield_to_answer_stream is LlmClient._yield_to_answer_stream
+
+
+# -- Regression 2026-10-02: full-phrase answers were not parsed ---------------
+# DeepSeek ignored the "letter only" prompt and returned complete option
+# texts — the old regex ([A-Za-zА-Яа-я0-9]{1,4}) parsed NOTHING, the overlay
+# stayed on "Ожидание стабильного кадра…" forever.
+
+
+def test_parse_full_phrase_answers():
+    from mockingbird.vision.test_watcher import parse_test_answers
+
+    text = (
+        "1 → SDS (Software Defined Storage) — все сервисы на SDS\n"
+        "2 → AWS S3 — OBS совместим с S3 API\n"
+        "3 → NFS и CIFS — протоколы SFS\n"
+        "4 → Сервис бесплатный — платите только за место в OBS под бэкапы"
+    )
+    pairs = parse_test_answers(text)
+    assert len(pairs) == 4
+    assert pairs[0] == ("1", "SDS (Software Defined Storage)", "все сервисы на SDS")
+    assert pairs[1] == ("2", "AWS S3", "OBS совместим с S3 API")
+    # Note containing an inner dash stays whole.
+    assert pairs[3][0] == "4"
+    assert pairs[3][1] == "Сервис бесплатный"
+
+
+def test_parse_still_rejects_prose_prefix():
+    from mockingbird.vision.test_watcher import parse_test_answers
+
+    # "в 12: 30 минут" must NOT become an answer.
+    assert parse_test_answers("встреча в 12: 30 минут") == []
+
+
+def test_parse_single_letter_uppercased_phrase_kept():
+    from mockingbird.vision.test_watcher import parse_test_answers
+
+    pairs = parse_test_answers("1 -> b\n2 → kubernetes service")
+    assert pairs[0] == ("1", "B", "")
+    assert pairs[1] == ("2", "kubernetes service", "")
