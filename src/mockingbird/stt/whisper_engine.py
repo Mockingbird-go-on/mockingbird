@@ -1084,8 +1084,6 @@ def _download_from_s3(
     return _resolve_unpacked_snapshot(root, repo_id)
 
 
-
-
 def _resolve_unpacked_snapshot(root: Path, repo_id: str) -> str | None:
     """Move the unpacked ``cache/models--<slug>`` to root and return the snapshot.
 

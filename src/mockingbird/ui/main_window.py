@@ -828,13 +828,11 @@ class MainWindow(QMainWindow):
         if dlg is not None and dlg.isVisible():
             dlg.set_busy(False, t("Ответ — в панели «Ответ ИИ»"))
             dlg.close()
-        # History entry: the query is the screenshot question (NOT the
-        # engine's _pending_llm_query — a voice question may have arrived
-        # meanwhile and would be mislabeled as a screenshot).
-        query = getattr(self, "_pending_screenshot_question", "") or ""
-        if query:
-            self._interview._history.add_entry(f"📸 {query}", "screenshot")
-            self._pending_screenshot_question = ""
+        # NOTE: no history entry here — `on_screenshot_pending` already adds
+        # it the moment the question is asked (instant feedback). Adding a
+        # second one here produced a duplicate entry with a different tag
+        # ("screenshot" vs localized "Скриншот").
+        self._pending_screenshot_question = ""
 
     # ------------------------------------------------------------------
     # Live test mode
