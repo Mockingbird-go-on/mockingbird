@@ -8,8 +8,15 @@ from PySide6.QtWidgets import (
 )
 
 from mockingbird.i18n import t
+from mockingbird.ui import theme
 
-_ACCENT = "#4f9cf9"
+_ANSWER_COLOR = "#FF5148"  # red — answers and the "updated at" stamp
+_NOTE_COLOR_DARK = "#c8ccd2"
+_NOTE_COLOR_LIGHT = "#666"
+
+
+def _is_dark() -> bool:
+    return (getattr(theme.current, "name", "dark") or "dark").lower() != "light"
 
 
 class TestModeOverlay(QWidget):
@@ -41,7 +48,9 @@ class TestModeOverlay(QWidget):
 
         header = QHBoxLayout()
         self._title = QLabel(self._target)
-        self._title.setStyleSheet("font-weight: bold;")
+        self._title.setStyleSheet(
+            f"font-weight: bold; color: {theme.current.text};"
+        )
         header.addWidget(self._title, 1)
 
         btn_force = QPushButton()
@@ -73,12 +82,14 @@ class TestModeOverlay(QWidget):
         # answers below belong to THIS page version, not a stale one.
         self._updated_at = QLabel("")
         self._updated_at.setStyleSheet(
-            f"color:{_ACCENT}; font-size: 11px; font-weight: bold;"
+            f"color:{_ANSWER_COLOR}; font-size: 11px; font-weight: bold;"
         )
         root.addWidget(self._updated_at)
 
         self._status = QLabel(t("запуск…"))
-        self._status.setStyleSheet("color: gray; font-size: 11px;")
+        self._status.setStyleSheet(
+            f"color: {theme.current.text}; font-size: 11px;"
+        )
         root.addWidget(self._status)
 
         # Liveness indicator: uptime in the header, refreshed every second —
@@ -131,10 +142,13 @@ class TestModeOverlay(QWidget):
 
         for num, ans, note in pairs:
             unknown = ans == "?"
-            color = "#e5a000" if unknown else _ACCENT
+            color = "#e5a000" if unknown else _ANSWER_COLOR
             line = f'<b style="color:{color};">{escape(str(num))} → {escape(str(ans))}</b>'
             if note:
-                note_color = "#a08030" if unknown else "#888"
+                note_color = (
+                    "#a08030" if unknown
+                    else (_NOTE_COLOR_DARK if _is_dark() else _NOTE_COLOR_LIGHT)
+                )
                 line += (
                     f' <span style="color:{note_color};">'
                     f"— {escape(str(note))}</span>"
