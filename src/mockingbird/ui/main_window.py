@@ -902,12 +902,16 @@ class MainWindow(QMainWindow):
         # on every capture — a closed target whose hwnd got reassigned to an
         # unrelated window must not leak into the LLM frames.
         self._test_hwnd_pid = _window_pid(hwnd)
-        self._launch_test_watcher(title, lambda: self._capture_window(hwnd))
+        self._launch_test_watcher(
+            title, lambda: self._capture_window(hwnd), is_region=False
+        )
 
     def _on_test_region_picked(self, rect) -> None:
-        self._launch_test_watcher(t("область экрана"), lambda: self._capture_region(rect))
+        self._launch_test_watcher(
+            t("область экрана"), lambda: self._capture_region(rect), is_region=True
+        )
 
-    def _launch_test_watcher(self, title: str, capture_fn) -> None:
+    def _launch_test_watcher(self, title: str, capture_fn, is_region: bool = False) -> None:
         from mockingbird.ui.test_overlay import TestModeOverlay
 
         # Close a stale overlay from a previous watcher run — its «×»
@@ -934,14 +938,18 @@ class MainWindow(QMainWindow):
         import time as _time
 
         ov._started_at = _time.monotonic()
-        # Exclude the overlay itself from capture (Windows) so it never
-        # feeds itself into the frame.
-        try:
-            from mockingbird.ui.capture_guard import set_exclude_from_capture
+        # Region mode captures raw desktop pixels — the overlay would feed
+        # itself into the frame there, so exclude it from capture (Windows).
+        # Window mode (PrintWindow) renders the TARGET window's content only
+        # — overlapping windows can't appear, no exclusion needed: the user
+        # may want the overlay visible in screen sharing/streaming.
+        if is_region:
+            try:
+                from mockingbird.ui.capture_guard import set_exclude_from_capture
 
-            set_exclude_from_capture(int(ov.winId()))
-        except Exception:  # noqa: BLE001
-            pass
+                set_exclude_from_capture(int(ov.winId()))
+            except Exception:  # noqa: BLE001
+                pass
 
     def _capture_window(self, hwnd: int):
         from mockingbird.ui.window_capture import capture_window

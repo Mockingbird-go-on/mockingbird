@@ -356,3 +356,23 @@ def test_parse_single_letter_uppercased_phrase_kept():
     pairs = parse_test_answers("1 -> b\n2 → kubernetes service")
     assert pairs[0] == ("1", "B", "")
     assert pairs[1] == ("2", "kubernetes service", "")
+
+
+# -- Overlay capture exclusion only in region mode (2026-10-02) ---------------
+
+
+def test_overlay_exclusion_is_region_only():
+    """Window mode (PrintWindow) can't see overlapping windows — the
+    overlay must NOT be force-hidden from capture there (the user's
+    'hide from capture' setting governs streaming visibility)."""
+    import inspect
+
+    import mockingbird.ui.main_window as mw
+
+    src = inspect.getsource(mw.MainWindow._launch_test_watcher)
+    assert "is_region" in src
+    # The exclusion call sits inside the region-only branch.
+    body = src.split("if is_region:", 1)[1].split("\n\n", 1)[0]
+    assert "set_exclude_from_capture" in body
+    head = src.split("if is_region:", 1)[0]
+    assert "set_exclude_from_capture" not in head
