@@ -139,6 +139,13 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         self._session_timer.stop()
+        # B10: a running resume import has an LLM call in flight in a
+        # QThread — give it a brief window to finish so the interpreter
+        # doesn't tear down under it (crash-at-exit / dead Qt object emit).
+        try:
+            self._modules_panel.wait_import(timeout_ms=2000)
+        except Exception:  # noqa: BLE001 — must never block closing
+            pass
         self._settings.setValue("window/geometry", self.saveGeometry())
         super().closeEvent(event)
 

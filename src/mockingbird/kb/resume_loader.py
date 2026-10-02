@@ -60,7 +60,6 @@ class ResumeLoader:
         report("Обработка резюме через LLM…", 0.0)
         from mockingbird.kb.generator import KbGenerator
 
-        kgen = self._cfg.kgen if self._cfg is not None else None
         gen = KbGenerator(
             self._llm,
             chunk_chars=4000,  # smaller chunks for resume (faster LLM response)

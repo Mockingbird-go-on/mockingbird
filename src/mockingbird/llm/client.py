@@ -1772,7 +1772,9 @@ class LlmClient:
         """
         client = self._ensure()
         if client is None:
-            return []
+            # B5: [] would read as "success with zero topics" upstream —
+            # the caller now expects an exception to discriminate causes.
+            raise LlmEmptyAnswerError("unconfigured")
         last_finish = "?"
         # max_tokens generous: reasoning-style models (deepseek-flash etc.)
         # spend tokens on hidden thinking BEFORE the content — a tight
@@ -1811,9 +1813,14 @@ class LlmClient:
                     msg = response.choices[0].message
                     text = (msg.content or "").strip()
                     # reasoning models can leave content empty with the answer
-                    # stuck in reasoning_content — use it as a last resort
+                    # stuck in reasoning_content. B6: free-form reasoning is
+                    # NOT YAML — only trust it when it visibly carries the
+                    # topic schema, otherwise a stray "- item" bullet list
+                    # parses into garbage "topics".
                     if not text:
-                        text = (getattr(msg, "reasoning_content", None) or "").strip()
+                        candidate = (getattr(msg, "reasoning_content", None) or "").strip()
+                        if "blocks:" in candidate and ("topic:" in candidate or "id:" in candidate):
+                            text = candidate
                     finish = (
                         response.choices[0].finish_reason if response.choices else "?"
                     )
