@@ -389,6 +389,10 @@ class App:
             mode = getattr(self.interview, "_current_answer_mode", "technical") or "technical"
         payload = _b64.b64encode(jpeg_bytes).decode("ascii")
         stream_id = stream_id or f"shot-{shot_id}"
+        # Immediate feedback: the history entry + answer placeholder must
+        # appear the MOMENT the user asks, not when the LLM finally replies
+        # (2-10s of silence looked like nothing was happening).
+        self.signals.screenshot_pending.emit(question)
 
         def _worker() -> None:
             try:

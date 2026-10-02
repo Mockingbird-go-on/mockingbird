@@ -319,6 +319,7 @@ class MainWindow(QMainWindow):
         self._sig.final.connect(self._interview.on_final)
         self._sig.answer.connect(self._interview.on_answer)
         self._sig.llm_answer.connect(self._interview.on_llm_answer)
+        self._sig.screenshot_pending.connect(self._interview.on_screenshot_pending)
         self._sig.context.connect(self._interview.on_context)
         self._sig.mic_level.connect(self._activity.set_level)
         self._sig.status.connect(self._on_status)

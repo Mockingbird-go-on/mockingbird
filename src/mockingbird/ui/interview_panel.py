@@ -754,6 +754,32 @@ class InterviewPanel(QWidget):
             prefix = t("Переход") if state.shifted else t("Контекст")
             self._context_line.setText(f"{prefix}: " + " · ".join(parts))
 
+    def on_screenshot_pending(self, query: str) -> None:
+        """A screenshot question was just asked — show it immediately.
+
+        The history entry and the 'forming answer' placeholder appear at
+        once; the LLM reply (2-10s) later fills the pane via the regular
+        llm_answer stream. Without this the user saw no feedback until
+        the answer arrived."""
+        q = (query or "").strip()
+        if not q:
+            return
+        self._browsing_history = False
+        self._pending_llm_query = q
+        self._current_query = q
+        self._answer_llm.set_current_query(q)
+        self._view = None
+        self._reset_llm_stream()
+        self._llm_answer_text = ""
+        self._question.setText(q)
+        self._set_question_placeholder(False)
+        self._breadcrumb.setText(q)
+        self._answer_llm.browser().setHtml(_themed_html(
+            f"<p style='color:{theme.TEXT_SECONDARY};'>{html.escape(_LLM_PLACEHOLDER_FN())}</p>"
+        ))
+        self._history.add_entry(q, t("Скриншот"))
+        self._llm_watchdog.start()
+
     def on_llm_answer(self, msg) -> None:
         """Render the exact-question LLM answer into the primary pane.
 

@@ -48,6 +48,7 @@ class AppSignals(QObject):
     test_mode_request = Signal()
     # Screenshot answer finished (payload: shot_id) — UI refreshes history.
     screenshot_answer_done = Signal(str)
+    screenshot_pending = Signal(str)  # question — emitted the moment the user asks
     # Bridge: STT worker → GUI thread for SQLite writes (avoids cross-thread
     # access to the shared SQLiteStore connection from the decode worker).
     save_segment_request = Signal(object)
