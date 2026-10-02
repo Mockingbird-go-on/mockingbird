@@ -53,3 +53,26 @@ def test_no_shadowed_pyside_imports_in_onboarding():
     assert "from PySide6.QtCore import Qt, QEvent, QThread, QTimer, Signal" in src
     # Проверяем что импорт QProgressBar добавлен правильно
     assert "from PySide6.QtWidgets import QProgressBar" in src or "QProgressBar" in src
+
+
+# -- API-key input validation (2026-10-02) ---------------------------------
+
+
+def test_api_key_validator_accepts_key_shaped_input():
+    from PySide6.QtGui import QValidator
+
+    from mockingbird.ui.onboarding import _ApiKeyValidator
+
+    v = _ApiKeyValidator()
+    for s in ("sk-abc123DEF_.-xyz", "ghp_AbCdEf1234567890", ""):
+        assert v.validate(s, len(s))[0] == QValidator.State.Acceptable
+
+
+def test_api_key_validator_rejects_non_key_input():
+    from PySide6.QtGui import QValidator
+
+    from mockingbird.ui.onboarding import _ApiKeyValidator
+
+    v = _ApiKeyValidator()
+    for s in ("sk-abc def", "sk-abc\tdef", "ключ-123", "sk-abc\ndef"):
+        assert v.validate(s, len(s))[0] == QValidator.State.Invalid
