@@ -54,6 +54,7 @@ _BOLD_RE = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
 # settings change). Wrapping in a lambda keeps every render call fresh.
 _PLACEHOLDER_FN = lambda: t("Слушаю вопрос… вопросы и ответы из базы знаний появятся здесь.")  # noqa: E731
 _LLM_PLACEHOLDER_FN = lambda: t("Формирую ответ ИИ…")  # noqa: E731
+_IDLE_PLACEHOLDER_FN = lambda: t("Нажмите кнопку «Старт» для запуска распознавания")  # noqa: E731
 
 _MD_HEAD_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 _MD_UL_RE = re.compile(r"^\s*[-*]\s+(.*)$")
@@ -529,6 +530,7 @@ class InterviewPanel(QWidget):
         self._active_stream_id = ""
         self._live_text = ""
         self._live_muted = False
+        self._session_active = False
 
         self._question = QLabel(_PLACEHOLDER_FN())
         self._question.setWordWrap(True)
@@ -699,6 +701,16 @@ class InterviewPanel(QWidget):
         else:
             self._live.setText(body)
 
+    def set_session_active(self, active: bool) -> None:
+        """Session running state: before Start the answer pane must say
+        'press Start…', not the misleading 'forming an answer'."""
+        self._session_active = bool(active)
+        if not active and not self._llm_answer_text and self._view is None:
+            self._answer_llm.browser().setHtml(_themed_html(
+                f"<p style='color:{theme.TEXT_SECONDARY};'>"
+                f"{html.escape(_IDLE_PLACEHOLDER_FN())}</p>"
+            ))
+
     def retheme(self) -> None:
         """Re-apply theme colors to the live widget styles and re-render content."""
         self._set_question_placeholder(
@@ -715,6 +727,10 @@ class InterviewPanel(QWidget):
         elif self._view is not None:
             self._render_kb_pane(self._view)
             self._render_primary(self._view)
+        elif not self._session_active:
+            self._answer_llm.browser().setHtml(_themed_html(
+                f"<p style='color:{theme.TEXT_SECONDARY};'>{html.escape(_IDLE_PLACEHOLDER_FN())}</p>"
+            ))
         else:
             self._answer_llm.browser().setHtml(_themed_html(
                 f"<p style='color:{theme.TEXT_SECONDARY};'>{html.escape(_LLM_PLACEHOLDER_FN())}</p>"

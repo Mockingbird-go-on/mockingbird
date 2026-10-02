@@ -376,3 +376,31 @@ def test_overlay_exclusion_is_region_only():
     assert "set_exclude_from_capture" in body
     head = src.split("if is_region:", 1)[0]
     assert "set_exclude_from_capture" not in head
+
+
+# -- Idle answer pane before Start (2026-10-02) -------------------------------
+
+
+def test_idle_placeholder_before_start():
+    """Source-level check: retheme() must not paint 'Формирую ответ ИИ…'
+    while the session has not started — the idle text is 'Нажмите Старт…'."""
+    import inspect
+
+    import mockingbird.ui.interview_panel as ip
+
+    src = inspect.getsource(ip.InterviewPanel.retheme)
+    assert "_IDLE_PLACEHOLDER_FN" in src
+    assert "not self._session_active" in src
+    assert inspect.signature(ip.InterviewPanel.set_session_active).parameters["active"]
+
+
+def test_idle_placeholder_translations_exist():
+    import json
+    from pathlib import Path
+
+    key = "Нажмите кнопку «Старт» для запуска распознавания"
+    for lang in ("en", "es"):
+        d = json.loads(
+            (Path("src/mockingbird/assets/lang") / f"{lang}.json").read_text("utf-8")
+        )
+        assert key in d, lang
