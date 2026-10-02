@@ -216,6 +216,29 @@ def _resolve_icon_asset(name: str) -> str | None:
 
 # Lucide "rotate-cw" icon (MIT).  stroke="currentColor" is replaced with
 # the target colour at render time so the same SVG serves normal + active.
+def _regen_btn_style() -> str:
+    """Stylesheet for the regenerate button (re-applied on theme change)."""
+    return f"""
+        QToolButton {{
+            border: 1px solid {theme.current.border};
+            border-radius: 3px;
+            background: {theme.current.card};
+            padding: 3px;
+        }}
+        QToolButton:hover {{
+            border-color: {theme.current.accent};
+            background: {theme.current.card_hover};
+        }}
+        QToolButton:pressed {{
+            border-color: {theme.current.accent_hover};
+        }}
+        QToolButton:disabled {{
+            border-color: {theme.current.border};
+            color: {theme.current.text_secondary};
+        }}
+    """
+
+
 def _make_regenerate_icon(color: str = None) -> QIcon:
     """Render the Lucide ``refresh-cw`` icon via the shared icon provider."""
     from mockingbird.ui.icons import render_svg
@@ -398,25 +421,7 @@ class _AnswerPane(QWidget):
         self._regenerate_btn.setIconSize(QSize(17, 17))
         self._regenerate_btn.setFixedSize(28, 26)
         self._regenerate_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._regenerate_btn.setStyleSheet(f"""
-            QToolButton {{
-                border: 1px solid {theme.current.border};
-                border-radius: 3px;
-                background: {theme.current.card};
-                padding: 3px;
-            }}
-            QToolButton:hover {{
-                border-color: {theme.current.accent};
-                background: {theme.current.card_hover};
-            }}
-            QToolButton:pressed {{
-                border-color: {theme.current.accent_hover};
-            }}
-            QToolButton:disabled {{
-                border-color: {theme.current.border};
-                color: {theme.current.text_secondary};
-            }}
-        """)
+        self._regenerate_btn.setStyleSheet(_regen_btn_style())
         self._regenerate_btn.clicked.connect(self._on_regenerate)
         self._regenerate_btn.setVisible(show_regenerate)
         
@@ -713,6 +718,10 @@ class InterviewPanel(QWidget):
 
     def retheme(self) -> None:
         """Re-apply theme colors to the live widget styles and re-render content."""
+        # Regenerate button: icon + border stylesheet are themed inline —
+        # refresh both or the old theme's colors linger after a switch.
+        self._regenerate_btn.setStyleSheet(_regen_btn_style())
+        self._regenerate_btn.set_icon_color(theme.current.text_secondary)
         self._set_question_placeholder(
             self._question.property("placeholder") or self._question.text() == _PLACEHOLDER_FN()
         )
