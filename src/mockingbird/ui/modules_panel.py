@@ -181,15 +181,32 @@ class ResumePanel(QWidget):
             )
             return
         self._btn_load.setEnabled(False)
+        self._btn_remove.setEnabled(False)  # B3: delete during import would
+        # be silently undone by the thread's atomic os.replace on finish.
         self._progress.setVisible(True)
         self._progress.setRange(0, 100)
         self._progress.setValue(0)
 
+        # B4: keep a hard reference — a reassign mid-run would GC the live
+        # QThread ("QThread: Destroyed while thread is still running").
+        if self._thread is not None:
+            self._thread.wait(0)
         self._thread = _ResumeImportThread(self._app, path)
         self._thread.progress.connect(self._on_progress)
         self._thread.finished_ok.connect(self._on_done)
+        self._thread.finished_ok.connect(self._thread.deleteLater)
         self._thread.failed.connect(self._on_error)
+        self._thread.failed.connect(self._thread.deleteLater)
         self._thread.start()
+
+    def wait_import(self, timeout_ms: int = 100) -> bool:
+        """B10: let shutdown wait out a running import (LLM call in flight)."""
+        if self._thread is None:
+            return True
+        ok = self._thread.wait(timeout_ms)
+        if ok:
+            self._thread = None
+        return ok
 
     def _on_progress(self, msg: str, pct: float) -> None:
         self._status.setText(msg)
@@ -201,6 +218,8 @@ class ResumePanel(QWidget):
     def _on_done(self, result: dict) -> None:
         self._progress.setVisible(False)
         self._btn_load.setEnabled(True)
+        self._btn_remove.setEnabled(True)
+        self._thread = None
         QMessageBox.information(
             self,
             t("Резюме загружено"),
@@ -211,6 +230,8 @@ class ResumePanel(QWidget):
     def _on_error(self, error: str) -> None:
         self._progress.setVisible(False)
         self._btn_load.setEnabled(True)
+        self._btn_remove.setEnabled(True)
+        self._thread = None
         QMessageBox.warning(self, t("Ошибка загрузки резюме"), t("Не удалось обработать PDF:\n\n{error}", error=error))
 
     def _on_remove(self) -> None:

@@ -298,7 +298,12 @@ class KbGenerator:
                 cut = part.find("\n\n", mid)
                 if cut == -1 or abs(cut - mid) > len(part) // 4:
                     cut = mid
-                parts[0:0] = [part[:cut], part[cut:]]
+                # B7: skip empty halves (cut at 0/-edge) — an empty part
+                # would go to the LLM and burn a request for nothing.
+                halves = [h for h in (part[:cut], part[cut:]) if h.strip()]
+                if not halves:
+                    raise
+                parts[0:0] = halves
         return [], None  # unreachable
 
     def generate_from_text(self, text: str, context_hint: str = "") -> list[dict]:
@@ -311,8 +316,22 @@ class KbGenerator:
         """
         documents: list[dict] = []
         chunks = split_chunks(text, self._chunk_chars, self._overlap_chars)
+        failure: Exception | None = None
         for idx, chunk in enumerate(chunks, 1):
-            raw, _fail = self._generate_chunk_with_halving(chunk, context_hint)
+            # B6b: one failed chunk must not discard the topics already
+            # generated from the other chunks — collect the failure and
+            # only surface it when NOTHING was produced.
+            try:
+                raw, _fail = self._generate_chunk_with_halving(chunk, context_hint)
+            except Exception as exc:  # noqa: BLE001
+                if failure is None:
+                    failure = exc
+                log.warning(
+                    "kb-generator: chunk %d/%d failed (%s) — continuing with "
+                    "remaining chunks; partial results are kept",
+                    idx, len(chunks), exc,
+                )
+                continue
             log.info(
                 "kb-generator: chunk %d/%d (%d chars) → %d raw topics",
                 idx, len(chunks), len(chunk), len(raw),
@@ -350,6 +369,8 @@ class KbGenerator:
             "kb-generator: %d chunks → %d documents → %d merged topics",
             len(chunks), len(documents), len(result),
         )
+        if not result and failure is not None:
+            raise failure
         return result
 
     def generate_book(self, pdf_path: str | Path) -> list[dict]:
