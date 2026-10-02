@@ -1757,37 +1757,63 @@ class LlmClient:
         client = self._ensure()
         if client is None:
             return []
-        try:
-            response = client.chat.completions.create(
-                model=self._cfg.model,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": _pick(KB_GENERATION_PROMPT, "").format(
-                            chunk=chunk,
-                            max_topics=max_topics,
-                            max_blocks=max_blocks,
-                            context_hint=context_hint or "общий документ",
-                        ),
-                    }
-                ],
-                temperature=temperature,
-                max_tokens=max_tokens,
-            )
-            text = (response.choices[0].message.content or "").strip()
-            parsed = _extract_yaml_list(text)
-            if not parsed:
+        # max_tokens generous: reasoning-style models (deepseek-flash etc.)
+        # spend tokens on hidden thinking BEFORE the content — a tight
+        # budget yields finish_reason=length with an EMPTY visible answer
+        # (seen live: 3 chunks × 0 topics). Also retry once with streaming:
+        # some providers return empty non-streamed completions.
+        for attempt in range(2):
+            try:
+                response = client.chat.completions.create(
+                    model=self._cfg.model,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": _pick(KB_GENERATION_PROMPT, "").format(
+                                chunk=chunk,
+                                max_topics=max_topics,
+                                max_blocks=max_blocks,
+                                context_hint=context_hint or "общий документ",
+                            ),
+                        }
+                    ],
+                    temperature=temperature,
+                    max_tokens=max(6000, max_tokens),
+                    stream=(attempt > 0),
+                )
+                text = ""
+                finish = "?"
+                if attempt > 0:
+                    for delta in response:
+                        if not delta.choices:
+                            continue
+                        d = delta.choices[0].delta
+                        text += getattr(d, "content", None) or ""
+                        finish = getattr(delta.choices[0], "finish_reason", finish) or finish
+                else:
+                    msg = response.choices[0].message
+                    text = (msg.content or "").strip()
+                    # reasoning models can leave content empty with the answer
+                    # stuck in reasoning_content — use it as a last resort
+                    if not text:
+                        text = (getattr(msg, "reasoning_content", None) or "").strip()
+                    finish = (
+                        response.choices[0].finish_reason if response.choices else "?"
+                    )
+                parsed = _extract_yaml_list(text)
+                if parsed:
+                    return parsed
                 log.warning(
                     "llm: generate_kb_topics — LLM answer did not yield topics "
-                    "(len=%d, finish=%s); head=%r",
+                    "(len=%d, finish=%s, attempt=%d); head=%r",
                     len(text),
-                    response.choices[0].finish_reason if response.choices else "?",
+                    finish,
+                    attempt + 1,
                     text[:300],
                 )
-            return parsed
-        except Exception as exc:  # noqa: BLE001
-            log.warning("LLM generate_kb_topics failed: %s", exc)
-            return []
+            except Exception as exc:  # noqa: BLE001
+                log.warning("LLM generate_kb_topics failed (attempt %d): %s", attempt + 1, exc)
+        return []
 
 
 
