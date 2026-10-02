@@ -256,23 +256,63 @@ class KbGenerator:
         self._temperature = temperature
         self._max_tokens = max_tokens
 
+    _HALVING_MIN_CHARS = 800  # below this a "length" failure is not chunk size
+
+    def _generate_chunk_with_halving(
+        self, chunk: str, context_hint: str
+    ) -> tuple[list[dict], str | None]:
+        """generate_kb_topics for one chunk with length-exhaustion halving.
+
+        Reasoning models can burn the whole token budget on hidden thinking
+        for LONG inputs. When the client reports finish_reason=length we
+        re-split the chunk in half and retry each part — smaller input,
+        proportionally less reasoning. Returns (raw_topics, last_fail_reason);
+        fail_reason is None on success, "length" only after sub-chunks also
+        failed (i.e. unrecoverable), any other reason re-raised immediately.
+        """
+        from mockingbird.llm.client import LlmEmptyAnswerError
+
+        parts = [chunk]
+        while parts:
+            part = parts.pop(0)
+            try:
+                raw = self._llm.generate_kb_topics(
+                    part,
+                    max_topics=self._max_topics,
+                    max_blocks=self._max_blocks,
+                    temperature=self._temperature,
+                    max_tokens=self._max_tokens,
+                    context_hint=context_hint,
+                )
+                return raw, None
+            except LlmEmptyAnswerError as exc:
+                reason = getattr(exc, "finish_reason", "?")
+                if reason != "length" or len(part) <= self._HALVING_MIN_CHARS:
+                    raise
+                log.warning(
+                    "kb-generator: chunk (%d chars) hit token limit "
+                    "(finish=length) — halving and retrying",
+                    len(part),
+                )
+                mid = len(part) // 2
+                cut = part.find("\n\n", mid)
+                if cut == -1 or abs(cut - mid) > len(part) // 4:
+                    cut = mid
+                parts[0:0] = [part[:cut], part[cut:]]
+        return [], None  # unreachable
+
     def generate_from_text(self, text: str, context_hint: str = "") -> list[dict]:
         """Generate merged topic documents from a full text.
 
         ``context_hint`` is passed to the LLM to orient it (e.g. document
-        type/source).
+        type/source). Raises LlmEmptyAnswerError when a chunk failed for a
+        non-size reason (transport/API/content_filter) or when even halved
+        sub-chunks exhausted the token budget.
         """
         documents: list[dict] = []
         chunks = split_chunks(text, self._chunk_chars, self._overlap_chars)
         for idx, chunk in enumerate(chunks, 1):
-            raw = self._llm.generate_kb_topics(
-                chunk,
-                max_topics=self._max_topics,
-                max_blocks=self._max_blocks,
-                temperature=self._temperature,
-                max_tokens=self._max_tokens,
-                context_hint=context_hint,
-            )
+            raw, _fail = self._generate_chunk_with_halving(chunk, context_hint)
             log.info(
                 "kb-generator: chunk %d/%d (%d chars) → %d raw topics",
                 idx, len(chunks), len(chunk), len(raw),
