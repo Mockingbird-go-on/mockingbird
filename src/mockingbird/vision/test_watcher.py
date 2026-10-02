@@ -251,7 +251,11 @@ class TestWatcher(QObject):
                 "test-mode[%d]: skip — no change (dist=%.2f <= %.1f)",
                 tick, dist_sent, self._cfg.change_threshold,
             )
-            self.frame_skipped.emit(t("кадр {tick} · без изменений (d={dist})").format(tick=tick, dist=dist_sent))
+            self.frame_skipped.emit(
+                t("кадр {tick} · без изменений (d={dist})").format(
+                    tick=tick, dist=f"{dist_sent:.2f}"
+                )
+            )
             return
         # 3. min send interval
         since = now - self._last_sent_at if self._last_sent_at else None
