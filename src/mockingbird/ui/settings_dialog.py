@@ -452,8 +452,12 @@ class SettingsDialog(QDialog):
         self._capture_check.setChecked(config.window.hide_from_capture)
         if not _cg.is_capture_protection_available():
             self._capture_check.setEnabled(False)
-            build = _cg.windows_build() or "?"
-            self._capture_check.setToolTip(self._wrap_tooltip(t("Недоступно: требуется Windows 10 build 19041+ (у вас build {build})", build=build)))
+            if _cg.is_supported():
+                build = _cg.windows_build() or "?"
+                reason = t("Недоступно: требуется Windows 10 build 19041+ (у вас build {build})", build=build)
+            else:
+                reason = t("Скрытие от захвата экрана поддерживается только на Windows (10 build 19041+). В Linux/windowing-системах прямого аналога нет — окно видно в OBS и скриншотах.")
+            self._capture_check.setToolTip(self._wrap_tooltip(reason))
         ap_layout.addWidget(self._capture_check)
 
         # Language selector — restart is required to re-translate everything.

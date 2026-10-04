@@ -89,10 +89,16 @@ def run_system_checks(config: Config) -> list[SystemWarning]:
     try:
         from mockingbird.ui import capture_guard
 
-        if (
-            capture_guard.is_supported()
-            and not capture_guard.is_capture_protection_available()
-        ):
+        if not capture_guard.is_supported():
+            import sys as _sys
+
+            if _sys.platform.startswith("linux"):
+                warnings.append(SystemWarning(
+                    level="info",
+                    title=t("Скрытие от захвата недоступно"),
+                    message=t("Скрытие окна от захвата экрана работает только на Windows (10 build 19041+). На Linux окно видно в OBS, скриншотах и шаринге экрана."),
+                ))
+        elif not capture_guard.is_capture_protection_available():
             warnings.append(SystemWarning(
                 level="info",
                 title=t("Скрытие от захвата недоступно"),

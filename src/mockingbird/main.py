@@ -277,7 +277,59 @@ def _download_model_cli() -> int:
         fh.close()
 
 
+def _preflight_qt_platform() -> None:
+    """Linux pre-flight: verify Qt xcb plugin deps BEFORE QApplication.
+
+    Without libxcb-cursor0 (Qt >= 6.5) the xcb plugin fails to load and the
+    process aborts with a cryptic «Could not load the Qt platform plugin
+    "xcb"» before any dialog can be shown. Detect the library ahead of time
+    and fail with a human-readable message + fix hint.
+    """
+    if not sys.platform.startswith("linux"):
+        return
+    if os.environ.get("QT_QPA_PLATFORM", "xcb") not in ("xcb", "", "wayland"):
+        return  # offscreen/minimal/... — user knows what they are doing
+    if os.environ.get("WAYLAND_DISPLAY"):
+        return  # native Wayland: xcb not used
+    import ctypes.util
+
+    if ctypes.util.find_library("X11") is None:
+        return  # no X stack at all (headless/ssh): let Qt report it
+    for lib in ("xcb_cursor", "xcb-cursor", "xcb_cursor0"):
+        try:
+            if ctypes.util.find_library(lib) is not None:
+                return
+        except Exception:  # noqa: BLE001 — never block startup
+            return
+    sys.stderr.write(
+        "Mockingbird: не найдена системная библиотека libxcb-cursor0,\n"
+        "необходимая для Qt (графический интерфейс).\n"
+        "Установите её и запустите снова:\n"
+        "  Debian/Ubuntu:  sudo apt install libxcb-cursor0\n"
+        "  Fedora:         sudo dnf install libxcb-cursor\n"
+        "  Arch:           sudo pacman -S libxcb-cursor\n"
+    )
+    # Best-effort GUI notice too — Tk may be available where Qt is not.
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showerror(
+            "Mockingbird",
+            "Не найдена системная библиотека libxcb-cursor0,\n"
+            "необходимая для графического интерфейса (Qt).\n\n"
+            "Установите: sudo apt install libxcb-cursor0",
+        )
+        root.destroy()
+    except Exception:  # noqa: BLE001
+        pass
+    sys.exit(1)
+
+
 def main() -> int:
+    _preflight_qt_platform()
     if "--version" in sys.argv or "-V" in sys.argv:
         from mockingbird import __version__
 
