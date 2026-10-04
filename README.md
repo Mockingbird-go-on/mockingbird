@@ -8,10 +8,10 @@
 [![Telegram](https://img.shields.io/badge/chat-Telegram-26A5E4.svg)](https://t.me/MOCKINGBird_release)
 [![YouTube](https://img.shields.io/badge/YouTube-%40Mockingbird--go--on-FF0000.svg)](https://www.youtube.com/@Mockingbird-go-on)
 
-💬 **Чат сообщества в Telegram: <https://t.me/MOCKINGBird_release>** —
+💬 **[Чат сообщества в Telegram](https://t.me/MOCKINGBird_release)** —
 вопросы, обсуждение релизов, помощь.
 
-📺 **YouTube-канал: <https://www.youtube.com/@Mockingbird-go-on>** —
+📺 **[YouTube-канал](https://www.youtube.com/@Mockingbird-go-on)** —
 демо, инструкции, релизы.
 
 > 🇷🇺 Русский · 🇬🇧 [README_EN.md (English)](langs/README_EN.md) · 🇪🇸 [README_ES.md (Español)](langs/README_ES.md)
