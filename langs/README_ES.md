@@ -279,7 +279,7 @@ src/mockingbird/
 
 ## Comunidad
 
-- 💬 **Chat de Telegram**: [Telegram](https://t.me/MOCKINGBird_release) —
+- 💬 **[Chat de Telegram](https://t.me/MOCKINGBird_release)** —
   preguntas, ayuda, anuncios de lanzamientos.
 - 🐛 [Bugs e ideas](https://github.com/Mockingbird-go-on/mockingbird/issues) —
   formularios «Informar de un problema» / «Sugerir una idea».
