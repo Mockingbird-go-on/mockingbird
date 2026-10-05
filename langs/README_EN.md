@@ -22,8 +22,9 @@ questions** (or a screenshot for screenshot-to-answer / Test mode) to your LLM
 API (configurable `OPENAI_BASE_URL`); without an API key the app works as a
 local transcriber without hints.
 
-**Primary platform: Windows (single `.exe`).** Linux is supported from
-source.
+**Platforms: Windows is the primary one (`.exe` installer, GPU/CPU builds).**
+Linux ships as an official `AppImage` in every release; building from source
+is also available.
 
 ### Hardware requirements
 

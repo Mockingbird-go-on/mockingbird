@@ -23,7 +23,8 @@ para screenshot-to-answer / modo «Test») a tu API de LLM (configurable con
 `OPENAI_BASE_URL`); sin clave de API la aplicación funciona como transcriptor
 local sin sugerencias.
 
-**Plataforma principal: Windows (un solo `.exe`).** Linux se soporta desde
+**Plataformas: Windows — la principal (instalador `.exe`, variantes GPU/CPU).**
+Linux — `AppImage` oficial en cada release; también se puede compilar desde
 el código fuente.
 
 ### Requisitos de hardware
