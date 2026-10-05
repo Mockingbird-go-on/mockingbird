@@ -121,7 +121,7 @@ el código fuente.
 
 ## Arquitectura
 
-![Arquitectura](../docs/architecture.jpg)
+![Arquitectura](../docs/architecture_es.jpg)
 
 Todo el trabajo pesado (audio, STT, LLM) se hace en hilos worker; la GUI solo
 recibe señales Qt encoladas.

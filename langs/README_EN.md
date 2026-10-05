@@ -111,7 +111,7 @@ source.
 
 ## Architecture
 
-![Architecture](../docs/architecture.jpg)
+![Architecture](../docs/architecture_en.jpg)
 
 All heavy work (audio, STT, LLM) runs in worker threads; the GUI only receives
 queued Qt signals.
