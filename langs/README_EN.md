@@ -266,7 +266,7 @@ src/mockingbird/
 
 ## Community
 
-- 💬 **Telegram chat**: [t.me/MOCKINGBird_release](https://t.me/MOCKINGBird_release) —
+- 💬 **Telegram chat**: [Telegram](https://t.me/MOCKINGBird_release) —
   questions, help, release announcements.
 - 🐛 [Bugs and ideas](https://github.com/Mockingbird-go-on/mockingbird/issues) —
   "Report a problem" / "Suggest an idea" forms.
