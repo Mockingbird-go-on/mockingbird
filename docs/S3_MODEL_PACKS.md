@@ -50,8 +50,8 @@ bucket automatically when `S3_ENDPOINT_URL` is set in the environment.
 # Configure credentials (tenant ID is part of the access key ID, per Cloud.ru)
 cat > ~/.aws/credentials <<EOF
 [default]
-aws_access_key_id = 5b7b9b26-db4d-4489-8ce4-40cc6b531fe0:REMOVED-SECRET
-aws_secret_access_key = REMOVED-SECRET
+aws_access_key_id = <TENANT_ID>:<ACCESS_KEY_ID>   # из консоли Cloud.ru, НЕ коммитить
+aws_secret_access_key = <AWS_SECRET_ACCESS_KEY>   # из консоли Cloud.ru, НЕ коммитить
 EOF
 
 cat > ~/.aws/config <<EOF
