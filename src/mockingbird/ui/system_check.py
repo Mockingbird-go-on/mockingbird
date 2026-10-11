@@ -16,6 +16,10 @@ class SystemWarning:
     level: str  # "error", "warning", "info"
     title: str
     message: str
+    # Non-empty for dismissible info-level hints: the notification dialog
+    # gets a «Больше не показывать» checkbox and the warning is filtered on
+    # later launches (QSettings "suppress/<key>"). Empty = always shown.
+    suppression_key: str = ""
 
 
 def run_system_checks(config: Config) -> list[SystemWarning]:
@@ -81,6 +85,7 @@ def run_system_checks(config: Config) -> list[SystemWarning]:
                 level="info",
                 title=t("Резюме не загружено"),
                 message=t("Personal-вопросы («что ты делал?») будут отвечать в constructive-режиме (без конкретных фактов из резюме). Загрузите PDF на вкладке «Резюме»."),
+                suppression_key="resume_missing",
             ))
     except Exception:
         pass
@@ -97,12 +102,14 @@ def run_system_checks(config: Config) -> list[SystemWarning]:
                     level="info",
                     title=t("Скрытие от захвата недоступно"),
                     message=t("Скрытие окна от захвата экрана работает только на Windows (10 build 19041+). На Linux окно видно в OBS, скриншотах и шаринге экрана."),
+                    suppression_key="capture_unavailable_linux",
                 ))
         elif not capture_guard.is_capture_protection_available():
             warnings.append(SystemWarning(
                 level="info",
                 title=t("Скрытие от захвата недоступно"),
                 message=t("Требуется Windows 10 build 19041+. У вас build {build}.", build=capture_guard.windows_build() or "?"),
+                suppression_key="capture_unavailable_win_build",
             ))
     except Exception:
         pass

@@ -64,9 +64,8 @@ def test_main_reruns_checks_after_onboarding():
         "re-run must sit after save_settings() and before the theme step"
     )
     # And it must actually REPLACE sys_warnings before the notify push.
-    assert main.index("sys_warnings = _rsc(config)") < main.index(
-        'notify_bus.push(\n                t("Проверка системы"'
-    )
+    rerun = main.index("sys_warnings = _rsc(config)")
+    assert rerun < main.index('t("Проверка системы")', rerun)
 
 
 # -- 2. QGroupBox title spacing ----------------------------------------------

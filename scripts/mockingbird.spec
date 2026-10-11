@@ -364,6 +364,10 @@ exe = EXE(
     console=False,
     icon=_ICON,
     version=_VERSION_FILE,
+    # DPI-awareness manifest: WACK's DPIAwarenessValidation reads DPI
+    # awareness only from the embedded manifest — without it the Qt app
+    # gets a WARNING ("does not support DPI") in Store certification.
+    manifest=os.path.join(SPECPATH, "app_manifest.xml"),
 )
 coll = COLLECT(
     exe,

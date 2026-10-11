@@ -386,16 +386,16 @@ QTextBrowser, QPlainTextEdit, QTextEdit {{
 }}
 QTextBrowser:focus, QPlainTextEdit:focus, QTextEdit:focus {{ border-color: {t.accent}; }}
 
-QTreeWidget, QListWidget {{
+QListWidget {{
     background-color: {t.card};
     color: {t.text};
     border: 1px solid {t.border};
     border-radius: 2px;
     outline: none;
 }}
-QTreeWidget::item, QListWidget::item {{ padding: 3px 4px; }}
-QTreeWidget::item:hover, QListWidget::item:hover {{ background-color: {t.card_hover}; }}
-QTreeWidget::item:selected, QListWidget::item:selected {{
+QListWidget::item {{ padding: 3px 4px; }}
+QListWidget::item:hover {{ background-color: {t.card_hover}; }}
+QListWidget::item:selected {{
     background-color: {t.accent};
     color: {LIGHT};
 }}

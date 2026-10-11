@@ -163,6 +163,12 @@ def test_save_settings_persists_window_flags(app_instance):
     assert app_instance.store.get_setting("window.hide_from_capture") == "1"
 
 
+def test_save_settings_persists_minimize_to_tray(app_instance):
+    app_instance.config.window.minimize_to_tray = False
+    app_instance.save_settings()
+    assert app_instance.store.get_setting("window.minimize_to_tray") == "0"
+
+
 def test_no_mic_pipeline_attributes(app_instance):
     """Removed hybrid pipeline attributes must not exist."""
     for attr in ("mic_capture", "mic_engine", "_mic_vad", "_mic_chunker", "hybrid"):

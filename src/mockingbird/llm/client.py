@@ -324,8 +324,13 @@ _CURRENT_LANG = "ru"
 _ACTIVE_PROFILE = None
 
 
-def _apply_language_prompts(fields: dict[str, str]) -> None:
-    """Render the system prompts in the active UI language."""
+def _sync_current_lang() -> None:
+    """Refresh ``_CURRENT_LANG`` from the live i18n state.
+
+    Must run BEFORE ``_profile_fields`` (which reads ``_CURRENT_LANG`` to pick
+    the localized persona/stack): otherwise the fields are rendered in the
+    language of the PREVIOUS switch — one-change lag (2026-10-07 bug).
+    """
     global _CURRENT_LANG
     try:
         from mockingbird import i18n as _i18n
@@ -333,6 +338,11 @@ def _apply_language_prompts(fields: dict[str, str]) -> None:
         _CURRENT_LANG = _i18n.current_language() or "ru"
     except Exception:  # noqa: BLE001 — i18n may not be initialised yet
         _CURRENT_LANG = "ru"
+
+
+def _apply_language_prompts(fields: dict[str, str]) -> None:
+    """Render the system prompts in the active UI language."""
+    _sync_current_lang()
 
     if _CURRENT_LANG == "en":
         _SYSTEM_BY_MODE["technical"] = ANSWER_SYSTEM_TEMPLATE_EN.format(**fields)
@@ -390,6 +400,7 @@ def set_profile(profile) -> None:
     """
     global _ACTIVE_PROFILE
     _ACTIVE_PROFILE = profile
+    _sync_current_lang()
     _apply_language_prompts(_profile_fields(profile))
 
 
@@ -411,6 +422,7 @@ def rerender_for_language() -> None:
     """
     if _ACTIVE_PROFILE is None:
         return  # set_profile was never called — nothing to re-render
+    _sync_current_lang()
     _apply_language_prompts(_profile_fields(_ACTIVE_PROFILE))
 
 
@@ -774,6 +786,11 @@ class LlmClient:
         self._streaming_count = 0
         self._answer_pending = 0
         self._streaming_lock = threading.Lock()
+        # Serializes test-screen requests: frames are single-flight in the
+        # watcher, but a stop/start restart of test mode only join(5)s the
+        # old worker — a straggler could interleave with a fresh request and
+        # poison _test_reasoning_carry (cross-frame answer recovery).
+        self._test_lock = threading.Lock()
         self._vision_cache: dict[tuple[str, str], bool] = {}
         # B1 (2026-09-27): providers serialize per-key requests, so a
         # background POST that started BEFORE the answer was reserved still
@@ -1139,13 +1156,23 @@ class LlmClient:
                     stream=True,
                 )
                 got_any = False
+                reasoning_tail = ""
                 for delta in stream:
-                    piece = (delta.choices[0].delta.content or "") if delta.choices else ""
+                    if not delta.choices:
+                        continue
+                    d = delta.choices[0].delta
+                    piece = getattr(d, "content", None) or ""
                     if piece:
                         got_any = True
                         yield piece
+                    # Reasoning models (e.g. deepseek-reasoner) put the whole
+                    # answer into reasoning_content with an EMPTY visible
+                    # content. Collect it as a last-resort fallback — for the
+                    # screenshot/test modes thinking is acceptable.
+                    reasoning_tail += getattr(d, "reasoning_content", None) or ""
                 if got_any:
                     return
+                self._stream_reasoning_tail = reasoning_tail
                 # Empty stream: some providers return an empty streamed body
                 # for image requests — fall through to the non-stream path.
             except Exception as exc:  # noqa: BLE001
@@ -1174,7 +1201,16 @@ class LlmClient:
                     temperature=gen["temperature"],
                     max_tokens=gen["max_tokens"],
                 )
-                text = (response.choices[0].message.content or "").strip()
+                msg = response.choices[0].message
+                text = (msg.content or "").strip()
+                if not text:
+                    # reasoning-only answer (reasoning models): use the
+                    # reasoning text collected from the empty stream attempt
+                    # first, then the non-stream message's own field.
+                    text = (
+                        getattr(self, "_stream_reasoning_tail", "")
+                        or (getattr(msg, "reasoning_content", None) or "")
+                    ).strip()
                 if text:
                     yield text
                     return
@@ -1186,37 +1222,121 @@ class LlmClient:
             raise RuntimeError("LLM вернул пустой ответ по скриншоту (попробуйте ещё раз)")
         finally:
             self._exit_stream()
+            self._stream_reasoning_tail = ""
 
-    def answer_test_screen(self, image_jpeg_b64: str) -> str:
+    _TEST_ANSWER_RE = re.compile(r"(\d+)\s*(?:→|>|—\s*|\s-\s)\s*([A-Za-zА-Яа-я0-9?]{1,3})")
+
+    @classmethod
+    def _extract_test_answers(cls, text: str) -> str:
+        """Pull "N -> X" answers out of reasoning text (reasoning models).
+
+        The system prompt asks for exactly this format, so reasoning that
+        reached a conclusion contains it verbatim — usually inline, not on
+        its own line. Only the short answer token (letter/number) is
+        captured so one match cannot swallow the next answer. Free-form
+        reasoning without the format yields "" (treated as "no answers").
+
+        Anti-loop guard (2026-10-09, tuned 2026-10-10): a thinking model on
+        high effort can DEGENERATE into circular reasoning — the same "N → X"
+        fragments repeated over and over (measured: 19 raw matches over 4
+        unique numbers ≈ 4.75 matches/number). Serving that as the answer
+        showed garbage in the overlay. An HONEST re-check keeps ≤3-4 passes
+        per question (measured: 5 questions × 3 self-checks = 3/number) and
+        must NOT be rejected.
+        - Obvious loop (>12 raw matches AND >4x matches per unique number):
+          reject the recovery entirely ("").
+        - A few repeats (the model re-checking itself): majority VOTE per
+          number — the answer the model kept returning wins. Ties resolve
+          deterministically by first occurrence.
+        """
+        from collections import Counter
+
+        raw: list[tuple[str, str]] = []
+        for m in cls._TEST_ANSWER_RE.finditer(text):
+            raw.append((m.group(1), m.group(2)))
+        if not raw:
+            return ""
+        nums = [n for n, _ in raw]
+        uniq = {n for n, _ in raw}
+        if len(nums) > 12 and len(nums) > 4 * len(uniq):
+            log.warning(
+                "llm: test-screen reasoning looks LOOPED (%d matches over %d "
+                "numbers) — recovery rejected",
+                len(nums), len(uniq),
+            )
+            return ""
+        # Majority vote per question number (handles honest re-checks;
+        # single mentions pass through unchanged). Counter.most_common
+        # breaks ties by first-occurrence order — deterministic.
+        lines = []
+        for num in sorted(uniq, key=int):
+            votes = Counter(a for n, a in raw if n == num)
+            best, _ = votes.most_common(1)[0]
+            lines.append(f"{num} → {best}")
+        return "\n".join(lines)
+
+    def answer_test_screen(
+        self, image_jpeg_b64: str, extra_prompt: str = "", deep_analysis: bool = False
+    ) -> str:
         """Live test mode: extract "N -> X" answers from a screenshot.
 
         Non-streaming (short deterministic answer), temperature=0. Frames
         are rate-limited by the TestWatcher; no history/context needed.
+        ``extra_prompt``: optional user instructions (how to answer, which
+        source to trust) appended to the system message with priority over
+        the general rules.
+        ``deep_analysis`` (test mode ONLY): lets a thinking-capable model
+        spend reasoning budget before answering — reasoning_effort=high +
+        a generous token budget. The voice interview path is unaffected.
         """
         client = self._ensure()
         if client is None:
             raise RuntimeError("LLM не настроен (нет base_url/api_key)")
+        with self._test_lock:  # see __init__ — straggler-worker serialization
+            return self._answer_test_screen_locked(
+                image_jpeg_b64, extra_prompt, deep_analysis
+            )
+
+    def _answer_test_screen_locked(
+        self, image_jpeg_b64: str, extra_prompt: str, deep_analysis: bool
+    ) -> str:
+        client = self._ensure()
+        if client is None:
+            raise RuntimeError("LLM не настроен (нет base_url/api_key)")
+        system_text = (
+            "Ты решаешь тест по скриншоту. "
+            + (
+                "Сначала тщательно обдумай каждый вопрос, затем выведи ответ. "
+                if deep_analysis
+                else "Не рассуждай развёрнуто — выдай ответ СРАЗУ. "
+            )
+            + "Формат: строки «N → X — краткое "
+            "обоснование в 2-4 словах» (номер вопроса → буква/номер "
+            "правильного варианта, тире, суть), например:\n"
+            "1 → B — шифрование на транспортном уровне\n"
+            "2 → 3 — быстрая сортировка\n"
+            "Никакого markdown, никаких пустых строк между ответами.\n"
+            "ГЛАВНОЕ ПРАВИЛО ДОСТОВЕРНОСТИ: отвечай на вопрос ТОЛЬКО "
+            "если он виден ЦЕЛИКОМ (полный текст вопроса) и видны ВСЕ "
+            "варианты ответа. Если вопрос обрезан краем экрана, виден "
+            "частично, видна только часть вариантов или ты не уверен "
+            "в правильном варианте — выведи для него строку:\n"
+            "N → ? — вопрос виден не полностью, проскроль экран\n"
+            "НИКОГДА не угадывай по обрывку вопроса или единственному "
+            "видимому варианту. Если теста на изображении нет вовсе — "
+            "верни пустой ответ."
+        )
+        extra = (extra_prompt or "").strip()[:4000]
+        if extra:
+            system_text += (
+                "\n\nДОПОЛНИТЕЛЬНЫЕ УКАЗАНИЯ ПОЛЬЗОВАТЕЛЯ (следуй им — они "
+                "уточняют общие правила выше и имеют приоритет при конфликте):\n"
+                + extra
+            )
         messages = [
             {
                 "role": "system",
-                "content": (
-                    "Ты решаешь тест по скриншоту. Не рассуждай развёрнуто — "
-                    "выдай ответ СРАЗУ. Формат: строки «N → X — краткое "
-                    "обоснование в 2-4 словах» (номер вопроса → буква/номер "
-                    "правильного варианта, тире, суть), например:\n"
-                    "1 → B — шифрование на транспортном уровне\n"
-                    "2 → 3 — быстрая сортировка\n"
-                    "Никакого markdown, никаких пустых строк между ответами.\n"
-                    "ГЛАВНОЕ ПРАВИЛО ДОСТОВЕРНОСТИ: отвечай на вопрос ТОЛЬКО "
-                    "если он виден ЦЕЛИКОМ (полный текст вопроса) и видны ВСЕ "
-                    "варианты ответа. Если вопрос обрезан краем экрана, виден "
-                    "частично, видна только часть вариантов или ты не уверен "
-                    "в правильном варианте — выведи для него строку:\n"
-                    "N → ? — вопрос виден не полностью, проскроль экран\n"
-                    "НИКОГДА не угадывай по обрывку вопроса или единственному "
-                    "видимому варианту. Если теста на изображении нет вовсе — "
-                    "верни пустой ответ."
-                ),
+                "content": system_text,
             },
             {
                 "role": "user",
@@ -1231,39 +1351,97 @@ class LlmClient:
                 ],
             },
         ]
-        # Some providers intermittently return an empty completion for
-        # image requests (same as the screenshot path) — retry once with
-        # streaming enabled before giving up.
-        # max_tokens generous: reasoning-style models spend tokens on
-        # hidden thinking BEFORE the content — a tight budget yields
-        # finish_reason=length with an EMPTY visible answer (seen live
-        # with DeepSeek). The visible answer itself is ~10 tokens/question.
+        # Attempt 0 STREAMS: reasoning-style vision models spend tokens on
+        # hidden thinking BEFORE the content — with streaming the answer
+        # starts arriving as soon as it's produced instead of after the
+        # whole completion (measured 2-3s faster first-visible-answer).
+        # Attempt 1 falls back to non-streaming: some providers return
+        # intermittently EMPTY streams while a plain request works.
+        # max_tokens generous: the visible answer is ~10 tokens/question.
+        self._test_reasoning_carry = ""
+        max_tokens = 8000 if deep_analysis else 2000
         for attempt in range(2):
-            response = client.chat.completions.create(
-                model=self._cfg.model,
-                messages=messages,
-                temperature=0,
-                max_tokens=2000,
-                stream=(attempt > 0),
-            )
+            stream = attempt == 0
+            kwargs: dict = {
+                "model": self._cfg.model,
+                "messages": messages,
+                "temperature": 0,
+                "max_tokens": max_tokens,
+                "stream": stream,
+            }
+            if deep_analysis and attempt == 0:
+                # OpenAI-compatible reasoning control; a provider that does
+                # not know it may 400 — fall through to the plain request on
+                # attempt 1 (and a bare retry of the plain request below).
+                kwargs["extra_body"] = {"reasoning_effort": "high"}
+            try:
+                response = client.chat.completions.create(**kwargs)
+            except Exception:  # noqa: BLE001
+                if deep_analysis and attempt == 0:
+                    log.info(
+                        "llm: reasoning_effort rejected by provider — retrying plain"
+                    )
+                    continue
+                raise
             text = ""
-            if attempt > 0:
+            # Stream attempt accumulates its own reasoning; the NON-stream
+            # retry uses ONLY its own response's reasoning — inheriting the
+            # (possibly looped/degenerate) reasoning tail from a FAILED
+            # stream attempt would poison the recovery path.
+            reasoning = getattr(self, "_test_reasoning_carry", "") if stream else ""
+            finish = "?"
+            chunks_seen = 0
+            if stream:
                 for delta in response:
-                    piece = (delta.choices[0].delta.content or "") if delta.choices else ""
-                    text += piece
+                    if not delta.choices:
+                        continue
+                    ch = delta.choices[0]
+                    d = ch.delta
+                    text += getattr(d, "content", None) or ""
+                    reasoning += getattr(d, "reasoning_content", None) or ""
+                    chunks_seen += 1
+                    fr = getattr(ch, "finish_reason", None)
+                    if fr:
+                        finish = fr
             else:
-                text = (response.choices[0].message.content or "")
+                msg = response.choices[0].message
+                text = msg.content or ""
+                reasoning = getattr(msg, "reasoning_content", None) or ""
+                finish = (
+                    response.choices[0].finish_reason
+                    if response.choices
+                    else "?"
+                )
+            self._test_reasoning_carry = reasoning
             text = text.strip()
-            finish = (
-                response.choices[0].finish_reason
-                if not attempt and response.choices
-                else "?"
-            )
+            if not text and reasoning.strip():
+                # Reasoning models (deepseek-reasoner etc.) can leave visible
+                # content EMPTY with the whole answer inside reasoning_content.
+                # Thinking is acceptable in test mode — extract the "N -> X"
+                # lines the system prompt asked for.
+                text = self._extract_test_answers(reasoning)
+                if text:
+                    log.info(
+                        "llm: test-screen answer recovered from reasoning_content (%d lines)",
+                        text.count("\n") + 1,
+                    )
+            text = text.strip()
             if text:
                 return text
+            # Clean empty: the model finished normally (finish=stop, chunks
+            # actually arrived) and produced NOTHING — per the system prompt
+            # that is the honest "no test on the frame" answer. Retrying
+            # non-stream would only burn ~2.5s and a duplicate API call on
+            # every no-test page flip. A died/cut stream (no finish marker)
+            # still falls through to the retry.
+            if stream and finish == "stop" and chunks_seen > 0:
+                log.info(
+                    "llm: test-screen empty (clean stop, no content/reasoning) — no retry"
+                )
+                return ""
             log.warning(
-                "llm: test-screen answer empty (attempt %d, finish_reason=%s)",
-                attempt + 1, finish,
+                "llm: test-screen answer empty (attempt %d, stream=%s, finish_reason=%s)",
+                attempt + 1, stream, finish,
             )
         # Empty is a VALID outcome ("no test on the frame") — return it as
         # such; the caller treats it as "no answers", not as an error.

@@ -12,7 +12,11 @@ from mockingbird.stt.whisper_engine import WhisperEngine
 
 def _engine(monkeypatch, sr=16000):
     e = WhisperEngine.__new__(WhisperEngine)
+    import threading
+
     e._sr = sr
+    e._lock = threading.Lock()
+    e._segment_id = "seg"
     e._chunk_texts = []
     e._cfg = type("C", (), {"initial_prompt": "zabbix kubernetes"})()
     e._text_matcher = None

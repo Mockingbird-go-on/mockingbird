@@ -318,3 +318,325 @@ def test_probe_connection_success():
     client._client = fake
     ok, message = client.probe_connection()
     assert ok is True
+
+
+def _test_screen_client(stream_deltas, nonstream):
+    """Fake client for answer_test_screen: attempt-0 stream, attempt-1 sync.
+
+    Stream chunks carry finish_reason on the LAST delta (OpenAI shape)."""
+    fake = SimpleNamespace(calls=[])
+
+    def create(**kwargs):
+        fake.calls.append(kwargs)
+        if kwargs.get("stream"):
+            out = []
+            for i, d in enumerate(stream_deltas):
+                fr = "stop" if i == len(stream_deltas) - 1 else None
+                out.append(
+                    SimpleNamespace(
+                        choices=[SimpleNamespace(delta=d, finish_reason=fr)]
+                    )
+                )
+            return iter(out)
+        return SimpleNamespace(choices=[SimpleNamespace(message=nonstream, finish_reason="stop")])
+
+    fake.chat = SimpleNamespace(completions=SimpleNamespace(create=create))
+    return fake
+
+
+def test_answer_test_screen_recovers_answer_from_reasoning_stream():
+    client = LlmClient(LlmConfig(base_url="http://x", api_key="k", model="m"))
+    deltas = [
+        SimpleNamespace(content=None, reasoning_content="Думаю... 1 → B — TLS шифрует"),
+        SimpleNamespace(content=None, reasoning_content=" и 2 → 3 — quicksort"),
+    ]
+    fake = _test_screen_client(deltas, SimpleNamespace(content=None, reasoning_content=None))
+    monkey = None
+    client._client = fake
+    orig = client._ensure
+    client._ensure = lambda: fake
+    try:
+        text = client.answer_test_screen("zzz")
+    finally:
+        client._ensure = orig
+    assert "1 → B" in text and "2 → 3" in text
+
+
+def test_answer_test_screen_reasoning_without_answer_format_is_empty():
+    client = LlmClient(LlmConfig(base_url="http://x", api_key="k", model="m"))
+    deltas = [SimpleNamespace(content=None, reasoning_content="просто рассуждения без формата")]
+    fake = _test_screen_client(deltas, SimpleNamespace(content=None, reasoning_content=None))
+    client._client = fake
+    orig = client._ensure
+    client._ensure = lambda: fake
+    try:
+        assert client.answer_test_screen("zzz") == ""
+    finally:
+        client._ensure = orig
+
+
+def test_answer_test_screen_prefers_visible_content():
+    client = LlmClient(LlmConfig(base_url="http://x", api_key="k", model="m"))
+    deltas = [
+        SimpleNamespace(content=None, reasoning_content="1 → A — из рассуждений"),
+        SimpleNamespace(content="1 → C — видимый ответ", reasoning_content=None),
+    ]
+    fake = _test_screen_client(deltas, SimpleNamespace(content=None, reasoning_content=None))
+    client._client = fake
+    orig = client._ensure
+    client._ensure = lambda: fake
+    try:
+        assert "1 → C" in client.answer_test_screen("zzz")
+    finally:
+        client._ensure = orig
+
+
+def test_answer_image_question_stream_falls_back_to_reasoning():
+    client = LlmClient(LlmConfig(base_url="http://x", api_key="k", model="m"))
+    deltas = [SimpleNamespace(content=None, reasoning_content="разбор скриншота")]
+    sync_msg = SimpleNamespace(content="итоговый ответ", reasoning_content=None)
+    fake = _test_screen_client(deltas, sync_msg)
+    client._client = fake
+    orig = client._ensure
+    client._ensure = lambda: fake
+    try:
+        chunks = list(client.answer_image_question_stream("zzz", "вопрос"))
+    finally:
+        client._ensure = orig
+    assert chunks and "итоговый" in chunks[0]
+
+
+def test_answer_test_screen_clean_stop_no_retry():
+    """Honest 'no test on frame': stream finished with stop, no content and
+    no reasoning -> must return "" WITHOUT the non-stream retry (one API
+    call total, ~2.5s saved per no-test page flip)."""
+    client = LlmClient(LlmConfig(base_url="http://x", api_key="k", model="m"))
+    deltas = [SimpleNamespace(content=None, reasoning_content=None)]
+    fake = _test_screen_client(deltas, SimpleNamespace(content="NEVER", reasoning_content=None))
+    client._client = fake
+    orig = client._ensure
+    client._ensure = lambda: fake
+    try:
+        assert client.answer_test_screen("zzz") == ""
+    finally:
+        client._ensure = orig
+    assert len(fake.calls) == 1, "clean-stop empty stream must not retry"
+    assert fake.calls[0].get("stream") is True
+
+
+def test_answer_test_screen_dead_stream_still_retries():
+    """A stream that died without a finish marker (network cut, provider
+    hiccup) must still fall through to the non-stream attempt."""
+    client = LlmClient(LlmConfig(base_url="http://x", api_key="k", model="m"))
+    # Build the stream by hand: no finish_reason anywhere.
+    deltas = [SimpleNamespace(content=None, reasoning_content=None)]
+    fake = SimpleNamespace(calls=[])
+
+    def create(**kwargs):
+        fake.calls.append(kwargs)
+        if kwargs.get("stream"):
+            return iter(
+                SimpleNamespace(choices=[SimpleNamespace(delta=d, finish_reason=None)])
+                for d in deltas
+            )
+        msg = SimpleNamespace(content="1 → B — retry answer", reasoning_content=None)
+        return SimpleNamespace(choices=[SimpleNamespace(message=msg, finish_reason="stop")])
+
+    fake.chat = SimpleNamespace(completions=SimpleNamespace(create=create))
+    client._client = fake
+    orig = client._ensure
+    client._ensure = lambda: fake
+    try:
+        assert "1 → B" in client.answer_test_screen("zzz")
+    finally:
+        client._ensure = orig
+    assert len(fake.calls) == 2, "unmarked stream end must trigger the retry"
+
+
+def test_answer_test_screen_finish_length_still_retries():
+    """finish_reason=length (reasoning ate the budget, answer cut) —
+    the non-stream retry with the reasoning carry is the designed path."""
+    client = LlmClient(LlmConfig(base_url="http://x", api_key="k", model="m"))
+    deltas = [SimpleNamespace(content=None, reasoning_content="обрыв на полу")]
+    fake = SimpleNamespace(calls=[])
+
+    def create(**kwargs):
+        fake.calls.append(kwargs)
+        if kwargs.get("stream"):
+            return iter(
+                SimpleNamespace(
+                    choices=[SimpleNamespace(delta=d, finish_reason="length")]
+                )
+                for d in deltas
+            )
+        msg = SimpleNamespace(content=None, reasoning_content="1 → D — из второй попытки")
+        return SimpleNamespace(choices=[SimpleNamespace(message=msg, finish_reason="stop")])
+
+    fake.chat = SimpleNamespace(completions=SimpleNamespace(create=create))
+    client._client = fake
+    orig = client._ensure
+    client._ensure = lambda: fake
+    try:
+        assert "1 → D" in client.answer_test_screen("zzz")
+    finally:
+        client._ensure = orig
+    assert len(fake.calls) == 2
+
+
+def test_answer_test_screen_extra_prompt_in_system_message():
+    """User instructions are appended to the system message with an
+    explicit priority header; empty prompt leaves it untouched."""
+    client = LlmClient(LlmConfig(base_url="http://x", api_key="k", model="m"))
+    deltas = [SimpleNamespace(content="1 → B — ok", reasoning_content=None)]
+    fake = _test_screen_client(deltas, SimpleNamespace(content=None, reasoning_content=None))
+    client._client = fake
+    orig = client._ensure
+    client._ensure = lambda: fake
+    try:
+        client.answer_test_screen("zzz", extra_prompt="отвечай только по лекции")
+    finally:
+        client._ensure = orig
+    msgs = fake.calls[0]["messages"]
+    system = msgs[0]["content"]
+    assert "ДОПОЛНИТЕЛЬНЫЕ УКАЗАНИЯ ПОЛЬЗОВАТЕЛЯ" in system
+    assert "отвечай только по лекции" in system
+    # empty prompt: no block
+    fake.calls.clear()
+    try:
+        client.answer_test_screen("zzz", extra_prompt="   ")
+    finally:
+        client._ensure = orig
+    system2 = fake.calls[0]["messages"][0]["content"]
+    assert "ДОПОЛНИТЕЛЬНЫЕ УКАЗАНИЯ" not in system2
+
+
+def test_answer_test_screen_extra_prompt_truncated():
+    """Oversized instructions are truncated to the config limit (4000)."""
+    client = LlmClient(LlmConfig(base_url="http://x", api_key="k", model="m"))
+    deltas = [SimpleNamespace(content="1 → B", reasoning_content=None)]
+    fake = _test_screen_client(deltas, SimpleNamespace(content=None, reasoning_content=None))
+    client._client = fake
+    orig = client._ensure
+    client._ensure = lambda: fake
+    try:
+        client.answer_test_screen("zzz", extra_prompt="x" * 9000)
+    finally:
+        client._ensure = orig
+    system = fake.calls[0]["messages"][0]["content"]
+    assert len(system.split("ПОЛЬЗОВАТЕЛЯ", 1)[1]) <= 4100  # header + ≤4000
+
+
+def test_answer_test_screen_deep_analysis_sends_reasoning_effort():
+    """deep_analysis (test mode only) sends reasoning_effort=high and a
+    generous token budget on the streaming attempt; the prompt asks the
+    model to think first instead of answering immediately."""
+    client = LlmClient(LlmConfig(base_url="http://x", api_key="k", model="m"))
+    deltas = [SimpleNamespace(content="1 → B — ok", reasoning_content=None)]
+    fake = _test_screen_client(deltas, SimpleNamespace(content=None, reasoning_content=None))
+    client._client = fake
+    orig = client._ensure
+    client._ensure = lambda: fake
+    try:
+        client.answer_test_screen("zzz", deep_analysis=True)
+    finally:
+        client._ensure = orig
+    stream_call = fake.calls[0]
+    assert stream_call["stream"] is True
+    assert stream_call["extra_body"] == {"reasoning_effort": "high"}
+    assert stream_call["max_tokens"] >= 8000
+    system = stream_call["messages"][0]["content"]
+    assert "Сначала тщательно обдумай" in system
+    assert "Не рассуждай развёрнуто" not in system
+
+
+def test_answer_test_screen_plain_has_no_reasoning_effort():
+    """Without deep_analysis the request must NOT carry reasoning_effort and
+    keeps the fast answer prompt."""
+    client = LlmClient(LlmConfig(base_url="http://x", api_key="k", model="m"))
+    deltas = [SimpleNamespace(content="1 → B — ok", reasoning_content=None)]
+    fake = _test_screen_client(deltas, SimpleNamespace(content=None, reasoning_content=None))
+    client._client = fake
+    orig = client._ensure
+    client._ensure = lambda: fake
+    try:
+        client.answer_test_screen("zzz")
+    finally:
+        client._ensure = orig
+    assert "extra_body" not in fake.calls[0]
+    assert fake.calls[0]["max_tokens"] == 2000
+    assert "Не рассуждай развёрнуто" in fake.calls[0]["messages"][0]["content"]
+
+
+# --- anti-loop guard for reasoning recovery (2026-10-09) --------------------
+
+def test_extract_test_answers_rejects_looped_reasoning():
+    """Circular reasoning (19 raw matches over 4 unique numbers, measured
+    2026-10-09) must NOT be served as the answer."""
+    looped = "\n".join(
+        ["4 → 4", "2 → ?", "2 → ?", "3 → B", "4 → 4", "2 → ?", "3 → B",
+         "4 → 4", "3 → B", "2 → ?", "3 → B", "4 → 4", "1 → ?", "1 → ?",
+         "2 → ?", "1 → ?", "2 → ?", "3 → B", "4 → 4"]
+    )
+    assert LlmClient._extract_test_answers(looped) == ""
+
+
+def test_extract_test_answers_majority_vote():
+    """Honest re-checks (a few repeats) resolve by majority vote."""
+    rechecked = "1 → B — первое впечатление\n1 → C — а может C?\n1 → B — нет, точно B\n5 → 3"
+    out = LlmClient._extract_test_answers(rechecked)
+    assert "1 → B" in out
+    assert "1 → C" not in out
+    assert "5 → 3" in out
+
+
+def test_extract_test_answers_honest_rechecks_not_rejected():
+    """Deep-mode re-verification (5 questions × 3 self-checks = 15 matches
+    over 5 uniques = 3x) is NOT a loop — must be served via majority vote
+    (regression: the old 2.5x threshold rejected it as 'looped')."""
+    honest = "\n".join(
+        ["1 → B", "2 → C", "3 → A", "4 → D", "5 → B",
+         "1 → B", "2 → C", "3 → A", "4 → D", "5 → B",
+         "1 → B", "2 → C", "3 → A", "4 → D", "5 → B"]
+    )
+    out = LlmClient._extract_test_answers(honest)
+    assert out != ""
+    for n, a in (("1", "B"), ("2", "C"), ("3", "A"), ("4", "D"), ("5", "B")):
+        assert f"{n} → {a}" in out
+
+
+def test_extract_test_answers_clean_pass_through():
+    """A normal reasoning tail with unique numbers passes through unchanged."""
+    clean = "итак: 1 → A — TLS\n2 → 4 — quicksort\n3 → ? — не видно"
+    out = LlmClient._extract_test_answers(clean)
+    assert "1 → A" in out and "2 → 4" in out and "3 → ?" in out
+
+
+def test_test_screen_nonstream_retry_ignores_stale_carry():
+    """The non-stream retry must use ONLY its own reasoning — the looped
+    reasoning tail from the failed stream attempt must not poison it."""
+    client = LlmClient(LlmConfig(base_url="http://x", api_key="k", model="m"))
+    # Stream attempt: looped reasoning (guard rejects), empty content,
+    # clean stop -> no retry... to force the retry we use finish=None (dead stream).
+    deltas = [SimpleNamespace(content=None, reasoning_content="1 → B\n1 → B\n1 → B\n1 → B\n1 → B\n1 → B\n1 → B\n1 → B\n1 → B\n1 → B\n1 → B\n1 → B\n1 → B")]
+    fake = SimpleNamespace(calls=[])
+    _loop_guard_state = {"carry": ""}
+
+    def create(**kwargs):
+        fake.calls.append(kwargs)
+        if kwargs.get("stream"):
+            return iter([SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=None, reasoning_content="2 → B\n" * 13), finish_reason=None)])])
+        msg = SimpleNamespace(content=None, reasoning_content="7 → C — чистый итог")
+        return SimpleNamespace(choices=[SimpleNamespace(message=msg, finish_reason="stop")])
+
+    fake.chat = SimpleNamespace(completions=SimpleNamespace(create=create))
+    client._client = fake
+    orig = client._ensure
+    client._ensure = lambda: fake
+    try:
+        out = client.answer_test_screen("zzz")
+    finally:
+        client._ensure = orig
+    # Stream reasoning was looped (13x "2 → B") -> guard rejects; non-stream
+    # retry provides its own clean reasoning -> recovered from THAT only.
+    assert "7 → C" in out
+    assert "2 → B" not in out

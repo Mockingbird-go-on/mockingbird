@@ -8,7 +8,7 @@
 [![Telegram](https://img.shields.io/badge/chat-Telegram-26A5E4.svg)](https://t.me/MOCKINGBird_release)
 [![YouTube](https://img.shields.io/badge/YouTube-%40Mockingbird--go--on-FF0000.svg)](https://www.youtube.com/@Mockingbird-go-on)
 
-> 🇷🇺 Русский · 🇬🇧 [README_EN.md (English)](langs/README_EN.md) · 🇪🇸 [README_ES.md (Español)](langs/README_ES.md)
+> 🇷🇺 Русский · 🇬🇧 [English](langs/README_EN.md) · 🇪🇸 [Español](langs/README_ES.md)
 
 Десктопный ассистент для технических интервью: распознавание речи в реальном
 времени и подсказки ответов из базы знаний и LLM. Аудио проходит через Silero

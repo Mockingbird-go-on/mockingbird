@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  AppxManifest for the Microsoft Store (MSIX) build of Mockingbird.
+  Identity values come from Partner Center (Package/Identity) — do not
+  invent: the Store rejects packages whose Identity does not match the
+  reserved name exactly.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap5="http://schemas.microsoft.com/appx/manifest/uap/windows10/5"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap5 rescap">
+
+  <Identity
+    Name="Mockingbird-go-on.Mockingbird"
+    Publisher="CN=3CFFD6AF-B7AC-4BB3-9517-1E96954A7A88"
+    Version="1.0.5.0"
+    ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>Mockingbird</DisplayName>
+    <PublisherDisplayName>Mockingbird-go-on</PublisherDisplayName>
+    <Logo>assets\StoreLogo.png</Logo>
+  </Properties>
+
+  <Resources>
+    <Resource Language="ru-ru" />
+    <Resource Language="en-us" />
+    <Resource Language="es-es" />
+  </Resources>
+
+  <Dependencies>
+    <TargetDeviceFamily
+      Name="Windows.Desktop"
+      MinVersion="10.0.17763.0"
+      MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+
+  <Applications>
+    <Application
+      Id="Mockingbird"
+      Executable="mockingbird\mockingbird.exe"
+      EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="Mockingbird"
+        Description="Ассистент для интервью: распознавание речи в реальном времени, ответы ИИ и база знаний."
+        BackgroundColor="transparent"
+        Square150x150Logo="assets\Square150x150Logo.png"
+        Square44x44Logo="assets\Square44x44Logo.png">
+        <uap:DefaultTile
+          Wide310x150Logo="assets\Wide310x150Logo.png"
+          Square310x310Logo="assets\Square310x310Logo.png"
+          Square71x71Logo="assets\Square71x71Logo.png">
+        </uap:DefaultTile>
+        <uap:SplashScreen Image="assets\SplashScreen.scale-200.png" />
+      </uap:VisualElements>
+    </Application>
+  </Applications>
+</Package>

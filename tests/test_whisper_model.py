@@ -85,7 +85,7 @@ def test_download_reports_progress(monkeypatch, tmp_path, no_github_model_mirror
         progress_cb=lambda message, percent: events.append((message, percent)),
     )
     messages = [m for m, _ in events]
-    assert messages and "Downloading whisper model…" in messages[0]
+    assert messages and "Скачивание модели распознавания…" in messages[0]
     assert any("model.bin" in m for m in messages)
     assert any("config.json" in m for m in messages)
     # the reporter passes the percentage separately (not embedded in the text)
@@ -107,3 +107,26 @@ def test_progress_tqdm_tolerates_missing_console():
     messages = [m for m, _ in events]
     assert messages and "model.bin" in messages[0]
     assert any(abs(p - 40.0) < 0.01 for _, p in events)
+
+
+def test_download_progress_strings_are_translated(monkeypatch):
+    """Regression (2026-10-07): the engine emitted PRE-FORMATTED Russian
+    progress strings, so the overlay showed «Скачивание…» even in English.
+    The reporter must now route the message through i18n.t()."""
+    from mockingbird import i18n
+    from mockingbird.stt import whisper_engine as we
+
+    events: list[tuple[str, float]] = []
+    reporter = we._DownloadReporter(lambda message, percent: events.append((message, percent)))
+
+    i18n.set_language("en")
+    try:
+        reporter.new_file(total=100 * 1_000_000, name="model.bin")
+        reporter.update(50 * 1_000_000)
+
+        messages = [m for m, _ in events]
+        joined = " ".join(messages)
+        assert any("Downloading" in m for m in messages), messages
+        assert "Скачивание" not in joined
+    finally:
+        i18n.set_language(i18n.DEFAULT)

@@ -25,9 +25,10 @@ import logging
 from dataclasses import dataclass, field
 from typing import Callable
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QSettings, Qt, QTimer
 from PySide6.QtWidgets import QApplication, QLabel, QWidget
 
+from ..i18n import t
 from . import theme
 
 log = logging.getLogger("mockingbird.notify")
@@ -48,6 +49,10 @@ class Notification:
     scope: str = "runtime"  # startup | runtime
     buttons: tuple = ()  # (t("Повторить"), on_retry), (t("Закрыть"), None))
     dedup_key: str = ""
+    # Non-empty → dialog gets a «Больше не показывать» checkbox; when ticked,
+    # the flag lands in QSettings and is_suppressed(key) starts returning
+    # True (callers filter such notifications before push()).
+    suppression_key: str = ""
     # Internal: action callbacks keyed by button label.
     _actions: dict = field(default_factory=dict, repr=False)
 
@@ -147,6 +152,7 @@ class NotificationBus:
         scope: str = "runtime",
         buttons: tuple = (),
         dedup_key: str = "",
+        suppression_key: str = "",
     ) -> None:
         """Queue a notification.
 
@@ -160,11 +166,12 @@ class NotificationBus:
             severity=severity,
             scope=scope,
             dedup_key=dedup_key or f"{severity}:{title}",
+            suppression_key=suppression_key,
         )
         notif._actions = {label: cb for label, cb in buttons}
         if any(n.dedup_key == notif.dedup_key for n in self._queue):
             return  # already queued — do not spam
-        if severity == "info" and not buttons:
+        if severity == "info" and not buttons and not suppression_key:
             self._show_toast(notif)
             return
         if scope == "startup" and self._startup_flushed:
@@ -226,12 +233,31 @@ class NotificationBus:
                 "error": QMessageBox.Icon.Critical,
             }.get(notif.severity, QMessageBox.Icon.Information)
             box.setIcon(icon)
+            # NOTE: the QMessageBox checkbox API is deliberately NOT used —
+            # PySide6 6.11.2 crashes with an access violation on the
+            # checkbox + exec() combination (observed on Windows AND in
+            # offscreen tests). A plain button is bullet-proof and
+            # UX-equivalent.
+            suppress_label = t("Больше не показывать") if notif.suppression_key else ""
+            if suppress_label:
+                box.addButton(suppress_label, QMessageBox.ButtonRole.AcceptRole)
             if notif._actions:
                 for label, _cb in notif.buttons:
                     box.addButton(label, QMessageBox.ButtonRole.AcceptRole)
             else:
                 box.addButton("OK", QMessageBox.ButtonRole.AcceptRole)
             box.exec()
+            if (
+                notif.suppression_key
+                and suppress_label
+                and clicked_suppressed(box, suppress_label)
+            ):
+                try:
+                    QSettings("Mockingbird", "Mockingbird").setValue(
+                        f"suppress/{notif.suppression_key}", True
+                    )
+                except Exception:
+                    log.exception("suppression flag save failed: %s", notif.suppression_key)
             clicked = box.clickedButton()
             cb = notif._actions.get(clicked.text()) if clicked else None
             if cb:
@@ -290,3 +316,23 @@ class NotificationBus:
 
 # Module-level singleton.
 bus = NotificationBus()
+
+
+def clicked_suppressed(box, label: str) -> bool:
+    """True when the user closed the dialog via the «Больше не показывать»
+    button. Extracted as a helper so tests can stub it without a real
+    QMessageBox."""
+    clicked = box.clickedButton()
+    return clicked is not None and clicked.text() == label
+
+
+def is_suppressed(suppression_key: str) -> bool:
+    """True when the user ticked «Больше не показывать» for this key earlier."""
+    if not suppression_key:
+        return False
+    try:
+        settings = QSettings("Mockingbird", "Mockingbird")
+        return bool(settings.value(f"suppress/{suppression_key}", False))
+    except Exception:
+        log.exception("suppression flag read failed: %s", suppression_key)
+        return False

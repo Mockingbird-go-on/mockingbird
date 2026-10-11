@@ -8,7 +8,7 @@
 [![Telegram](https://img.shields.io/badge/chat-Telegram-26A5E4.svg)](https://t.me/MOCKINGBird_release)
 [![YouTube](https://img.shields.io/badge/YouTube-%40Mockingbird--go--on-FF0000.svg)](https://www.youtube.com/@Mockingbird-go-on)
 
-> 🇷🇺 [README.md (Русский)](../README.md) · 🇬🇧 [README_EN.md (English)](README_EN.md) · 🇪🇸 Español
+> 🇷🇺 [Русский](../README.md) · 🇬🇧 [English](README_EN.md) · 🇪🇸 Español
 
 Un asistente de escritorio para entrevistas técnicas: reconocimiento de voz
 en tiempo real y sugerencias de respuestas desde una base de conocimiento y

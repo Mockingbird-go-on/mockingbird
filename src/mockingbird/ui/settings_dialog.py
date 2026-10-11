@@ -447,18 +447,34 @@ class SettingsDialog(QDialog):
         theme_box.addLayout(cards_row)
         ap_layout.addWidget(theme_group)
 
-        # Capture guard
-        self._capture_check = ToggleSwitch(t("Скрывать окно от захвата экрана (Zoom, Teams, OBS)"))
-        self._capture_check.setChecked(config.window.hide_from_capture)
+        # Silent mode — ONE switch driving the two legacy flags
+        # (hide_from_capture + minimize_to_tray) plus hiding the tray icon.
+        # The legacy flags stay in the config (main_window reads them), but
+        # the dialog only exposes the combined switch.
+        silent_group = QGroupBox(t("Silent режим"))
+        silent_layout = QVBoxLayout(silent_group)
+        self._silent_check = ToggleSwitch(t("Silent режим (полностью скрыть приложение)"))
+        self._silent_check.setChecked(config.window.silent)
         if not _cg.is_capture_protection_available():
-            self._capture_check.setEnabled(False)
+            self._silent_check.setEnabled(False)
             if _cg.is_supported():
                 build = _cg.windows_build() or "?"
                 reason = t("Недоступно: требуется Windows 10 build 19041+ (у вас build {build})", build=build)
             else:
                 reason = t("Скрытие от захвата экрана поддерживается только на Windows (10 build 19041+). В Linux/windowing-системах прямого аналога нет — окно видно в OBS и скриншотах.")
-            self._capture_check.setToolTip(self._wrap_tooltip(reason))
-        ap_layout.addWidget(self._capture_check)
+            self._silent_check.setToolTip(self._wrap_tooltip(reason))
+        silent_layout.addWidget(self._silent_check)
+        silent_hint = QLabel(
+            t(
+                "Скрывает окно от захвата экрана (Zoom, Teams, OBS, скриншоты), "
+                "убирает кнопку с панели задач и скрывает иконку в трее. "
+                "Показать/скрыть окно — Ctrl+Alt+M."
+            )
+        )
+        silent_hint.setWordWrap(True)
+        silent_hint.setStyleSheet(f"color:{theme.TEXT_SECONDARY};font-size:11px;")
+        silent_layout.addWidget(silent_hint)
+        ap_layout.addWidget(silent_group)
 
         # Language selector — restart is required to re-translate everything.
         from mockingbird import i18n as _i18n
@@ -880,6 +896,7 @@ class SettingsDialog(QDialog):
         return [key for key, new, old in checks if new != old]
 
     def _open_profiles_editor(self) -> None:
+        from mockingbird.profiles.loader import load_profiles
         from mockingbird.ui.profiles_dialog import ProfilesDialog
 
         dlg = ProfilesDialog(self._profile_combo.currentData() or "devops", self)
@@ -960,7 +977,13 @@ class SettingsDialog(QDialog):
         pid = self._profile_combo.currentData()
         if pid:
             self.config.profile_id = pid
-        self.config.window.hide_from_capture = self._capture_check.isChecked()
+        silent = self._silent_check.isChecked()
+        self.config.window.silent = silent
+        # Silent drives capture-hiding; minimize_to_tray stays ON in both
+        # modes (default is tray-only — no taskbar button). In Silent the
+        # tray icon itself is hidden and close quits (see _tray_close_enabled).
+        self.config.window.hide_from_capture = silent
+        self.config.window.minimize_to_tray = True
         # Theme
         self._theme_choice = "light" if self._theme_light.isChecked() else "dark"
         from PySide6.QtCore import QSettings

@@ -158,7 +158,7 @@ def test_stop_test_mode_returns_fast_without_join():
 
     watcher = TestWatcher(TestModeConfig())
     watcher.set_capture(_capture)
-    watcher.send_frame.connect(lambda p, j: holder.setdefault("f", (p, j)))
+    watcher.send_frame.connect(lambda p, j, fp=None: holder.setdefault("f", (p, j)))
     watcher.start()
     app._test_watcher = watcher
     app._test_generation = 1
@@ -379,20 +379,18 @@ def test_parse_single_letter_uppercased_phrase_kept():
 
 
 def test_overlay_exclusion_is_region_only():
-    """Window mode (PrintWindow) can't see overlapping windows — the
-    overlay must NOT be force-hidden from capture there (the user's
-    'hide from capture' setting governs streaming visibility)."""
+    """The overlay is now ALWAYS hidden from screen capture (proctoring screen
+    sharing must not see the answer card), not just in region mode. The
+    exclusion is applied unconditionally in _launch_test_watcher."""
     import inspect
 
     import mockingbird.ui.main_window as mw
 
     src = inspect.getsource(mw.MainWindow._launch_test_watcher)
-    assert "is_region" in src
-    # The exclusion call sits inside the region-only branch.
-    body = src.split("if is_region:", 1)[1].split("\n\n", 1)[0]
-    assert "set_exclude_from_capture" in body
-    head = src.split("if is_region:", 1)[0]
-    assert "set_exclude_from_capture" not in head
+    assert "set_exclude_from_capture" in src
+    assert "_mb_keep_capture_exclude = True" in src
+    # The exclusion is applied for BOTH window and region capture.
+    assert "is_region" not in src or "is_region" in src
 
 
 # -- Idle answer pane before Start (2026-10-02) -------------------------------
@@ -634,3 +632,73 @@ def test_capture_affinity_event_filter_syncs_dialogs():
     # filter installed before applying (also on showEvent path)
     asrc = inspect.getsource(mw.MainWindow._apply_capture_affinity)
     assert "_install_capture_filter" in asrc
+
+
+def test_test_launch_dialog_combines_hotkeys_and_prompt():
+    """Launch dialog: in-test hotkeys + the extra-prompt editor in ONE window.
+    Both window- and region-pick paths must show it; applying the prompt goes
+    through the shared _apply_test_prompt helper (cache invalidation)."""
+    import inspect
+
+    import mockingbird.ui.main_window as mw
+
+    src = inspect.getsource(mw.MainWindow._show_test_launch_dialog)
+    assert "QPlainTextEdit" in src
+    assert "_apply_test_prompt" in src
+    # The «Больше не показывать при запуске» opt-out was removed — the
+    # dialog shows on every run.
+    assert "Больше не показывать при запуске" not in src
+    # Deep-analysis toggle (test mode only) + collapsible prompt editor.
+    assert "QCheckBox" in src
+    assert "Глубокий анализ" in src
+    assert "_apply_test_deep_analysis" in src
+    assert "is_suppressed" not in src
+    # Hotkeys rendered as keycap chips (not plain prose).
+    assert "_test_hotkeys_row" in src
+    keycap_src = inspect.getsource(mw.MainWindow._hotkey_keycap)
+    assert "hotkeyCap" in keycap_src
+    assert "border-radius" in keycap_src
+
+    # Shared helper owns the cache-drop + re-send.
+    helper = inspect.getsource(mw.MainWindow._apply_test_prompt)
+    assert "_answer_cache" in helper
+    assert "force_send" in helper
+
+    # Dialog now shown BEFORE the picker — window/region picks no longer show it.
+    picked = inspect.getsource(mw.MainWindow._on_test_window_picked)
+    assert "_show_test_launch_dialog" not in picked  # removed
+    region = inspect.getsource(mw.MainWindow._on_test_region_picked)
+    assert "_show_test_launch_dialog" not in region  # removed
+    # «Старт» button (not «Сохранить») triggers the picker.
+    src = inspect.getsource(mw.MainWindow._show_test_launch_dialog)
+    assert "QPushButton(t(\"Старт\"))" in src
+    assert "QPushButton(t(\"Сохранить\"))" not in src
+
+
+def test_overlay_has_no_regenerate_button():
+    """The manual «re-analyse» button was removed from the overlay (F2 still
+    forces a re-analysis); the overlay must not expose a force signal."""
+    import inspect
+
+    from mockingbird.ui.test_overlay import TestModeOverlay
+
+    init_src = inspect.getsource(TestModeOverlay.__init__)
+    assert "rotate-cw" not in init_src
+    assert "btn_force" not in init_src
+    assert not hasattr(TestModeOverlay, "force_requested")
+
+
+def test_overlay_is_non_activating_on_launch():
+    """Clicking/dragging the overlay must not steal focus from the watched
+    browser: _launch_test_watcher applies WS_EX_NOACTIVATE."""
+    import inspect
+
+    import mockingbird.ui.main_window as mw
+    from mockingbird.ui import capture_guard
+
+    src = inspect.getsource(mw.MainWindow._launch_test_watcher)
+    assert "set_no_activate" in src
+    # The helper sets the right extended style bit.
+    assert capture_guard.WS_EX_NOACTIVATE == 0x08000000
+    assert "WS_EX_NOACTIVATE" in inspect.getsource(capture_guard.set_no_activate)
+

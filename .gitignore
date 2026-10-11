@@ -61,3 +61,12 @@ installer/Mockingbird-*-setup.exe
 # Хранятся рядом с installer.iss; в репо не нужны.
 scripts/wizard-side.bmp
 scripts/wizard-small.bmp
+
+# ─── NTFS-мусор из Windows-копий ─────────────────────────
+*:Zone.Identifier
+
+# ─── Диагностические дампы тест-режима (личные данные) ──
+test-mode-*.jpg
+
+# ─── Локальный лог-файл отладки ─────────────────────────
+/log

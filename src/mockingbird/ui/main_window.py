@@ -10,8 +10,10 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
+    QSystemTrayIcon,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -136,8 +138,19 @@ class MainWindow(QMainWindow):
         self._log_panel.set_enabled(True)
         self._set_running(False)
         self._sig.status.emit("idle", "")
+        self._check_audio_health()
 
     def closeEvent(self, event) -> None:
+        # Minimize-to-tray: closing the window hides it (and the taskbar
+        # button) instead of quitting. The tray icon brings it back; the
+        # context-menu «Выход» performs a real quit.
+        if self._tray_close_enabled() and not self._force_quit():
+            event.ignore()
+            self.hide()
+            # Tell the user where the app went (once per hide; silent mode
+            # never reaches here — _tray_close_enabled is False for it).
+            self._notify_hidden_to_tray()
+            return
         self._session_timer.stop()
         # B10: a running resume import has an LLM call in flight in a
         # QThread — give it a brief window to finish so the interpreter
@@ -154,6 +167,22 @@ class MainWindow(QMainWindow):
         # Apply capture affinity once the window has a valid HWND.
         self._sync_capture_button()
         self._apply_capture_affinity()
+        self._apply_taskbar_visibility()
+
+    def changeEvent(self, event) -> None:
+        # Minimize-to-tray: the minimize button hides the window (removing
+        # the taskbar button) instead of leaving it in the taskbar.
+        from PySide6.QtCore import QEvent
+
+        if (
+            event.type() == QEvent.Type.WindowStateChange
+            and self.isMinimized()
+            and self._tray_close_enabled()
+        ):
+            QTimer.singleShot(0, self.hide)
+            event.accept()
+            return
+        super().changeEvent(event)
 
     def _build_toolbar(self) -> QWidget:
         bar = QWidget()
@@ -235,6 +264,15 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._cancel_load_btn)
         layout.addWidget(self._timer_label)
         layout.addStretch(1)
+        self._audio_warn_btn = QPushButton()
+        self._audio_warn_btn.setObjectName("audio_warn_btn")
+        self._audio_warn_btn.setIcon(lucide_icon("triangle-alert", color=theme.current.status_muted))
+        self._audio_warn_btn.setIconSize(QSize(18, 18))
+        self._audio_warn_btn.setFlat(True)
+        self._audio_warn_btn.setToolTip("Обнаружены проблемы со звуком — нажмите для деталей")
+        self._audio_warn_btn.clicked.connect(self._on_audio_warn)
+        self._audio_warn_btn.hide()
+        layout.addWidget(self._audio_warn_btn)
         layout.addWidget(self._source_badge)
         layout.addWidget(self._status)
         layout.addWidget(self._shot_btn)
@@ -244,6 +282,49 @@ class MainWindow(QMainWindow):
         return bar
 
     # -- capture guard -----------------------------------------------------
+
+    def _on_audio_warn(self) -> None:
+        """Show detected environment problems (missing Linux dependencies)."""
+        from PySide6.QtWidgets import QMessageBox
+
+        from mockingbird.audio.health import audio_health_issues, platform_health_issues
+
+        issues = audio_health_issues() + platform_health_issues()
+        if not issues:
+            self._audio_warn_btn.hide()
+            return
+        lines = "\n\n".join(
+            f"⚠ <b>{i.feature}</b>\n{i.reason}\nРешение: <code>{i.fix}</code>"
+            for i in issues
+        )
+        QMessageBox.warning(
+            self,
+            "Проблемы с окружением",
+            "<p>Обнаружены проблемы с окружением (Linux):</p>" + lines,
+        )
+
+    def _check_audio_health(self) -> None:
+        """Show the ⚠ toolbar badge when the Linux environment is incomplete.
+
+        Windows short-circuits inside the health checks (bundled
+        PortAudio/CUDA DLLs in the exe), so the badge never appears there.
+        """
+        from mockingbird.audio.health import audio_health_issues, platform_health_issues
+
+        try:
+            issues = audio_health_issues() + platform_health_issues()
+        except Exception:  # noqa: BLE001 — must never break startup
+            log.exception("environment health check failed")
+            return
+        if issues:
+            for i in issues:
+                log.warning("env: %s — fix: %s", i.title, i.fix)
+            self._audio_warn_btn.setToolTip(
+                "Обнаружены проблемы с окружением:\n"
+                + "\n".join(f"• {i.title}" for i in issues)
+                + "\nНажмите для деталей"
+            )
+            self._audio_warn_btn.show()
 
     def _sync_capture_button(self) -> None:
         """No-op placeholder — capture toggle moved to Settings dialog."""
@@ -325,6 +406,26 @@ class MainWindow(QMainWindow):
 
     # -- icon helpers --
 
+    def _apply_taskbar_visibility(self) -> None:
+        """Windows-only: show/hide the main window's taskbar button.
+
+        With ``minimize_to_tray`` ON the app lives only in the system tray —
+        the button is removed from the taskbar (and Alt+Tab) even while the
+        window is visible. Uses the ``WS_EX_TOOLWINDOW`` style via
+        ``capture_guard.set_taskbar_visibility``, so the window itself stays
+        fully visible on screen. When the feature is OFF the button is
+        restored. No-op off-Windows.
+        """
+        from mockingbird.ui import capture_guard
+
+        if not capture_guard.is_supported():
+            return
+        try:
+            hwnd = int(self.winId())
+        except Exception:  # noqa: BLE001 — native handle may not exist yet
+            return
+        capture_guard.set_taskbar_visibility(hwnd, not self._taskbar_should_hide())
+
     @staticmethod
     def _mute_icon(muted: bool):
         """Volume / volume-off Lucide icon; muted renders in the secondary colour."""
@@ -398,6 +499,16 @@ class MainWindow(QMainWindow):
             lambda: self._on_test_mode_toggle(not self._test_btn.isChecked())
         )
         self._sig.test_answer.connect(self._on_test_answer)
+        # F2 hotkey: re-analyse the current test frame (does not steal focus).
+        self._sig.test_mode_force_request.connect(self._on_test_force_request)
+        # Ctrl+Alt+M: show/hide the window (silent-mode escape hatch).
+        self._sig.toggle_window_request.connect(self._toggle_window_visibility)
+
+    def _on_test_force_request(self) -> None:
+        """F2 hotkey: force a re-analysis of the current test frame."""
+        if self._app.test_watcher is None:
+            return
+        self._app.force_test_frame()
 
     def _on_vision_probe_result(self, ok) -> None:
         self._vision_state = bool(ok)
@@ -406,6 +517,19 @@ class MainWindow(QMainWindow):
         dlg = getattr(self, "_shot_dlg", None)
         if dlg is not None and dlg.isVisible():
             dlg._set_vision(self._vision_state)
+        # Test mode was requested while the probe was still in flight.
+        pending = getattr(self, "_test_pending_after_probe", False)
+        self._test_pending_after_probe = False
+        if pending and self._vision_state:
+            self._test_btn.setChecked(True)
+            self._show_test_launch_dialog()
+        elif pending:
+            from mockingbird.ui.notify import bus as notify_bus
+
+            notify_bus.error(
+                t("Режим «Тест» недоступен"),
+                t("Текущая LLM не поддерживает изображения. Измените модель в «Настройках»."),
+            )
 
     def _refresh_screenshot_button(self) -> None:
         """Reflect the cached vision-probe result in the screenshot button.
@@ -518,7 +642,13 @@ class MainWindow(QMainWindow):
             if self._model_dl is not None and not self._model_dl._finalized:
                 self._model_dl.done_ok()
             return
-        downloading = percent >= 0 or "download" in message.lower() or "скачиван" in message.lower()
+        low = message.lower()
+        downloading = (
+            percent >= 0
+            or "download" in low
+            or "скачиван" in low
+            or "descarg" in low
+        )
         if not downloading:
             # In-memory load: keep the cancel cross available.
             self._set_cancel_load_visible(True)
@@ -566,6 +696,19 @@ class MainWindow(QMainWindow):
         if self._model_dl is not None:
             self._model_dl._cancelled_confirmed()  # idempotent, also when hidden
         self._activity.set_idle()
+        # A cancelled load inside an OPEN session (Start during a download):
+        # the session is half-open and can never receive audio. Tear it down
+        # async (engine join can take ~8 s — never block the GUI thread) and
+        # return the buttons to idle. app._on_engine_error_signal emits the
+        # matching error signal for exactly this case.
+        if self._app.session_id is not None:
+            log.info("model load cancelled mid-session — closing half-open session")
+            self._set_stopping(True)
+            try:
+                self._app.stop_session_async(on_done=self._stop_done.emit)
+            except Exception:  # noqa: BLE001 — never leave the UI stuck
+                log.exception("stop_session_async after cancel failed")
+                self._set_stopping(False)
 
     def _on_model_load_failed(self, error: str) -> None:
         """All download attempts failed (or cancelled): close the overlay and
@@ -676,6 +819,16 @@ class MainWindow(QMainWindow):
                 self._apply_capture_affinity()
             except Exception:  # noqa: BLE001
                 log.exception("apply_capture_affinity failed")
+            # Tray setting may have changed — re-apply taskbar visibility.
+            try:
+                self._apply_taskbar_visibility()
+            except Exception:  # noqa: BLE001
+                log.exception("apply_taskbar_visibility failed")
+            # Silent mode may have been toggled — sync the tray icon.
+            try:
+                self._apply_silent_tray()
+            except Exception:  # noqa: BLE001
+                log.exception("apply_silent_tray failed")
             # LLM base_url/model may have changed in the dialog — the cached
             # vision capability is stale now. Reset and re-probe so the
             # screenshot button reflects the NEW model immediately.
@@ -802,25 +955,83 @@ class MainWindow(QMainWindow):
             # overlay's cancel clear the reference of a newer one.
             if getattr(self, "_shot_overlay", None) is shown:
                 self._shot_overlay = None
+            self._restore_after_screenshot()
 
+        # Hide the main window (and any always-on-top overlays) BEFORE the
+        # freeze capture: otherwise our own UI covers the target the user
+        # wants to select, and screen.grabWindow() bakes it into the frozen
+        # frame. Restored in _on_region_selected / on cancel (_forget).
+        from PySide6.QtCore import QTimer
+
+        self._shot_hidden_windows = []
+        for w in (self, getattr(self, "_test_overlay", None)):
+            if w is not None:
+                try:
+                    if w.isVisible():
+                        w.hide()
+                        self._shot_hidden_windows.append(w)
+                except RuntimeError:
+                    pass  # C++-deleted overlay — nothing to hide
         overlay.finished.connect(self._on_region_selected)
         overlay.cancelled.connect(_forget)
-        overlay.start()
+        # Give the compositor a moment to actually remove the hidden windows
+        # from the frame BEFORE grabbing the desktop (else a "ghost" of our
+        # window lingers in the freeze shot).
+        def _start_grab() -> None:
+            if getattr(self, "_shot_overlay", None) is not overlay:
+                return  # cancelled while waiting — do not resurrect the grab
+            QApplication.processEvents()
+            overlay.start()
+
+        QTimer.singleShot(180, _start_grab)
+
+    def _restore_after_screenshot(self) -> None:
+        """Bring back the windows hidden for the freeze capture (if any)."""
+        for w in getattr(self, "_shot_hidden_windows", None) or []:
+            try:
+                w.show()
+                if w is self:
+                    self.raise_()
+                    self.activateWindow()
+            except RuntimeError:
+                pass  # C++-deleted during the grab — fine
+        self._shot_hidden_windows = []
 
     def _on_region_selected(self, rect) -> None:
         from PySide6.QtCore import QRect
 
         cfg = self._app.config.screenshot
-        from mockingbird.ui.screenshot import ScreenshotQuestionDialog, grab_screen_region
-
+        # Prefer cropping the FROZEN frame the user actually outlined: the
+        # live screen could have changed between the freeze and now, and
+        # capture-excluded windows (our own) would ghost in/out. Fall back
+        # to a fresh grab only if the overlay's shot is gone.
+        overlay = getattr(self, "_shot_overlay", None)
+        jpeg = preview = None
         try:
-            jpeg, preview = grab_screen_region(
-                QRect(rect), max_dim=cfg.max_image_dim, jpeg_quality=cfg.jpeg_quality
-            )
+            if overlay is not None and getattr(overlay, "_shot", None) is not None:
+                jpeg, preview = overlay.crop_selection(
+                    QRect(rect),
+                    max_dim=cfg.max_image_dim,
+                    jpeg_quality=cfg.jpeg_quality,
+                )
         except Exception as exc:  # noqa: BLE001
-            log.warning("screenshot grab failed: %s", exc)
-            self.statusBar().showMessage(t("Скриншот не получен: {exc}", exc=exc), 5000)
-            return
+            log.warning("frozen-frame crop failed, retrying live grab: %s", exc)
+        if jpeg is None:
+            from mockingbird.ui.screenshot import grab_screen_region
+
+            try:
+                jpeg, preview = grab_screen_region(
+                    QRect(rect),
+                    max_dim=cfg.max_image_dim,
+                    jpeg_quality=cfg.jpeg_quality,
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.warning("screenshot grab failed: %s", exc)
+                self._restore_after_screenshot()
+                self.statusBar().showMessage(
+                    t("Скриншот не получен: {exc}", exc=exc), 5000
+                )
+                return
         # Close (and let Qt delete) any previous dialog before opening a new
         # one — the overwritten reference used to orphan a visible dialog
         # that could then be garbage-collected on screen.
@@ -833,6 +1044,9 @@ class MainWindow(QMainWindow):
                 pass  # already C++-deleted
             self._shot_dlg = None
         self._shot_overlay = None
+        self._restore_after_screenshot()
+        from mockingbird.ui.screenshot import ScreenshotQuestionDialog
+
         dlg = ScreenshotQuestionDialog(jpeg, preview, vision_ok=self._vision_state)
         dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
         dlg.asked.connect(self._on_screenshot_question)
@@ -917,11 +1131,32 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     def _on_test_mode_toggle(self, checked: bool) -> None:
         if checked:
-            self._start_test_mode()
+            if self._vision_state is None:
+                # Vision capability unknown yet (the probe normally runs on
+                # session start — test mode can be toggled without one).
+                # Do NOT start the watcher on a text-only model: frames go to
+                # the LLM, which silently returns empty answers (DeepSeek).
+                # Uncheck, probe, resume from _on_vision_probe_result.
+                self._test_pending_after_probe = True
+                self._test_btn.setChecked(False)
+                self._app.check_vision_async()
+                return
+            if self._vision_state is False:
+                from mockingbird.ui.notify import bus as notify_bus
+
+                notify_bus.error(
+                    t("Режим «Тест» недоступен"),
+                    t("Текущая LLM не поддерживает изображения. Измените модель в «Настройках»."),
+                )
+                self._test_btn.setChecked(False)
+                return
+            self._show_test_launch_dialog()
         else:
             self._stop_test_mode()
 
     def _start_test_mode(self) -> None:
+        from PySide6.QtCore import QTimer
+
         from mockingbird.ui.window_picker import WindowPickOverlay
 
         # A stale picker from a previous toggle must not linger fullscreen.
@@ -930,17 +1165,55 @@ class MainWindow(QMainWindow):
         if old is not None:
             old.close()
             old.deleteLater()
-        self._picker = WindowPickOverlay()
-        self._picker.picked.connect(self._on_test_window_picked)
-        self._picker.region_picked.connect(self._on_test_region_picked)
-        self._picker.cancelled.connect(self._on_test_pick_cancelled)
-        self._picker.start()
+        # Hide our own windows BEFORE the freeze shot. They are excluded from
+        # screen capture when privacy mode is ON, so the freeze frame cannot
+        # show them — yet they stay physically on screen and WindowFromPoint
+        # would resolve them where the user sees "through" them. Hiding makes
+        # the frozen image and the real desktop match (what you see is what
+        # you pick).
+        self._pick_hidden_windows = []
+        for w in (self, getattr(self, "_test_overlay", None)):
+            if w is None:
+                continue
+            try:
+                if w.isVisible():
+                    w.hide()
+                    self._pick_hidden_windows.append(w)
+            except RuntimeError:
+                pass  # C++-deleted
+        picker = WindowPickOverlay()
+        self._picker = picker
+        picker.picked.connect(self._on_test_window_picked)
+        picker.region_picked.connect(self._on_test_region_picked)
+        picker.cancelled.connect(self._on_test_pick_cancelled)
+        # Give the compositor a moment to actually remove the hidden windows
+        # from the frame before grabbing the desktop.
+        def _start() -> None:
+            if getattr(self, "_picker", None) is not picker:
+                return  # cancelled while waiting
+            QApplication.processEvents()
+            picker.start()
+
+        QTimer.singleShot(180, _start)
+
+    def _restore_after_pick(self) -> None:
+        """Bring back the windows hidden for the test-mode window picker."""
+        for w in getattr(self, "_pick_hidden_windows", None) or []:
+            try:
+                w.show()
+                if w is self:
+                    self.raise_()
+                    self.activateWindow()
+            except RuntimeError:
+                pass  # C++-deleted during the pick — fine
+        self._pick_hidden_windows = []
 
     def _stop_test_mode(self) -> None:
         self._dispose_picker()
         self._test_btn.setChecked(False)
         ov = self._test_overlay
         self._test_overlay = None
+        self._test_hwnd_pid = None
         self._app.stop_test_mode()
         if ov is not None:
             ov.close()
@@ -959,6 +1232,7 @@ class MainWindow(QMainWindow):
 
     def _on_test_pick_cancelled(self) -> None:
         self._dispose_picker()
+        self._restore_after_pick()
         self._test_btn.setChecked(False)
 
     def _on_test_capture_failed(self, msg: str) -> None:
@@ -975,7 +1249,6 @@ class MainWindow(QMainWindow):
             # window would tear down a NEWLY-started watcher/overlay.
             try:
                 ov.stop_requested.disconnect(self._stop_test_mode)
-                ov.force_requested.disconnect(self._app.force_test_frame)
             except (RuntimeError, TypeError):
                 pass
             from PySide6.QtCore import QTimer
@@ -992,6 +1265,21 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(3000, _close)  # let the user read the status
 
     def _on_test_window_picked(self, hwnd: int, title: str, rect) -> None:
+        self._restore_after_pick()
+        # Guard: never watch our OWN window. The picker's freeze frame hides
+        # our windows, so the user cannot visually pick them — but a race or
+        # a stale hwnd could still resolve here. Monitoring ourselves would
+        # capture the overlay/answers into the frame (feedback loop).
+        if self._is_own_window(hwnd):
+            from mockingbird.ui.notify import bus as notify_bus
+
+            notify_bus.error(
+                t("Режим «Тест»"),
+                t("Нельзя следить за окном Mockingbird — выберите окно с тестом."),
+            )
+            self._test_btn.setChecked(False)
+            self._start_test_mode()  # re-open the picker
+            return
         # Windows reuses hwnd values: remember the owning PID and verify it
         # on every capture — a closed target whose hwnd got reassigned to an
         # unrelated window must not leak into the LLM frames.
@@ -1000,7 +1288,35 @@ class MainWindow(QMainWindow):
             title, lambda: self._capture_window(hwnd), is_region=False
         )
 
+    def _is_own_window(self, hwnd: int) -> bool:
+        """True when ``hwnd`` belongs to one of our own top-level windows."""
+        if not hwnd:
+            return False
+        try:
+            if int(hwnd) == int(self.winId()):
+                return True
+        except (RuntimeError, TypeError, ValueError):
+            pass
+        ov = getattr(self, "_test_overlay", None)
+        if ov is not None:
+            try:
+                if int(hwnd) == int(ov.winId()):
+                    return True
+            except (RuntimeError, TypeError, ValueError):
+                pass
+        # Same-process fallback (covers dialogs/overlays without a stored ref).
+        pid = _window_pid(hwnd)
+        try:
+            import os
+
+            if pid is not None and pid == os.getpid():
+                return True
+        except Exception:  # noqa: BLE001
+            pass
+        return False
+
     def _on_test_region_picked(self, rect) -> None:
+        self._restore_after_pick()
         self._launch_test_watcher(
             t("область экрана"), lambda: self._capture_region(rect), is_region=True
         )
@@ -1021,7 +1337,12 @@ class MainWindow(QMainWindow):
         self._test_llm_error_notified_at = 0.0  # fresh warning budget per run
         ov = TestModeOverlay(title)
         ov.stop_requested.connect(self._stop_test_mode)
-        ov.force_requested.connect(self._app.force_test_frame)
+        ov.prompt_requested.connect(self._edit_test_prompt)
+        # Extra-prompt indicator: the instructions persist across runs —
+        # show their state BEFORE the first click.
+        ov.set_prompt_active(
+            bool(getattr(self._app.config.test_mode, "extra_prompt", "") or "")
+        )
         watcher.frame_skipped.connect(ov.set_status)
         watcher.frame_pending.connect(ov.set_status)
         watcher.capture_failed.connect(self._on_test_capture_failed)
@@ -1032,22 +1353,260 @@ class MainWindow(QMainWindow):
         import time as _time
 
         ov._started_at = _time.monotonic()
-        # Region mode captures raw desktop pixels — the overlay would feed
-        # itself into the frame there, so exclude it from capture (Windows).
-        # Window mode (PrintWindow) renders the TARGET window's content only
-        # — overlapping windows can't appear, no exclusion needed: the user
-        # may want the overlay visible in screen sharing/streaming.
-        if is_region:
-            # Marker: the capture-affinity event filter must NOT clear the
-            # exclusion on this overlay even when privacy mode is off —
-            # region capture would feed the overlay into its own frames.
-            ov._mb_keep_capture_exclude = True
-            try:
-                from mockingbird.ui.capture_guard import set_exclude_from_capture
+        # Hide the overlay from screen capture ALWAYS (Windows): proctoring
+        # systems that record/share the screen must not see the floating
+        # answer card — it stays visible on the physical monitor but is
+        # absent from the shared/recorded frame (WDA_EXCLUDEFROMCAPTURE).
+        # Marker keeps the capture-affinity event filter from clearing it
+        # even when the general "hide from capture" setting is OFF.
+        ov._mb_keep_capture_exclude = True
+        try:
+            from mockingbird.ui.capture_guard import (
+                set_exclude_from_capture,
+                set_no_activate,
+            )
 
-                set_exclude_from_capture(int(ov.winId()))
-            except Exception:  # noqa: BLE001
-                pass
+            set_exclude_from_capture(int(ov.winId()))
+            # Also make the overlay non-activating: clicking its buttons or
+            # dragging it must NOT take focus away from the watched browser
+            # (proctoring flags any focus change on the exam window).
+            set_no_activate(int(ov.winId()), True)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _apply_test_prompt(self, text: str) -> None:
+        """Persist the test-mode extra prompt; if it CHANGED, drop the answer
+        cache (entries belong to the old instructions) and re-analyse the
+        current frame immediately. Shared by the launch dialog and the
+        overlay's «указания» button."""
+        cfg = self._app.config.test_mode
+        current = getattr(cfg, "extra_prompt", "") or ""
+        text = text.strip()[:4000]  # config max_length
+        if text == current.strip():
+            return  # no change — keep the cache, no re-send
+        cfg.extra_prompt = text
+        try:
+            self._app.store.set_setting("test_mode.extra_prompt", text)
+        except Exception:  # noqa: BLE001 — persistence is best-effort
+            log.warning("test-mode: failed to persist extra_prompt")
+        ov = self._test_overlay
+        if ov is not None:
+            ov.set_prompt_active(bool(text))
+        watcher = self._app.test_watcher
+        if watcher is not None:
+            # Cached answers were produced under the OLD instructions.
+            watcher._answer_cache = []
+            watcher.force_send()
+
+    def _hotkey_keycap(self, keys: str) -> "QLabel":
+        """A keycap-styled label («kbd») for a shortcut — bordered pill in the
+        app theme so shortcuts stand out from the surrounding prose."""
+        from PySide6.QtGui import QFont
+
+        cap = QLabel(keys)
+        cap.setObjectName("hotkeyCap")
+        f = QFont("Consolas")
+        f.setStyleHint(QFont.StyleHint.Monospace)
+        f.setPointSizeF(max(8.5, f.pointSizeF()))
+        cap.setFont(f)
+        cap.setStyleSheet(
+            "QLabel#hotkeyCap {"
+            f" color: {theme.current.text};"
+            f" background: {theme.current.surface_alt};"
+            f" border: 1px solid {theme.current.border};"
+            " border-radius: 4px;"
+            " padding: 1px 6px;"
+            "}"
+        )
+        # Keep the pill compact: a QLabel in a QVBoxLayout stretches
+        # vertically when the dialog's sizeHint is recalculated (e.g. the
+        # collapsible prompt editor is expanded/collapsed) — pin the
+        # vertical size policy so the keycap never grows in height.
+        from PySide6.QtWidgets import QSizePolicy
+
+        cap.setSizePolicy(
+            QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed
+        )
+        cap.setFixedHeight(cap.sizeHint().height())
+        return cap
+
+    def _test_hotkeys_row(self) -> "QHBoxLayout":
+        """In-test hotkey hints rendered with keycap chips: F2 and Ctrl+Alt+T."""
+        from PySide6.QtWidgets import QHBoxLayout
+
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        row.addWidget(self._hotkey_keycap("F2"))
+        desc1 = QLabel(t("повторный анализ страницы (без смены фокуса)"))
+        desc1.setWordWrap(True)
+        row.addWidget(desc1)
+        row.addSpacing(8)
+        row.addWidget(self._hotkey_keycap("Ctrl+Alt+T"))
+        desc2 = QLabel(t("выключить режим"))
+        desc2.setWordWrap(True)
+        row.addWidget(desc2)
+        row.addStretch(1)
+        return row
+
+    def _show_test_launch_dialog(self) -> None:
+        """Launch dialog shown BEFORE the window pick: in-test hotkeys +
+        collapsed extra-prompt editor («Старт» opens the window picker).
+
+        The prompt editor is collapsed by default (saves space); clicking
+        its header expands the QPlainTextEdit. Rejecting the dialog (× or
+        Esc) cancels test mode entirely.
+        """
+        from PySide6.QtWidgets import QCheckBox, QDialog, QPlainTextEdit
+
+        cfg = self._app.config.test_mode
+        current = getattr(cfg, "extra_prompt", "") or ""
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(t("Режим «Тест» запущен"))
+        dlg.setSizeGripEnabled(True)
+        # Stay above the always-on-top test overlay so the user actually sees
+        # this launch dialog.
+        dlg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        root = QVBoxLayout(dlg)
+        root.addLayout(self._test_hotkeys_row())
+
+        # -- deep-analysis toggle (test mode ONLY) --------------------------
+        deep_check = QCheckBox(
+            t("Глубокий анализ (медленнее, но качественнее)")
+        )
+        deep_check.setChecked(bool(getattr(cfg, "deep_analysis", False)))
+        root.addWidget(deep_check)
+
+        # -- collapsible extra-prompt editor --------------------------------
+        header_btn = QPushButton(
+            (t("▾ ") if current else t("▸ "))
+            + t("Дополнительные инструкции (необязательно)")
+        )
+        header_btn.setFlat(True)
+        header_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        header_btn.setStyleSheet("text-align: left;")
+        root.addWidget(header_btn)
+
+        prompt_wrap = QWidget()
+        pv = QVBoxLayout(prompt_wrap)
+        pv.setContentsMargins(0, 0, 0, 0)
+        hint = QLabel(
+            t(
+                "Как отвечать, каким источникам доверять (лекция, документация, "
+                "стандарт). Оставьте пустым, чтобы отключить."
+            )
+        )
+        hint.setWordWrap(True)
+        pv.addWidget(hint)
+        edit = QPlainTextEdit(current)
+        edit.setMinimumHeight(90)
+        edit.setPlaceholderText(
+            t(
+                "Например: отвечать только по материалам лекции; при сомнении "
+                "выбирать вариант, связанный с Kubernetes; обоснование — не "
+                "больше трёх слов"
+            )
+        )
+        pv.addWidget(edit)
+        prompt_wrap.setVisible(False)  # collapsed by default
+        root.addWidget(prompt_wrap)
+
+        def _toggle_prompt() -> None:
+            expanded = not prompt_wrap.isVisible()
+            prompt_wrap.setVisible(expanded)
+            marker = t("▾ ") if expanded else t("▸ ")
+            # Active instructions keep the marker «filled» even when collapsed.
+            has_text = bool(edit.toPlainText().strip())
+            header_btn.setText(
+                marker
+                + (
+                    t("Дополнительные инструкции (заданы)")
+                    if (has_text and not expanded)
+                    else t("Дополнительные инструкции (необязательно)")
+                )
+            )
+            dlg.resize(dlg.sizeHint())
+            dlg.adjustSize()
+
+        header_btn.clicked.connect(_toggle_prompt)
+
+        btn_row = QHBoxLayout()
+        btn_ok = QPushButton(t("Старт"))
+        btn_ok.setDefault(True)
+        btn_row.addStretch(1)
+        btn_row.addWidget(btn_ok)
+        root.addLayout(btn_row)
+        btn_ok.clicked.connect(dlg.accept)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            # Cancelled (× / Esc): turn the test mode off before the watcher
+            # or the picker even started.
+            self._stop_test_mode()
+            return
+        self._apply_test_prompt(edit.toPlainText())
+        self._apply_test_deep_analysis(deep_check.isChecked())
+        # «Старт» → NOW pick the window to watch.
+        self._start_test_mode()
+
+    def _apply_test_deep_analysis(self, enabled: bool) -> None:
+        """Persist the deep-analysis toggle (test mode ONLY). Never touches the
+        voice interview path (that uses llm.reasoning_effort)."""
+        cfg = self._app.config.test_mode
+        if bool(getattr(cfg, "deep_analysis", False)) == bool(enabled):
+            return
+        cfg.deep_analysis = bool(enabled)
+        try:
+            self._app.store.set_setting("test_mode.deep_analysis", bool(enabled))
+        except Exception:  # noqa: BLE001 — persistence is best-effort
+            log.warning("test-mode: failed to persist deep_analysis")
+
+    def _edit_test_prompt(self) -> None:
+        """Overlay «указания» button: edit the extra prompt for test mode.
+
+        Saved to the persistent store; the overlay indicator flips; when
+        the text CHANGED the watcher's answer cache is invalidated (its
+        entries belong to the old instructions) and the current page is
+        re-analysed immediately."""
+        from PySide6.QtWidgets import QDialog, QPlainTextEdit
+
+        cfg = self._app.config.test_mode
+        current = getattr(cfg, "extra_prompt", "") or ""
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(t("Указания для теста"))
+        root = QVBoxLayout(dlg)
+        hint = QLabel(
+            t(
+                "Дополнительные инструкции для модели: как отвечать, каким "
+                "источникам доверять (лекция, документация, стандарт). "
+                "Оставьте пустым, чтобы отключить."
+            )
+        )
+        hint.setWordWrap(True)
+        root.addWidget(hint)
+        edit = QPlainTextEdit(current)
+        edit.setPlaceholderText(
+            t(
+                "Например: отвечать только по материалам лекции; при сомнении "
+                "выбирать вариант, связанный с Kubernetes; обоснование — не "
+                "больше трёх слов"
+            )
+        )
+        root.addWidget(edit, 1)
+        btn_row, applied_lbl = QHBoxLayout(), QLabel("")
+        btn_ok = QPushButton(t("Сохранить"))
+        btn_ok.setDefault(True)
+        btn_cancel = QPushButton(t("Отмена"))
+        btn_row.addStretch(1)
+        btn_row.addWidget(btn_cancel)
+        btn_row.addWidget(btn_ok)
+        root.addWidget(applied_lbl)
+        root.addLayout(btn_row)
+        btn_ok.clicked.connect(dlg.accept)
+        btn_cancel.clicked.connect(dlg.reject)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        self._apply_test_prompt(edit.toPlainText())
 
     def _capture_window(self, hwnd: int):
         from mockingbird.ui.window_capture import capture_window
@@ -1081,12 +1640,21 @@ class MainWindow(QMainWindow):
         return pix.toImage(), jpeg, pix
 
     def _on_test_answer(self, ok: bool, text: str) -> None:
+        from mockingbird.events import AppSignals, is_test_answer_marker
+
         ov = self._test_overlay
         if ov is None:
             return
-        if text == "\u23f3":  # busy marker: frame deferred, voice answer streaming
+        if text == AppSignals.TEST_MARKER_BUSY:
+            # busy marker: frame deferred, voice answer streaming
             ov.set_status(t("ждём — идёт голосовой ответ…"))
             return
+        if text == AppSignals.TEST_MARKER_STALE:
+            # stale marker: answer arrived for a page the user left
+            ov.set_status(t("страница сменилась во время ответа — кадр будет переанализирован"))
+            return
+        if is_test_answer_marker(text):
+            return  # future marker kinds: never treat as an answer
         if not ok and text == t("LLM не настроен — задайте модель в настройках"):
             # Terminal outcome from the worker: the watcher would spin
             # silently — stop the mode cleanly and tell the user what to fix.
@@ -1128,6 +1696,12 @@ class MainWindow(QMainWindow):
             ov.set_status(t("тест не распознан на кадре"))
             return
         ov.set_answers(pairs, changed=changed)
+        unknown = [p for p in pairs if p[1] == "?"]
+        if unknown and len(unknown) == len(pairs):
+            ov.set_status(t("вопрос виден не полностью — проскрольте экран"))
+        elif unknown:
+            n = ", ".join(p[0] for p in unknown)
+            ov.set_status(t("вопрос(ы) {nums} виден(ы) не полностью — проскрольте", nums=n))
 
     def _on_cuda_fallback(self, detail: str) -> None:
         """Configured CUDA turned out unusable; the engine already reloaded
@@ -1164,3 +1738,134 @@ class MainWindow(QMainWindow):
         self._start_btn.setEnabled(not running)
         self._stop_btn.setEnabled(running)
         self._mute_btn.setEnabled(running)
+
+    # -- system tray (minimize-to-tray) -----------------------------------
+
+    def _notify_hidden_to_tray(self) -> None:
+        """Native tray balloon on the FIRST hide-to-tray per app run.
+
+        Repeat hides stay silent (the user already knows where the app
+        lives); QSystemTrayIcon.showMessage de-duplicates within its shown
+        time, but we gate explicitly anyway.
+        """
+        if getattr(self, "_tray_notified_once", False):
+            return
+        tray = getattr(self, "_tray", None)
+        if tray is None:
+            return
+        self._tray_notified_once = True
+        try:
+            tray.showMessage(
+                "Mockingbird",
+                t("Mockingbird продолжает работать в области уведомлений (трей). "
+                  "Двойной клик по значку — открыть окно."),
+                QSystemTrayIcon.MessageIcon.Information,
+                5000,
+            )
+        except RuntimeError:
+            pass  # C++-deleted
+
+    def _tray_close_enabled(self) -> bool:
+        """True when a close should hide to tray instead of quitting.
+
+        Silent mode hides the tray icon, so there is NO way to restore the
+        app from the tray — a close must quit outright, otherwise the user
+        would be stuck with an invisible, unquittable app.
+        """
+        return (
+            self._app.config.window.minimize_to_tray
+            and not self._silent_enabled()
+            and getattr(self, "_tray", None) is not None
+        )
+
+    def _silent_enabled(self) -> bool:
+        return bool(getattr(self._app.config.window, "silent", False))
+
+    def _taskbar_should_hide(self) -> bool:
+        """True when the main window must have NO taskbar button.
+
+        Tray-only (default) or Silent both remove the button; Silent also
+        hides the tray icon. Does not depend on the tray object existing.
+        """
+        return bool(
+            self._app.config.window.minimize_to_tray or self._silent_enabled()
+        )
+
+    def setup_tray(self) -> None:
+        """Create the tray icon (if available) and wire restore/quit actions.
+
+        Called from ``main`` after the window is constructed; the config is
+        read lazily on each close so toggling the setting takes effect without
+        a restart.
+        """
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return
+        from PySide6.QtGui import QAction, QIcon
+
+        from mockingbird.main import _resolve_icon_path
+
+        icon_path = _resolve_icon_path()
+        tray = QSystemTrayIcon(QIcon(icon_path) if icon_path else QIcon())
+        tray.setToolTip("Mockingbird")
+        menu = QMenu()
+        show_action = QAction(t("Показать"), menu)
+        show_action.triggered.connect(self._show_from_tray)
+        quit_action = QAction(t("Выход"), menu)
+        quit_action.triggered.connect(self._quit_from_tray)
+        menu.addAction(show_action)
+        menu.addAction(quit_action)
+        tray.setContextMenu(menu)
+        tray.activated.connect(self._on_tray_activated)
+        tray.show()
+        self._tray = tray
+        # Silent mode: no tray icon either (the only way back is the
+        # Ctrl+Alt+M global hotkey).
+        self._apply_silent_tray()
+
+    def _apply_silent_tray(self) -> None:
+        """Show/hide the tray icon according to ``window.silent``."""
+        tray = getattr(self, "_tray", None)
+        if tray is None:
+            return
+        silent = bool(self._app.config.window.silent)
+        try:
+            if silent:
+                tray.hide()
+            else:
+                tray.show()
+        except RuntimeError:
+            pass  # C++-deleted
+
+    def _toggle_window_visibility(self) -> None:
+        """Ctrl+Alt+M: show/hide the main window (the silent-mode way back)."""
+        if self.isVisible():
+            self.hide()
+        else:
+            self._show_from_tray()
+
+    def _show_from_tray(self) -> None:
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def _on_tray_activated(self, reason) -> None:
+        # Double-click / trigger on the tray icon restores the window.
+        if reason in (
+            QSystemTrayIcon.ActivationReason.DoubleClick,
+            QSystemTrayIcon.ActivationReason.Trigger,
+        ):
+            self._show_from_tray()
+
+    def _quit_from_tray(self) -> None:
+        """Real exit: bypass the hide-to-tray closeEvent interception."""
+        self._force_quit_flag = True
+        self.close()
+        # A hidden (tray-minimized) window's close() does NOT emit
+        # lastWindowClosed — app.exec() would keep spinning with the tray
+        # icon alive. Quit the event loop explicitly; aboutToQuit ->
+        # context.shutdown() still runs the full teardown.
+        QApplication.quit()
+
+    def _force_quit(self) -> bool:
+        return getattr(self, "_force_quit_flag", False)
+

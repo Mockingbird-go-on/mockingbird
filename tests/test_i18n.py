@@ -169,16 +169,20 @@ def test_rerender_for_language_uses_active_profile(monkeypatch):
         "sanity: set_profile did not apply persona"
     )
 
-    # Switch language; rerender_for_language must keep the same persona.
+    # Switch language; rerender_for_language must keep the same profile
+    # (its localized persona — persona_en under EN — not snap back to devops).
     from mockingbird import i18n
     i18n.set_language("en")
     rendered = llm_client._SYSTEM_BY_MODE["technical"]
     assert "{" not in rendered, "rerender left an unreplaced placeholder"
     # The killer check: the persona from the non-default profile must still
     # be present after the language switch — if it isn't, rerender silently
-    # snapped back to "devops" (the M1 bug).
-    assert custom.persona in rendered, (
-        f"rerender lost custom persona {custom.persona!r}: "
+    # snapped back to "devops" (the M1 bug). Under EN the localized
+    # persona_en field is used (2026-10-07: language fields now follow the
+    # switch immediately, no one-change lag).
+    expected_persona = custom.persona_en or custom.persona
+    assert expected_persona in rendered, (
+        f"rerender lost custom persona {expected_persona!r}: "
         f"{rendered[:200]!r}"
     )
     # Restore state for subsequent tests.

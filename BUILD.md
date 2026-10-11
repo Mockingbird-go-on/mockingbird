@@ -341,8 +341,9 @@ HuggingFace CDN — fallback-2). Bucket populated всеми 5 zip'ами, см.
 
 ```bash
 export S3_ENDPOINT_URL=https://s3.cloud.ru
-export AWS_ACCESS_KEY_ID='5b7b9b26-db4d-4489-8ce4-40cc6b531fe0:REMOVED-SECRET'
-export AWS_SECRET_ACCESS_KEY='REMOVED-SECRET'
+# Credentials are in ~/.aws/credentials ONLY (never commit them here!)
+export AWS_ACCESS_KEY_ID='<from ~/.aws/credentials>'
+export AWS_SECRET_ACCESS_KEY='<from ~/.aws/credentials>'
 export AWS_DEFAULT_REGION=ru-central-1
 
 bash scripts/build_model_pack.sh small      # собирает модель-пак + cp в s3://mockingbird/models/small.zip

@@ -12,6 +12,8 @@ from mockingbird.app import App
 from mockingbird.config import load_config
 from mockingbird.i18n import t
 from mockingbird.logging_setup import setup_logging
+
+log = logging.getLogger(__name__)
 from mockingbird.ui.main_window import MainWindow
 from mockingbird.ui.theme import apply_theme
 
@@ -109,8 +111,16 @@ def _harden_hf_symlinks() -> None:
     file_download.are_symlinks_supported = lambda cache_dir=None: False
 
 
+_APP_USER_MODEL_ID = "Mockingbird.Mockingbird.1"
+
+
 def _set_app_user_model_id() -> None:
-    """Give the process a stable AppUserModelID so Windows taskbar shows our icon."""
+    """Give the process a stable AppUserModelID so Windows taskbar shows our icon.
+
+    Also registers a DisplayName for the ID: without it Windows toast/tray
+    notifications are titled by the raw AppUserModelID string
+    («Mockingbird.Mockingbird.1») instead of the app name.
+    """
     if sys.platform != "win32":
         return
     try:
@@ -123,8 +133,29 @@ def _set_app_user_model_id() -> None:
             ctypes.c_long  # HRESULT
         )
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-            "Mockingbird.Mockingbird.1"
+            _APP_USER_MODEL_ID
         )
+        _register_app_user_model_display_name()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _register_app_user_model_display_name() -> None:
+    """Write HKCU\\Software\\Classes\\AppUserModelId\\<ID>\\DisplayName.
+
+    Windows reads this value to label toast notifications for the process;
+    without it the notification header falls back to the raw AppUserModelID.
+    Best-effort: the registry write is a UX nicety, never fatal.
+    """
+    try:
+        import winreg
+
+        key = winreg.CreateKey(
+            winreg.HKEY_CURRENT_USER,
+            "Software\\Classes\\AppUserModelId\\" + _APP_USER_MODEL_ID,
+        )
+        with key:
+            winreg.SetValueEx(key, "DisplayName", 0, winreg.REG_SZ, "Mockingbird")
     except Exception:  # noqa: BLE001
         pass
 
@@ -471,6 +502,10 @@ def main() -> int:
     context, window, sys_warnings = _build_app()
     app.processEvents()
 
+    # System tray: closing the window hides it to the tray (instead of the
+    # taskbar) when minimize_to_tray is enabled (default ON).
+    window.setup_tray()
+
     # First-launch onboarding: show wizard if LLM is not configured. This
     # MUST run before warm_start() — on a clean profile warm start would
     # immediately download the DEFAULT whisper model before the user picked
@@ -535,13 +570,33 @@ def main() -> int:
     if sys_warnings:
         from PySide6.QtCore import QTimer
 
+        from mockingbird.ui.notify import is_suppressed
+
         def _show_sys_warnings() -> None:
-            notify_bus.push(
-                t("Проверка системы"),
-                "\n\n".join(f"• {w.title}\n{w.message}" for w in sys_warnings),
-                severity="warning",
-                scope="runtime",
-            )
+            # Dismissible info-hints (resume missing, capture unavailable…)
+            # go as individual notifications with a «Больше не показывать»
+            # checkbox, filtered by the saved flag. Critical error/warning
+            # items stay batched and always visible.
+            dismissible = [
+                w for w in sys_warnings
+                if w.suppression_key and not is_suppressed(w.suppression_key)
+            ]
+            for w in dismissible:
+                notify_bus.push(
+                    w.title,
+                    w.message,
+                    severity="warning" if w.level == "error" else w.level,
+                    scope="runtime",
+                    suppression_key=w.suppression_key,
+                )
+            critical = [w for w in sys_warnings if not w.suppression_key]
+            if critical:
+                notify_bus.push(
+                    t("Проверка системы"),
+                    "\n\n".join(f"• {w.title}\n{w.message}" for w in critical),
+                    severity="warning",
+                    scope="runtime",
+                )
 
         # Defer the system-check dialog by 10 s AFTER the window is up: it
         # used to fire while the splash/loader was still on screen (and the
@@ -597,10 +652,38 @@ def main() -> int:
     if getattr(config, "test_mode", None) and config.test_mode.enabled:
         test_hotkey.start()
 
+    # Test re-analyse hotkey F2 (Windows only). RegisterHotKey is systemic
+    # and does NOT steal focus from the watched browser — the primary
+    # "regenerate" path that avoids proctoring focus-tracking.
+    from mockingbird.ui.global_hotkey import VK_F2
+
+    test_force_hotkey = _GH(
+        callback=context.signals.test_mode_force_request.emit,
+        modifiers=0,
+        vk=VK_F2,
+        hotkey_id=4,
+    )
+    if getattr(config, "test_mode", None) and config.test_mode.enabled:
+        test_force_hotkey.start()
+
+    # Silent-mode escape hatch Ctrl+Alt+M (Windows only): show/hide the main
+    # window when it lives with neither taskbar button nor tray icon.
+    from mockingbird.ui.global_hotkey import VK_M
+
+    toggle_window_hotkey = _GH(
+        callback=context.signals.toggle_window_request.emit,
+        modifiers=MOD_CONTROL | MOD_ALT,
+        vk=VK_M,
+        hotkey_id=5,
+    )
+    toggle_window_hotkey.start()
+
     app.aboutToQuit.connect(context.shutdown)
     app.aboutToQuit.connect(lambda: hotkey.stop())
     app.aboutToQuit.connect(lambda: shot_hotkey.stop())
     app.aboutToQuit.connect(lambda: test_hotkey.stop())
+    app.aboutToQuit.connect(lambda: test_force_hotkey.stop())
+    app.aboutToQuit.connect(lambda: toggle_window_hotkey.stop())
     return app.exec()
 
 

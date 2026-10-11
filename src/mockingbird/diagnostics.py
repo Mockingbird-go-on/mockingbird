@@ -88,6 +88,13 @@ def environment_banner(config) -> str:
         f"python: {platform.python_version()}",
     ]
     lines += _gpu_info()
+    try:
+        from mockingbird.audio.health import audio_health_lines, platform_health_lines
+
+        lines += audio_health_lines()
+        lines += platform_health_lines()
+    except Exception:  # noqa: BLE001 - banner must never fail
+        log.debug("audio health lines failed", exc_info=True)
     if wh is not None:
         lines.append(
             f"stt: whisper device={getattr(wh, 'device', '?')} "

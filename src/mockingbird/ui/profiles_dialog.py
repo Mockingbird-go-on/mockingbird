@@ -59,6 +59,19 @@ class ProfilesDialog(QDialog):
         self._stack = QTextEdit()
         self._stack.setAcceptRichText(False)
         self._stack.setFixedHeight(80)
+        # Optional English variants (title_en/persona_en/…): shown only when
+        # the UI language is non-Russian — otherwise the form gets bloated
+        # for the majority of Russian-speaking users.
+        self._title_en = QLineEdit()
+        self._persona_en = QTextEdit()
+        self._persona_en.setAcceptRichText(False)
+        self._persona_en.setFixedHeight(64)
+        self._persona_senior_en = QTextEdit()
+        self._persona_senior_en.setAcceptRichText(False)
+        self._persona_senior_en.setFixedHeight(80)
+        self._stack_en = QTextEdit()
+        self._stack_en.setAcceptRichText(False)
+        self._stack_en.setFixedHeight(80)
         self._glossary = QLineEdit()
         self._glossary_btn = QPushButton(t("Обзор…"))
         self._glossary_btn.clicked.connect(self._pick_glossary)
@@ -96,6 +109,18 @@ class ProfilesDialog(QDialog):
         form.addRow(t("Персона (кратко)"), self._persona)
         form.addRow(t("Персона (senior, от первого лица)"), self._persona_senior)
         form.addRow(t("Стек / технологии"), self._stack)
+        from mockingbird.i18n import current_language
+
+        self._en_visible = current_language() not in ("ru", "")
+        if self._en_visible:
+            form.addRow(QLabel(t(
+                "Английские варианты (используются при интерфейсе EN/ES; "
+                "пусто = базовое поле)"
+            )))
+            form.addRow(t("Название (EN)"), self._title_en)
+            form.addRow(t("Персона (EN)"), self._persona_en)
+            form.addRow(t("Персона senior (EN)"), self._persona_senior_en)
+            form.addRow(t("Стек (EN)"), self._stack_en)
         g = QHBoxLayout()
         g.addWidget(self._glossary, stretch=1)
         g.addWidget(self._glossary_btn)
@@ -179,6 +204,10 @@ class ProfilesDialog(QDialog):
         self._persona.setPlainText(prof.persona)
         self._persona_senior.setPlainText(prof.persona_senior)
         self._stack.setPlainText(prof.stack)
+        self._title_en.setText(prof.title_en or "")
+        self._persona_en.setPlainText(prof.persona_en or "")
+        self._persona_senior_en.setPlainText(prof.persona_senior_en or "")
+        self._stack_en.setPlainText(prof.stack_en or "")
         self._glossary.setText(prof.glossary or "")
 
     def _set_broken_mode(self, broken: BrokenProfile) -> None:
@@ -233,6 +262,10 @@ class ProfilesDialog(QDialog):
             persona=prof.persona,
             persona_senior=prof.persona_senior,
             stack=prof.stack,
+            title_en=prof.title_en,
+            persona_en=prof.persona_en,
+            persona_senior_en=prof.persona_senior_en,
+            stack_en=prof.stack_en,
             glossary=prof.glossary,
             calibrated=False,
         )
@@ -330,6 +363,12 @@ class ProfilesDialog(QDialog):
         prof.persona = persona
         prof.persona_senior = persona_senior
         prof.stack = stack
+        if self._en_visible:
+            # Empty EN field resets the variant → Russian fallback.
+            prof.title_en = self._title_en.text().strip() or None
+            prof.persona_en = self._persona_en.toPlainText().strip() or None
+            prof.persona_senior_en = self._persona_senior_en.toPlainText().strip() or None
+            prof.stack_en = self._stack_en.toPlainText().strip() or None
         prof.glossary = glossary
         try:
             save_profile(prof)

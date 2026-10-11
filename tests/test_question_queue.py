@@ -668,7 +668,7 @@ def test_stop_hint_no_new_audio_skipped():
         return "текст", 0.9, len(audio) / 16000.0
 
     e._transcribe = fake
-    e._decode_cached = lambda a, kind="final", beam_size=1: fake(a, kind)
+    e._decode_cached = lambda a, kind="final", beam_size=1, **kw: fake(a, kind)
     e.start_segment()
     e._rolling = np.zeros(16000 * 2, dtype=np.float32)
     e._handle_stop_hint()

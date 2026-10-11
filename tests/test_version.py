@@ -38,3 +38,16 @@ def test_version_info_matches_package():
 
     spec = (SCRIPTS / "mockingbird.spec").read_text(encoding="utf-8")
     assert "'{__version__}')" in spec  # template uses the live value
+
+
+def test_app_user_model_id_registers_display_name():
+    """The tray/toast notification header must show the app name, not the
+    raw AppUserModelID «Mockingbird.Mockingbird.1» — the DisplayName value
+    is registered alongside the ID (source-level: main.py pulls sounddevice
+    at import, which pytestenv lacks)."""
+    src = (ROOT / "src" / "mockingbird" / "main.py").read_text(encoding="utf-8")
+    assert "_register_app_user_model_display_name" in src
+    assert '"DisplayName"' in src
+    assert "AppUserModelId" in src
+    assert 'SetValueEx(key, "DisplayName", 0, winreg.REG_SZ, "Mockingbird")' in src
+    assert "_register_app_user_model_display_name()" in src

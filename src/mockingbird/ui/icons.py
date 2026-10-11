@@ -84,9 +84,16 @@ def icon(name: str, size: int = _ICON_SIZE, color: str | None = None) -> QIcon:
 class CloseButton(QPushButton):
     """Standard window close affordance: Lucide «x», muted by default,
     turns red on hover (Windows/macOS convention). Reused by the
-    screenshot dialog and the test-mode overlay."""
+    screenshot dialog and the test-mode overlay.
 
-    def __init__(self, size: int = 16, parent=None) -> None:
+    The default size is shared by every frameless window so the X looks
+    identical across the app; the fixed hit-box is square (``DEFAULT_SIZE
+    + 10``) to sit naturally in a header row next to other icon buttons.
+    """
+
+    DEFAULT_SIZE = 16
+
+    def __init__(self, size: int = DEFAULT_SIZE, parent=None) -> None:
         from PySide6.QtCore import QSize
         from PySide6.QtGui import QColor
 

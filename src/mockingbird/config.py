@@ -136,7 +136,12 @@ class InterviewConfig(BaseModel):
 class WindowConfig(BaseModel):
     width: int = 1440
     height: int = 900
+    # Silent mode: one switch driving hide_from_capture + minimize_to_tray
+    # and hiding the tray icon as well. Kept as a REAL field so it can be
+    # persisted/migrated independently of the two legacy flags below.
+    silent: bool = False
     hide_from_capture: bool = False
+    minimize_to_tray: bool = True
 
 
 class StorageConfig(BaseModel):
@@ -182,18 +187,42 @@ class TestModeConfig(BaseModel):
     # deterministic (no cursor/noise flicker), so a single stable frame
     # suffices — cursor blink measures <1.0 diff, already below the
     # stable_threshold.
-    interval_s: float = Field(1.2, ge=0.01, le=30.0)  # capture tick (>=0.01: 0 would busy-loop the GUI)
+    interval_s: float = Field(0.8, ge=0.01, le=30.0)  # capture tick (>=0.01: 0 would busy-loop the GUI); 0.8: PrintWindow is deterministic, cursor blink < stable_threshold
     stable_frames: int = Field(1, ge=1, le=10)  # consecutive identical captures before send
-    # Change detection is a mean-abs grayscale diff of 48x48 fingerprints
+    # Change detection is a mean-abs grayscale diff of 96x96 fingerprints
     # (0..255 scale). Measured: different text pages ~17, identical 0,
     # scroll ~17, mouse cursor blink < 1. dHash was BLIND to text pages
     # (dist 3 between different pages) — do not go back to bit hashes.
     stable_threshold: float = 1.0  # mean-abs-diff below this = same frame
-    change_threshold: float = 5.0  # vs last SENT frame — below = no change
+    # 1.2 (was 2.0 — regression 2026-10-06): a REAL page change measured
+    # d=3.4 with share <4% (dense small text averages out in the 48x48
+    # grid) and was swallowed as "no change". Identical PrintWindow frames
+    # measure 0.00, cursor blink <1.0 — 1.2 keeps full margin over noise
+    # while the small_shift_band below catches the sub-threshold swaps.
+    change_threshold: float = 1.2  # vs last SENT frame — below = no change
+    # Persistent small-shift band: a page where only a single line of text
+    # swaps (question + options + «Далее») lands at dist 0.6-1.2 on the
+    # 96x96 grid — below change_threshold but ABOVE noise. Animation/cursor
+    # jitter decays to ~0 after a few ticks, while a real question swap
+    # PERSISTS. If the frame-vs-last-SENT distance stays inside
+    # [small_shift_dist, change_threshold] for small_shift_ticks consecutive
+    # ticks, the watcher sends (the old global gate swallowed it: measured
+    # 0.58 real swap vs <=0.45 noise, threshold 2.0 → "no change").
+    small_shift_dist: float = Field(0.35, ge=0.01, le=5.0)
+    small_shift_ticks: int = Field(5, ge=2, le=30)
     min_send_interval_s: float = Field(5.0, ge=1.0, le=600.0)
     backoff_s: float = Field(15.0, ge=1.0, le=600.0)
     max_image_dim: int = Field(1280, ge=320, le=4096)  # px, longest side sent to the LLM (text stays readable, payload -40%)
     jpeg_quality: int = Field(72, ge=30, le=95)
+    # Optional user instructions appended to the test-mode system prompt
+    # ("answer only per lecture X", "pick the most DevOps-ish option"…).
+    # Edited from the overlay, persisted via _PERSISTED_SETTINGS.
+    extra_prompt: str = Field("", max_length=4000)
+    # Deep-analysis toggle (test mode ONLY): lets a thinking-capable vision
+    # model spend reasoning budget before answering ("N -> X"). Switches the
+    # per-frame request to reasoning_effort=high and a larger token budget.
+    # Never touches the voice interview path (its own llm.reasoning_effort).
+    deep_analysis: bool = Field(False)
 
 
 class Config(BaseModel):
@@ -265,6 +294,7 @@ ENV_OVERRIDES: dict[str, tuple[str, str]] = {
     "MOCKINGBIRD_WINDOW_WIDTH": ("window", "width"),
     "MOCKINGBIRD_WINDOW_HEIGHT": ("window", "height"),
     "MOCKINGBIRD_WINDOW_HIDE_FROM_CAPTURE": ("window", "hide_from_capture"),
+    "MOCKINGBIRD_WINDOW_MINIMIZE_TO_TRAY": ("window", "minimize_to_tray"),
     "MOCKINGBIRD_DB_PATH": ("storage", "db_path"),
     "MOCKINGBIRD_LOG_DIR": ("storage", "log_dir"),
     "MOCKINGBIRD_KGEN_BOOKS_DIR": ("kgen", "books_dir"),
@@ -318,6 +348,13 @@ _PERSISTED_SETTINGS: dict[str, tuple[str, str, bool]] = {
     "kgen.books_dir": ("kgen", "books_dir", True),
     "kgen.out_dir": ("kgen", "out_dir", True),
     "window.hide_from_capture": ("window", "hide_from_capture", False),
+    "window.minimize_to_tray": ("window", "minimize_to_tray", False),
+    "window.silent": ("window", "silent", False),
+    # NOT optional: an empty string is a VALID value (instructions
+    # disabled from the overlay dialog) and must overwrite a stored one —
+    # optional=True would silently keep the old prompt on reload.
+    "test_mode.extra_prompt": ("test_mode", "extra_prompt", False),
+    "test_mode.deep_analysis": ("test_mode", "deep_analysis", False),
     "profile_id": ("profile_id", None, False),
 }
 
@@ -367,6 +404,19 @@ def apply_saved_settings(config: Config, get, env: dict | None = None) -> None:
             except (TypeError, ValueError):
                 pass
         setattr(getattr(config, section), attr, value)
+    # Silent-mode migration / propagation. The settings dialog now exposes a
+    # single "Silent" switch that drives the two legacy flags:
+    # - old installs (no stored window.silent): derive silent from the
+    #   combined legacy state so nobody loses capture-hiding on upgrade;
+    # - new installs: silent=True forces both legacy flags on, so
+    #   _tray_close_enabled / capture affinity keep working unchanged.
+    if get("window.silent") is None:
+        config.window.silent = (
+            config.window.hide_from_capture and config.window.minimize_to_tray
+        )
+    elif config.window.silent:
+        config.window.hide_from_capture = True
+        config.window.minimize_to_tray = True
 
 
 def _load_default_yaml() -> dict[str, Any]:

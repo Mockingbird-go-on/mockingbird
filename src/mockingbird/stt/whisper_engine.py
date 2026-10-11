@@ -21,6 +21,7 @@ import numpy as np
 
 from mockingbird import protocol
 from mockingbird.config import WhisperConfig, app_dir
+from mockingbird.i18n import t
 from mockingbird.stt.device import ctranslate2_cuda_available, resolve_device
 from mockingbird.stt.text_merge import has_cjk, merge_chunk_texts, reconcile_final_with_partial
 
@@ -171,6 +172,16 @@ class _DownloadCancelled(Exception):
     during the byte transfer — the per-file tqdm progress bar's ``update`` —
     via :func:`_install_cancel_hook`, then translate it to a user-facing
     RuntimeError in :func:`resolve_model_path`.
+    """
+
+
+class _InsufficientSpaceError(RuntimeError):
+    """Disk cannot hold the download.
+
+    A dedicated type so the resolve_model_path fallback chain can recognise it
+    WITHOUT string-matching the (now translated) user-facing message — the
+    error is permanent, so it must abort instead of retrying via the next
+    source.
     """
 
 
@@ -392,18 +403,24 @@ class _DownloadReporter:
         pct = min(99.0, done / total * 100.0) if total > 0 else 0.0
         name = os.path.basename(self._name) or self._name
         if total > 0:
-            detail = f"Скачивание {name}: {done / 1e6:.0f} из {total / 1e6:.0f} МБ"
+            detail = t(
+                "Скачивание {name}: {done} из {total} МБ",
+                name=name, done=f"{done / 1e6:.0f}", total=f"{total / 1e6:.0f}",
+            )
         else:
             # Unknown file size (no Content-Length / pre-flight phase):
             # "0 из 0 МБ" reads like a bug, show what we have.
-            detail = f"Скачивание {name}: {done / 1e6:.0f} МБ"
+            detail = t(
+                "Скачивание {name}: {done} МБ",
+                name=name, done=f"{done / 1e6:.0f}",
+            )
         # Only quote a speed once it is measurable (> ~100 КБ/с); a
         # near-zero EMA right after a burst prints as "0.0 МБ/с".
         if self._speed_ema > 100_000:
-            detail += f" · {self._speed_ema / 1e6:.1f} МБ/с"
+            detail += t(" · {speed} МБ/с", speed=f"{self._speed_ema / 1e6:.1f}")
             if total > done > 0:
                 remaining = (total - done) / self._speed_ema
-                detail += f" · осталось ~{int(remaining)} с"
+                detail += t(" · осталось ~{sec} с", sec=int(remaining))
         self._cb(detail, pct)
 
 
@@ -805,10 +822,16 @@ def _ensure_free_space(path: str, needed_bytes: float, what: str) -> None:
         probe = probe.parent
     free = shutil.disk_usage(probe).free
     if free < needed_bytes:
-        raise RuntimeError(
-            f"Недостаточно места на диске для {what}: требуется "
-            f"~{needed_bytes / 1e9:.1f} ГБ, свободно {free / 1e9:.1f} ГБ "
-            f"({probe}). Освободите место и нажмите «Повторить»."
+        raise _InsufficientSpaceError(
+            t(
+                "Недостаточно места на диске для {what}: требуется "
+                "~{need} ГБ, свободно {free} ГБ ({path}). "
+                "Освободите место и нажмите «Повторить».",
+                what=what,
+                need=f"{needed_bytes / 1e9:.1f}",
+                free=f"{free / 1e9:.1f}",
+                path=probe,
+            )
         )
 
 
@@ -885,7 +908,7 @@ def _download_from_github(
         if progress_cb is not None:
             progress_cb(message, percent)
 
-    _report("Подключение к GitHub (релиз моделей)…", 0.0)
+    _report(t("Подключение к GitHub (релиз моделей)…"), 0.0)
     url_attempts = 3
     resp = None
     total = 0.0
@@ -920,7 +943,10 @@ def _download_from_github(
             try:
                 if total > 0:
                     # zip + unpacked snapshot coexist during installation → ~2x needed.
-                    _ensure_free_space(str(root), total * 2.0, "загрузки модели распознавания")
+                    _ensure_free_space(
+                        str(root), total * 2.0,
+                        t("загрузки модели распознавания"),
+                    )
                 done = 0.0
                 try:
                     with open(zip_path, "wb") as f:
@@ -937,12 +963,21 @@ def _download_from_github(
                             if total > 0:
                                 pct = min(99.0, done / total * 100.0)
                                 _report(
-                                    f"Скачивание model-pack.zip: {done / 1e6:.0f} "
-                                    f"из {total / 1e6:.0f} МБ",
+                                    t(
+                                        "Скачивание model-pack.zip: {done} из {total} МБ",
+                                        done=f"{done / 1e6:.0f}",
+                                        total=f"{total / 1e6:.0f}",
+                                    ),
                                     pct,
                                 )
                             else:
-                                _report(f"Скачивание model-pack.zip: {done / 1e6:.0f} МБ", -1.0)
+                                _report(
+                                    t(
+                                        "Скачивание model-pack.zip: {done} МБ",
+                                        done=f"{done / 1e6:.0f}",
+                                    ),
+                                    -1.0,
+                                )
                 except Exception:
                     try:
                         zip_path.unlink()
@@ -978,7 +1013,7 @@ def _download_from_github(
             "whisper: GitHub model pack downloaded: %.0f MB (expected %.0f MB)",
             done / 1e6, total / 1e6,
         )
-        _report("Распаковка модели…", -1.0)
+        _report(t("Распаковка модели…"), -1.0)
         try:
             with zipfile.ZipFile(zip_path) as zf:
                 zf.extractall(root)
@@ -1029,7 +1064,7 @@ def _download_from_s3(
         if progress_cb is not None:
             progress_cb(message, percent)
 
-    _report("Подключение к s3.cloud.ru (CDN моделей)…", 0.0)
+    _report(t("Подключение к s3.cloud.ru (CDN моделей)…"), 0.0)
     zip_path = root / ".s3-model-pack.zip"
     root.mkdir(parents=True, exist_ok=True)
 
@@ -1051,7 +1086,10 @@ def _download_from_s3(
 
         total = float(resp.headers.get("Content-Length") or 0)
         if total > 0:
-            _ensure_free_space(str(root), total * 2.0, "загрузки модели распознавания")
+            _ensure_free_space(
+                str(root), total * 2.0,
+                t("загрузки модели распознавания"),
+            )
         done = 0.0
         try:
             with open(zip_path, "wb") as f:
@@ -1066,11 +1104,21 @@ def _download_from_s3(
                     if total > 0:
                         pct = min(99.0, done / total * 100.0)
                         _report(
-                            f"Скачивание model-pack.zip: {done / 1e6:.0f} из {total / 1e6:.0f} МБ",
+                            t(
+                                "Скачивание model-pack.zip: {done} из {total} МБ",
+                                done=f"{done / 1e6:.0f}",
+                                total=f"{total / 1e6:.0f}",
+                            ),
                             pct,
                         )
                     else:
-                        _report(f"Скачивание model-pack.zip: {done / 1e6:.0f} МБ", -1.0)
+                        _report(
+                            t(
+                                "Скачивание model-pack.zip: {done} МБ",
+                                done=f"{done / 1e6:.0f}",
+                            ),
+                            -1.0,
+                        )
         except Exception:
             try:
                 zip_path.unlink()
@@ -1110,7 +1158,7 @@ def _download_from_s3(
         "whisper: s3.cloud.ru model pack downloaded: %.0f MB (expected %.0f MB)",
         done / 1e6, total / 1e6,
     )
-    _report("Распаковка модели…", -1.0)
+    _report(t("Распаковка модели…"), -1.0)
     try:
         with zipfile.ZipFile(zip_path) as zf:
             zf.extractall(root)
@@ -1255,8 +1303,10 @@ def resolve_model_path(cfg: WhisperConfig, progress_cb=None, cancel_event=None) 
             repo_id,
         )
         raise RuntimeError(
-            "Загрузка модели уже идёт в другом потоке — дождитесь её "
-            "завершения или нажмите «Отмена» перед повтором."
+            t(
+                "Загрузка модели уже идёт в другом потоке — дождитесь её "
+                "завершения или нажмите «Отмена» перед повтором."
+            )
         )
 
     # The flight lock is held throughout and released by the finally below on
@@ -1286,7 +1336,7 @@ def resolve_model_path(cfg: WhisperConfig, progress_cb=None, cancel_event=None) 
             except Exception as exc:  # noqa: BLE001
                 if cancel_event is not None and cancel_event.is_set():
                     raise
-                if "Недостаточно места" in str(exc):
+                if isinstance(exc, _InsufficientSpaceError):
                     raise
                 log.warning(
                     "whisper: s3.cloud.ru download failed (%s) — trying GitHub", exc,
@@ -1320,7 +1370,7 @@ def resolve_model_path(cfg: WhisperConfig, progress_cb=None, cancel_event=None) 
                 raise
             # Out-of-disk is NOT transient — retrying via HF would fail the
             # same way after another round of HEAD requests. Surface it.
-            if "Недостаточно места" in str(exc):
+            if isinstance(exc, _InsufficientSpaceError):
                 raise
             log.warning("whisper: GitHub model download failed (%s) — trying HuggingFace", exc)
 
@@ -1337,14 +1387,17 @@ def resolve_model_path(cfg: WhisperConfig, progress_cb=None, cancel_event=None) 
         hint = _MODEL_SIZE_HINTS.get(repo_id)
         if hint is not None:
             try:
-                _ensure_free_space(download_root, float(hint), "загрузки модели распознавания")
+                _ensure_free_space(
+                    download_root, float(hint),
+                    t("загрузки модели распознавания"),
+                )
             except RuntimeError:
                 raise
             except Exception:  # noqa: BLE001
                 pass  # space probe itself failed — do not block the download
         reporter = None
         if progress_cb is not None:
-            progress_cb("Downloading whisper model…", 0.0)
+            progress_cb(t("Скачивание модели распознавания…"), 0.0)
             reporter = _DownloadReporter(progress_cb, cancel_event=cancel_event)
             kwargs["tqdm_class"] = _progress_tqdm_class(reporter)
         last_exc: Exception | None = None
@@ -1601,6 +1654,14 @@ class WhisperEngine:
         # hold a reference to it; replacing would make a later Cancel invisible.
         self._cancel_download.clear()
 
+    def cancel_download_pending(self) -> bool:
+        """True when a stale cancel flag is set and the model never loaded.
+
+        Used by ``App.start_session`` to detect «Start pressed after a
+        cancelled download» and restart the load instead of instantly
+        failing with the stale flag."""
+        return self._cancel_download.is_set() and not self._ready
+
     def _raise_if_cancelled(self) -> None:
         """Raise a user-facing cancellation if the cancel flag is set.
 
@@ -1657,9 +1718,11 @@ class WhisperEngine:
             if self._stopping:
                 if not self._wait_for_stopped_worker(timeout=2.0):
                     raise RuntimeError(
-                        "Распознавание ещё завершает предыдущую сессию "
-                        "(долгий финальный декод). Подождите пару секунд "
-                        "и нажмите «Старт» снова."
+                        t(
+                            "Распознавание ещё завершает предыдущую сессию "
+                            "(долгий финальный декод). Подождите пару секунд "
+                            "и нажмите «Старт» снова."
+                        )
                     )
             elif self._thread.is_alive():
                 # The warm-start worker is live and was never stopped —
@@ -1922,7 +1985,9 @@ class WhisperEngine:
         # download threads capture the exact object at start).
         if self._cancel_download.is_set():
             self._raise_if_cancelled()
-        report(f"Loading {self._cfg.model_size} whisper model…", -1.0)
+        report(
+            t("Загрузка модели whisper {name}…", name=self._cfg.model_size), -1.0
+        )
         model_path = resolve_model_path(
             self._cfg, progress_cb=report, cancel_event=self._cancel_download
         )
@@ -1933,7 +1998,7 @@ class WhisperEngine:
                 "Remove this directory (or clear the model cache) and restart the app "
                 "to download it again."
             )
-        report("Loading model into memory…", -1.0)
+        report(t("Загрузка модели в память…"), -1.0)
         self._raise_if_cancelled()
         from faster_whisper import WhisperModel
 
@@ -1995,7 +2060,7 @@ class WhisperEngine:
         except RuntimeError as exc:
             if "model.bin" in str(exc) or "Unable to open" in str(exc):
                 log.warning("whisper: model.bin missing/corrupt, re-downloading...")
-                report("Модель повреждена, повторная загрузка…", -1.0)
+                report(t("Модель повреждена, повторная загрузка…"), -1.0)
                 # R-22: honour a Cancel that landed during the failed load
                 # before starting the re-download (same rule as _load_model's
                 # entry guard — the flag is live user intent, not stale).
@@ -2033,7 +2098,7 @@ class WhisperEngine:
                 self._raise_if_cancelled()
             if not ok:
                 log.error("whisper: CUDA not usable (%s); falling back to CPU", detail)
-                report("GPU не отвечает — переключение на CPU…", -1.0)
+                report(t("GPU не отвечает — переключение на CPU…"), -1.0)
                 self._model = None
                 self._device = "cpu"
                 compute_type = select_compute_type(
@@ -2194,7 +2259,11 @@ class WhisperEngine:
         # The tail is decoded DIRECTLY (not via _decode_cached): its chunk
         # grid starts at tail_start and would misalign with the cached chunk
         # slots, corrupting the cache.
-        cached_seconds = len(self._chunk_texts) * 18.0
+        # Snapshot under the lock: start_segment/_cleanup_segment may swap
+        # the list concurrently (audio callback thread).
+        with self._lock:
+            chunk_snapshot = list(self._chunk_texts)
+        cached_seconds = len(chunk_snapshot) * 18.0
         if cached_seconds >= 18.0 and len(audio) > (cached_seconds + 2.0) * self._sr:
             tail_start = max(0, int(cached_seconds * self._sr - 2.0 * self._sr))
             tail = audio[tail_start:]
@@ -2208,7 +2277,7 @@ class WhisperEngine:
                     # R-18: segment changed mid-decode — speculative result
                     # is stale, do not latch it into _speculative.
                     return
-                prefix = " ".join(self._chunk_texts).strip()
+                prefix = " ".join(chunk_snapshot).strip()
                 if text:
                     text = merge_chunk_texts([prefix, text]) if prefix else text
                 if text:
@@ -2238,7 +2307,8 @@ class WhisperEngine:
         self._decoding = True
         try:
             text, confidence, duration = self._decode_cached(
-                audio, kind="speculative", beam_size=self._cfg.final_beam_size
+                audio, kind="speculative", beam_size=self._cfg.final_beam_size,
+                segment_id=segment_id,
             )
             # Record the decoded length in BOTH branches so the no-new-audio
             # guard (len(audio) == self._decoded_audio_len) also holds for
@@ -2398,7 +2468,8 @@ class WhisperEngine:
             return
         try:
             text, confidence, duration = self._decode_cached(
-                audio, kind="final", beam_size=self._cfg.final_beam_size
+                audio, kind="final", beam_size=self._cfg.final_beam_size,
+                segment_id=segment_id,
             )
             if text:
                 text, ratio, replaced = reconcile_final_with_partial(text, last_partial)
@@ -2439,7 +2510,10 @@ class WhisperEngine:
             self._decoding = False
             self._cleanup_segment()
 
-    def _decode_cached(self, audio: np.ndarray, kind: str = "final", beam_size: int = 1):
+    def _decode_cached(
+        self, audio: np.ndarray, kind: str = "final", beam_size: int = 1,
+        segment_id: str | None = None,
+    ):
         """Decode with a stable-prefix chunk cache.
 
         Splits the segment on a fixed grid (window 20 s, step 18 s — a 2 s
@@ -2448,11 +2522,23 @@ class WhisperEngine:
         The last (incomplete) chunk is never cached, so repeated stop-hint /
         finalize decodes during one long monologue re-decode only the tail
         instead of the whole buffer.
+
+        Chunk-cache race: ``start_segment``/``_cleanup_segment`` (audio
+        callback thread) swap ``_chunk_texts`` to a fresh list under the
+        lock while this decode runs (a fast-paced interview starts the next
+        question while the previous final is still decoding). Reading and
+        appending to ``self._chunk_texts`` directly let the OLD segment's
+        chunks land in the NEW segment's cache — the next question's
+        transcript came out glued to the previous one. Snapshot the cache
+        under the lock, work on the copy, and commit at the end only when
+        the segment did not change underneath.
         """
         t0 = time.monotonic()
         duration = len(audio) / self._sr
         window = int(20.0 * self._sr)
         step = int(18.0 * self._sr)
+        with self._lock:
+            chunk_texts = list(self._chunk_texts)
         texts: list[str] = []
         confidences: list[float] = []
         idx = 0
@@ -2461,8 +2547,8 @@ class WhisperEngine:
         while start < len(audio):
             chunk = audio[start : start + window]
             last = start + window >= len(audio)
-            if idx < len(self._chunk_texts):
-                texts.append(self._chunk_texts[idx])
+            if idx < len(chunk_texts):
+                texts.append(chunk_texts[idx])
             elif len(chunk) > int(self._sr * 0.5) or (idx == 0 and last):
                 # Cross-chunk context: the previous chunk's tail gives the
                 # decoder the left-side wording, so terms split across the
@@ -2487,11 +2573,18 @@ class WhisperEngine:
                         confidences.append(conf)
                 if not last:
                     # Stable chunk (audio continues past it) — cache the text.
-                    while len(self._chunk_texts) <= idx:
-                        self._chunk_texts.append("")
-                    self._chunk_texts[idx] = piece
+                    while len(chunk_texts) <= idx:
+                        chunk_texts.append("")
+                    chunk_texts[idx] = piece
             idx += 1
             start += step
+        # Commit the grown cache only when the segment is still the one this
+        # decode was launched for: a start_segment()/_cleanup_segment() that
+        # ran mid-decode already reset the cache for the NEXT segment —
+        # overwriting it here would glue the two questions' chunks together.
+        with self._lock:
+            if segment_id is None or segment_id == self._segment_id:
+                self._chunk_texts = chunk_texts
         text = merge_chunk_texts(texts)
         if self._text_matcher is not None and text:
             corrected = self._text_matcher.normalize_text(text)
@@ -2509,7 +2602,7 @@ class WhisperEngine:
         self._decoded_audio_len = len(audio)
         log.info(
             "whisper: %s decoded %.2fs of audio in %.2fs (cached %d chunks, fresh %.2fs)",
-            kind, duration, elapsed, len(self._chunk_texts), decoded_now,
+            kind, duration, elapsed, len(chunk_texts), decoded_now,
         )
         return text, confidence, duration
 

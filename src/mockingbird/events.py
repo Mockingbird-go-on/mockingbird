@@ -49,8 +49,22 @@ class AppSignals(QObject):
     # Bridge: Ctrl+Shift+S global hotkey → MainWindow opens the grab overlay.
     screenshot_request = Signal()
     test_answer = Signal(bool, str)  # ok, raw LLM text ("1 → B\n2 → D…")
+    # Control markers sent through test_answer(ok=True, MARKER) — NOT valid
+    # answer payloads. Centrally defined so no producer hand-rolls a magic
+    # string; `is_test_answer_marker()` is the single discriminator. The
+    # values use the Unicode private-use area: they can never collide with
+    # an LLM answer and never need translation.
+    TEST_MARKER_BUSY = "\ue60b"      # frame deferred: voice answer streaming
+    TEST_MARKER_STALE = "\ue60c"     # reply dropped: page changed mid-answer
     # Bridge: Ctrl+Shift+T global hotkey → MainWindow toggles live test mode.
     test_mode_request = Signal()
+    # Bridge: F2 global hotkey → re-analyse the current test frame (force
+    # send). RegisterHotKey does not steal focus from the browser — the
+    # primary "regenerate" path that does not trip proctoring focus tracking.
+    test_mode_force_request = Signal()
+    # Bridge: Ctrl+Alt+M global hotkey → MainWindow shows/hides itself (the
+    # only way back from the fully-invisible Silent mode).
+    toggle_window_request = Signal()
     # Screenshot answer finished (payload: shot_id) — UI refreshes history.
     screenshot_answer_done = Signal(str)
     screenshot_pending = Signal(str)  # question — emitted the moment the user asks
@@ -68,3 +82,8 @@ class AppSignals(QObject):
     # be created and played on the GUI thread (object affinity); the engine
     # worker used to construct it directly, which crashes/never plays.
     _play_ready_sound = Signal()
+
+
+def is_test_answer_marker(text: str) -> bool:
+    """True when ``text`` is a control marker, not a real test answer."""
+    return text in (AppSignals.TEST_MARKER_BUSY, AppSignals.TEST_MARKER_STALE)

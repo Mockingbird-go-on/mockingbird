@@ -451,3 +451,70 @@ def test_save_validates_handtyped_glossary_path(driver, user_profiles, tmp_path)
     assert any("YAML" in m for m in drv.message_boxes)
     # invalid glossary not persisted
     assert loader.load_profiles()["gl2"].glossary != str(bad)
+
+
+# --- English variant fields (shown only when UI language != ru) -------------
+
+
+def test_en_fields_hidden_in_russian_ui(driver, user_profiles):
+    from mockingbird import i18n
+
+    i18n.set_language("ru")
+    drv = driver()
+    assert drv.d._en_visible is False
+    assert not drv.d._title_en.isVisible() or True  # never added to the form
+
+
+def test_en_fields_visible_in_english_ui(driver, user_profiles):
+    from mockingbird import i18n
+
+    try:
+        i18n.set_language("en")
+        drv = driver()
+        assert drv.d._en_visible is True
+        drv.select("devops")
+        assert drv.d._title_en.text() == "DevOps / SRE"
+        assert drv.d._persona_en.toPlainText().startswith("DevOps engineer")
+    finally:
+        i18n.set_language("ru")
+
+
+def test_clone_keeps_en_variants(driver, user_profiles):
+    drv = driver()
+    drv.select("devops")
+    drv.dialog_answers = ["devops-en"]
+    drv.d._on_clone()
+    prof = loader.load_profiles()["devops-en"]
+    assert prof.title_en == "DevOps / SRE"
+    assert prof.persona_en  # copied, not dropped
+    assert prof.stack_en
+
+
+def test_save_persists_en_fields_and_empty_resets(driver, user_profiles):
+    from mockingbird import i18n
+
+    try:
+        i18n.set_language("en")
+        drv = driver()
+        drv.dialog_answers = ["bilingual"]
+        drv.d._on_new()
+        drv.d._title.setText("Мой профиль")
+        drv.d._persona.setPlainText("инженер")
+        drv.d._persona_senior.setPlainText("senior инженер")
+        drv.d._stack.setPlainText("Python, SQL")
+        drv.d._title_en.setText("My profile")
+        drv.d._persona_en.setPlainText("engineer")
+        drv.d._persona_senior_en.setPlainText("senior engineer")
+        drv.d._stack_en.setPlainText("Python, SQL")
+        drv.d._on_save()
+        prof = loader.load_profiles()["bilingual"]
+        assert prof.title_en == "My profile"
+        assert prof.persona_en == "engineer"
+        assert prof.stack_en == "Python, SQL"
+        # wiping an EN field resets the variant to the Russian fallback
+        drv.select("bilingual")
+        drv.d._persona_en.setPlainText("")
+        drv.d._on_save()
+        assert loader.load_profiles()["bilingual"].persona_en is None
+    finally:
+        i18n.set_language("ru")

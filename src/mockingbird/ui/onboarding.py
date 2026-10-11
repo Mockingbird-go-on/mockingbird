@@ -740,11 +740,19 @@ class OnboardingWizard(QDialog):
             # «Пропустить» на шаге LLM — всегда уходить дальше БЕЗ проверки
             # (введённые поля сохраняются в _collect_settings). Если проверка
             # идёт — тихо останавливаем её, без «Проверка отменена».
+            # НЕ wait()'ить воркер: он без event loop (quit() бесполезен),
+            # а wait() в GUI-потоке дедлокит окно на wedged-соединении.
+            # Как в _cancel_llm_check: инкремент generation + disconnect —
+            # поздний done игнорируется, поток доигрывает в фоне.
             if self._llm_check_in_progress:
                 self._llm_check_in_progress = False
-                if getattr(self, "_test_worker", None) is not None:
-                    self._test_worker.quit()
-                    self._test_worker.wait()
+                self._llm_check_generation = getattr(self, "_llm_check_generation", 0) + 1
+                worker = getattr(self, "_test_worker", None)
+                if worker is not None:
+                    try:
+                        worker.done.disconnect()
+                    except (RuntimeError, TypeError):
+                        pass
                 if getattr(self, "_test_deadline", None) is not None:
                     self._test_deadline.stop()
                 self._exit_llm_check_state()
@@ -803,12 +811,14 @@ class OnboardingWizard(QDialog):
         cfg.whisper.compute_type = self._whisper_compute.currentData()
         cfg.whisper.device = self._whisper_device.currentData()
 
-        # Theme / capture-protection / KB paths: the former final step is
+        # Theme / window-mode / KB paths: the former final step is
         # gone (2026-09-30) — defaults are applied instead: dark theme,
-        # capture protection ON (interview app: hiding from Zoom/Teams
-        # screen share is the safe default), bundled glossary/KB.
+        # tray-only window mode (Silent off; it is opt-in from Settings),
+        # bundled glossary/KB.
         self._theme_choice = "dark"
-        cfg.window.hide_from_capture = True
+        cfg.window.silent = False
+        cfg.window.hide_from_capture = False
+        cfg.window.minimize_to_tray = True
 
         # Language chosen on step 0 — persisted by the caller (main.py
         # stores QSettings ui/lang right after the wizard is accepted).

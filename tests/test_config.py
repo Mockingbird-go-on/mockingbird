@@ -37,6 +37,8 @@ def test_defaults():
     assert c.interview.partial_stability_rounds == 2
     assert c.window.width == 1440
     assert c.window.height == 900
+    assert c.window.minimize_to_tray is True
+    assert c.window.silent is False
 
 
 def test_bool_env_overrides(monkeypatch):
@@ -230,3 +232,60 @@ def test_stale_gigaam_env_migrates_to_whisper(monkeypatch, tmp_path):
     monkeypatch.setenv("MOCKINGBIRD_STT_BACKEND", "gigaam")
     c = cfg.load_config()
     assert c.stt.backend == "whisper"
+
+
+def test_test_mode_extra_prompt_default_and_roundtrip(monkeypatch, tmp_path):
+    """extra_prompt: empty default; persisted value is restored via
+    apply_saved_settings (the overlay edits it outside the settings dialog)."""
+    monkeypatch.setenv("MOCKINGBIRD_HOME", str(tmp_path))
+    c = cfg.load_config()
+    assert c.test_mode.extra_prompt == ""
+
+    stored = {"test_mode.extra_prompt": "отвечай только по лекции"}
+    cfg.apply_saved_settings(c, stored.get)
+    assert c.test_mode.extra_prompt == "отвечай только по лекции"
+
+    # An EMPTY stored value clears the instructions (the "disable" path
+    # in the overlay dialog stores "").
+    cfg.apply_saved_settings(c, lambda key: "" if key == "test_mode.extra_prompt" else None)
+    assert c.test_mode.extra_prompt == ""
+
+
+def test_silent_defaults_off_tray_only(monkeypatch, tmp_path):
+    """Default is tray-only: silent off, minimize_to_tray on."""
+    monkeypatch.setenv("MOCKINGBIRD_HOME", str(tmp_path))
+    c = cfg.load_config()
+    assert c.window.silent is False
+    assert c.window.minimize_to_tray is True
+
+
+def test_silent_migration_from_legacy_flags(monkeypatch, tmp_path):
+    """Old installs (no stored window.silent) derive silent from the two
+    legacy flags: both on => silent on, otherwise off."""
+    monkeypatch.setenv("MOCKINGBIRD_HOME", str(tmp_path))
+    c = cfg.load_config()
+    stored = {
+        "window.hide_from_capture": "1",
+        "window.minimize_to_tray": "1",
+    }
+    cfg.apply_saved_settings(c, stored.get)
+    assert c.window.silent is True
+
+    c2 = cfg.load_config()
+    stored2 = {
+        "window.hide_from_capture": "0",
+        "window.minimize_to_tray": "1",
+    }
+    cfg.apply_saved_settings(c2, stored2.get)
+    assert c2.window.silent is False
+
+
+def test_silent_forces_capture_hiding(monkeypatch, tmp_path):
+    """stored window.silent=1 must turn on hide_from_capture so the capture
+    affinity path (which reads the legacy flag) keeps working."""
+    monkeypatch.setenv("MOCKINGBIRD_HOME", str(tmp_path))
+    c = cfg.load_config()
+    cfg.apply_saved_settings(c, lambda key: "1" if key == "window.silent" else None)
+    assert c.window.silent is True
+    assert c.window.hide_from_capture is True
+    assert c.window.minimize_to_tray is True

@@ -70,6 +70,8 @@ interview:
 window:
   width: 1440
   height: 900
+  silent: false
+  minimize_to_tray: true
 storage:
   db_path: null
   log_dir: null

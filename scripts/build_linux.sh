@@ -123,10 +123,25 @@ APPRUN
         chmod +x "$APPIMAGETOOL"
     fi
 
+    # appimagetool's BUILT-IN runtime download does not follow the 302
+    # redirect GitHub serves on release assets ("Failed to download runtime:
+    # server returned status code 302"). Fetch the runtime ourselves with
+    # curl -L + retries and pass it via --runtime-file (idempotent: reuses
+    # the cached copy if present).
+    RUNTIME="build/runtime/runtime-$(uname -m)"
+    if [[ ! -s "$RUNTIME" ]]; then
+        mkdir -p "$(dirname "$RUNTIME")"
+        echo "== downloading AppImage runtime =="
+        curl -fL --retry 5 --retry-all-errors --retry-delay 5 -o "$RUNTIME" \
+            "https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-$(uname -m)"
+    fi
+
     mkdir -p dist
     # WSL2/CI без FUSE: appimagetool (сам AppImage) запускаем через extract,
     # иначе «No suitable fusermount binary found».
-    ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 "$APPIMAGETOOL" "$APPDIR" "dist/Mockingbird-$VERSION-linux-x86_64.AppImage"
+    ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 "$APPIMAGETOOL" \
+        --runtime-file "$RUNTIME" \
+        "$APPDIR" "dist/Mockingbird-$VERSION-linux-x86_64.AppImage"
     echo "== AppImage: dist/Mockingbird-$VERSION-linux-x86_64.AppImage =="
 fi
 

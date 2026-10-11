@@ -8,7 +8,7 @@
 [![Telegram](https://img.shields.io/badge/chat-Telegram-26A5E4.svg)](https://t.me/MOCKINGBird_release)
 [![YouTube](https://img.shields.io/badge/YouTube-%40Mockingbird--go--on-FF0000.svg)](https://www.youtube.com/@Mockingbird-go-on)
 
-> 🇷🇺 [README.md (Русский)](../README.md) · 🇬🇧 English · 🇪🇸 [README_ES.md (Español)](README_ES.md)
+> 🇷🇺 [Русский](../README.md) · 🇬🇧 English · 🇪🇸 [Español](README_ES.md)
 
 A desktop assistant for technical interviews: real-time speech recognition and
 answer hints from a knowledge base and an LLM. Audio goes through Silero

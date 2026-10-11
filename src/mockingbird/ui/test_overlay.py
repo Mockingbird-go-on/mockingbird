@@ -24,11 +24,16 @@ class TestModeOverlay(QWidget):
 
     Signals:
         stop_requested()
-        force_requested()   — re-analyse button (manual re-send)
+        prompt_requested()  — user-instructions button (extra prompt editor)
     """
 
     stop_requested = Signal()
-    force_requested = Signal()
+    prompt_requested = Signal()
+
+    # Indicator colours for the instructions button: muted grey = empty,
+    # amber accent (same as "?" answers) = user instructions are in effect.
+    _PROMPT_IDLE_COLOR = "#8a8f98"
+    _PROMPT_ACTIVE_COLOR = "#e5a000"
 
     def __init__(self, target_title: str = "", parent=None) -> None:
         super().__init__(
@@ -62,19 +67,25 @@ class TestModeOverlay(QWidget):
         )
         header.addWidget(self._title, 1)
 
-        btn_force = QPushButton()
+        # User instructions for the test (extra prompt): muted when empty,
+        # amber when active — instantly shows whether custom guidance is
+        # applied to the LLM answers.
         from mockingbird.ui.icons import icon as lucide_icon
 
-        btn_force.setIcon(lucide_icon("rotate-cw"))
-        btn_force.setIconSize(QSize(15, 15))
-        btn_force.setFixedSize(26, 24)
-        btn_force.setToolTip(t("Переанализировать текущий кадр"))
-        btn_force.clicked.connect(self.force_requested)
-        header.addWidget(btn_force)
+        self._prompt_btn = QPushButton()
+        self._prompt_btn.setIcon(
+            lucide_icon("sliders-horizontal", size=15, color=self._PROMPT_IDLE_COLOR)
+        )
+        self._prompt_btn.setIconSize(QSize(15, 15))
+        self._prompt_btn.setFixedSize(26, 26)
+        self._prompt_btn.setToolTip(t("Указания для теста"))
+        self._prompt_btn.clicked.connect(self.prompt_requested)
+        header.addWidget(self._prompt_btn)
+        self._prompt_active = False
 
         from mockingbird.ui.icons import CloseButton
 
-        btn_stop = CloseButton(size=15)
+        btn_stop = CloseButton()
         btn_stop.setToolTip(t("Остановить наблюдение"))
         btn_stop.clicked.connect(self.stop_requested)
         header.addWidget(btn_stop)
@@ -180,6 +191,25 @@ class TestModeOverlay(QWidget):
         self._drag_pos = None
 
     # -- updates ------------------------------------------------------------
+    def set_prompt_active(self, active: bool) -> None:
+        """Indicator for the instructions button: amber = extra prompt is
+        in effect, muted grey = none. Re-renders the icon colour-safe."""
+        active = bool(active)
+        if active == self._prompt_active:
+            return
+        self._prompt_active = active
+        from mockingbird.ui.icons import icon as lucide_icon
+
+        color = self._PROMPT_ACTIVE_COLOR if active else self._PROMPT_IDLE_COLOR
+        self._prompt_btn.setIcon(
+            lucide_icon("sliders-horizontal", size=15, color=color)
+        )
+        self._prompt_btn.setToolTip(
+            t("Указания для теста заданы — нажмите, чтобы изменить")
+            if active
+            else t("Указания для теста (не заданы)")
+        )
+
     def set_status(self, text: str) -> None:
         self._status.setText(text)
 

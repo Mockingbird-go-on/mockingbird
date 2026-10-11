@@ -59,7 +59,7 @@ def _capture(engine):
 def _monkeypatch_decode(engine, returned=("привет мир", 0.9, 1.0)):
     calls = []
 
-    def fake(audio, kind="final", beam_size=1):
+    def fake(audio, kind="final", beam_size=1, **kw):
         calls.append((kind, len(audio)))
         return returned
 

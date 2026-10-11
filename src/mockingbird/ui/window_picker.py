@@ -15,7 +15,7 @@ import sys
 
 from PySide6.QtCore import Qt, QRect, Signal
 from PySide6.QtGui import QColor, QCursor, QPainter, QPen, QPixmap
-from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtWidgets import QWidget
 
 from mockingbird.i18n import t
 
@@ -88,29 +88,46 @@ class WindowPickOverlay(QWidget):
         self._fallback = allow_region_fallback and sys.platform != "win32"
         self.setCursor(Qt.CursorShape.CrossCursor)
         self._shot: QPixmap | None = None
-        # Multi-monitor: cover the screen the cursor is on (the user is
-        # about to pick a window THERE); fall back to the primary screen.
-        from PySide6.QtGui import QCursor as _QC
-
-        scr = QApplication.screenAt(_QC.pos()) or QApplication.primaryScreen()
-        geo = scr.availableGeometry() if scr else QRect(0, 0, 1920, 1080)
-        self.setGeometry(geo)
+        # Multi-monitor: cover the ENTIRE virtual desktop — a window to
+        # watch may live on any monitor, the user picks it with one click
+        # wherever it is (full parity with the screenshot selector).
         self._hint = t("Кликните по окну с тестом (Esc — отмена)")
 
     def start(self) -> None:
-        scr = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
-        if scr is None:
+        from mockingbird.ui.screenshot import (
+            _screen_records,
+            grab_virtual_desktop,
+            virtual_desktop_geometry,
+        )
+
+        records = _screen_records()
+        if not records:
             self.cancelled.emit()
             return
-        self._shot = scr.grabWindow(0)
-        self.showFullScreen()
+        try:
+            self._shot = grab_virtual_desktop(records)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("test-mode: virtual desktop grab failed: %s", exc)
+            self.cancelled.emit()
+            return
+        # Shot is stitched on a canvas tagged with the uniform max-DPR —
+        # strip it: the overlay widget lives in logical desktop coordinates
+        # and paintEvent maps logical → device explicitly.
+        self._shot.setDevicePixelRatio(1)
+        # NOT showFullScreen: Qt fullscreen snaps the window to a single
+        # screen — the overlay would cover one monitor only.
+        geo = virtual_desktop_geometry(records)
+        self.setGeometry(geo)
+        self.showNormal()
         self.activateWindow()
         self.raise_()
 
     def paintEvent(self, event) -> None:  # noqa: N802
         p = QPainter(self)
         if self._shot is not None:
-            p.drawPixmap(0, 0, self._shot)
+            # Widget coords == logical virtual-desktop coords; the shot is
+            # DPR-1 device pixels of the stitched canvas — scale explicitly.
+            p.drawPixmap(0, 0, self.width(), self.height(), self._shot)
             p.fillRect(self.rect(), QColor(0, 0, 0, 60))  # light dim
         else:
             p.fillRect(self.rect(), QColor(20, 20, 20))

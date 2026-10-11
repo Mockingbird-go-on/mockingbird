@@ -75,3 +75,57 @@ def test_main_window_has_cancel_cross_wired():
     assert "_set_cancel_load_visible" in src
     # cross must NOT appear for the 'stopping' teardown state
     assert 'detail != "stopping"' in src
+
+
+def test_cancel_error_emits_error_signal_for_open_session():
+    """A cancel that hits an OPEN session (Start during a download) must also
+    emit signals.error — the window's model_load_cancelled slot tears the
+    half-open session down only because _on_error fires; without it the UI
+    stays on «starting» forever (2026-10-07 bug)."""
+    src = _read("app.py")
+    idx = src.index('if "model" in low and "cancelled" in low:')
+    block = src[idx : idx + 1200]
+    assert "model_load_cancelled.emit()" in block
+    assert 'getattr(self, "session_id", None) is not None' in block
+    assert "signals.error.emit" in block
+
+
+def test_main_window_teardown_on_cancel_with_open_session():
+    """MainWindow._on_model_load_cancelled must stop a half-open session
+    (async) and return the buttons to idle."""
+    src = _read("ui/main_window.py")
+    idx = src.index("def _on_model_load_cancelled")
+    block = src[idx : src.index("def ", idx + 10)]
+    assert "session_id is not None" in block
+    assert "stop_session_async" in block
+
+
+def test_engine_cancel_download_pending():
+    """cancel_download_pending: True only when the flag is set AND the model
+    never became ready — start_session uses it to drop a stale flag."""
+    from mockingbird.config import WhisperConfig
+    from mockingbird.stt.whisper_engine import WhisperEngine
+
+    eng = WhisperEngine.__new__(WhisperEngine)
+    import threading
+
+    eng._cancel_download = threading.Event()
+    eng._ready = False
+    eng._cancel_download.set()
+    assert eng.cancel_download_pending() is True
+    eng._cancel_download.clear()
+    assert eng.cancel_download_pending() is False
+    eng._cancel_download.set()
+    eng._ready = True
+    assert eng.cancel_download_pending() is False
+
+
+def test_start_session_drops_stale_cancel_flag():
+    """Start pressed after a cancelled download: the stale cancel flag is
+    cleared and warm_start() reruns (Start = explicit intent to load)."""
+    src = _read("app.py")
+    idx = src.index("def start_session")
+    block = src[idx : idx + 2500]
+    assert "cancel_download_pending" in block
+    assert "clear_cancel_download" in block
+    assert "warm_start()" in block

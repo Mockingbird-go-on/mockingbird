@@ -305,6 +305,14 @@ class App:
         low = message.lower()
         if "model" in low and "cancelled" in low:
             self.signals.model_load_cancelled.emit()
+            # A cancel that hit an OPEN session (Start pressed while a
+            # download was still running, then cancelled): the half-open
+            # session must be torn down and the UI returned to idle —
+            # without the error signal the window stays on «starting»
+            # forever (2026-10-07 bug). model_load_cancelled only resets
+            # the download affordances.
+            if getattr(self, "session_id", None) is not None:
+                self.signals.error.emit(message)
             return
         # Broad load-failure detection: a warm-start/download failure phrased
         # without the exact pair "model"+"download" previously slipped past,
@@ -476,6 +484,11 @@ class App:
         watcher = TestWatcher(self.config.test_mode)
         watcher.set_capture(capture_fn)
         watcher.send_frame.connect(self._on_test_frame)
+        # Cache hits (scrolled-back question): same answer path as the LLM
+        # worker, but instant and without a network round-trip.
+        watcher.cached_answer.connect(
+            lambda text: self.signals.test_answer.emit(True, text)
+        )
         watcher.start()
         self._test_watcher = watcher
         return watcher
@@ -498,7 +511,7 @@ class App:
     def test_watcher(self):
         return getattr(self, "_test_watcher", None)
 
-    def _on_test_frame(self, _preview, jpeg_bytes: bytes) -> None:
+    def _on_test_frame(self, _preview, jpeg_bytes: bytes, sent_fp=None) -> None:
         import base64
         import threading
         import time as _time
@@ -554,7 +567,9 @@ class App:
                         watcher_ref.mark_result(True, "", was_send=False)
                         # ok=True with empty text but NOT parsed as "no test":
                         # dedicated payload marker keeps the overlay honest.
-                        self.signals.test_answer.emit(True, "\u23f3")  # ⏳ busy marker
+                        self.signals.test_answer.emit(
+                            True, AppSignals.TEST_MARKER_BUSY
+                        )
                     return
             except Exception:  # noqa: BLE001
                 pass  # gate is best-effort; never block the test frame
@@ -578,7 +593,13 @@ class App:
                 pass
             try:
                 log.info("test-mode: LLM request started (jpeg=%dB)", len(jpeg_bytes))
-                text = self.llm.answer_test_screen(base64.b64encode(jpeg_bytes).decode())
+                text = self.llm.answer_test_screen(
+                    base64.b64encode(jpeg_bytes).decode(),
+                    extra_prompt=getattr(self.config.test_mode, "extra_prompt", "") or "",
+                    deep_analysis=bool(
+                        getattr(self.config.test_mode, "deep_analysis", False)
+                    ),
+                )
                 ok = True
                 log.info(
                     "test-mode: LLM reply in %.1fs (%d chars): %r",
@@ -592,12 +613,35 @@ class App:
             finally:
                 if _stale():
                     return  # new run owns the watcher; don't touch its state
+                # Stale ANSWER: the user scrolled past the page this reply
+                # was computed for (fast paging + LLM latency). The overlay
+                # must keep showing the CURRENT question's answer — log and
+                # drop the reply instead of overwriting with the previous
+                # question. Bookkeeping (fp commit, cache) still runs: it
+                # belongs to the frame that WAS sent.
+                stale_answer = False
+                try:
+                    stale_answer = watcher_ref.is_answer_stale(sent_fp)
+                except Exception:  # noqa: BLE001 — best-effort check
+                    stale_answer = False
                 watcher_ref.mark_result(ok, text)
+                if stale_answer and ok and text:
+                    log.info(
+                        "test-mode: stale answer dropped (page changed while "
+                        "LLM was replying)"
+                    )
+                    # Visible feedback instead of a silent drop: the user
+                    # sees WHY no answer appeared for the page change.
+                    self.signals.test_answer.emit(
+                        True, AppSignals.TEST_MARKER_STALE
+                    )
+                    return
                 self.signals.test_answer.emit(ok, text)
 
         th = threading.Thread(target=_worker, name="test-mode-llm", daemon=True)
         self._test_worker_thread = th
         th.start()
+        return th
 
     def force_test_frame(self) -> None:
         w = self.test_watcher
@@ -831,6 +875,20 @@ class App:
             log.info("start_session: stop in progress — ignoring Start click")
             self.signals.status.emit("loading", "stopping")
             return
+        # Start = explicit intent: a download cancelled earlier left a set
+        # cancel-flag; without clearing it the fresh engine.start() would die
+        # instantly on _raise_if_cancelled (and the stale VAD half-open state
+        # repeats). Drop the flag and spin the load again — same behaviour as
+        # the «Повторить» button in the download-failed dialog.
+        if not self.engine.is_ready and getattr(
+            self.engine, "cancel_download_pending", lambda: False
+        )():
+            log.info("start_session: stale download-cancel flag — restarting model load")
+            self.engine.clear_cancel_download()
+            try:
+                self.warm_start()
+            except Exception:  # noqa: BLE001 — surfaced by the load itself
+                log.exception("model-load restart from Start failed")
         self.session_id = uuid.uuid4().hex[:12]
         self.store.create_session(self.session_id, started_at=time.time(), title=None)
 
@@ -1283,10 +1341,15 @@ class App:
 
             # Direct call runs on the worker thread; a queued connection to
             # the AppSignals object (GUI affinity) is what marshals it.
-            self.signals._reload_kb.connect(_reload_in_gui, unique=True)
-            self.signals._reload_kb.emit()
-            done.wait(timeout=30.0)
-            self.signals._reload_kb.disconnect(_reload_in_gui)
+            # NOTE: PySide6 SignalInstance.connect() has NO unique= kwarg
+            # (PyQt-only) — passing it raised TypeError and killed the whole
+            # import right after the PDF/LLM generation step.
+            self.signals._reload_kb.connect(_reload_in_gui)
+            try:
+                self.signals._reload_kb.emit()
+                done.wait(timeout=30.0)
+            finally:
+                self.signals._reload_kb.disconnect(_reload_in_gui)
         return result
 
     # -- settings persistence --
@@ -1342,6 +1405,10 @@ class App:
             "interview.answer_stream",
             "interview.answer_cache",
             "window.hide_from_capture",
+            "window.minimize_to_tray",
+            "window.silent",
+            "test_mode.extra_prompt",
+            "test_mode.deep_analysis",
         ):
             section, attr = key.split(".", 1)
             value = getattr(getattr(cfg, section), attr)

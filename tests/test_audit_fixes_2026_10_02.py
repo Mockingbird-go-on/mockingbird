@@ -90,7 +90,7 @@ def test_flight_lock_released_after_s3_cancel(tmp_path, monkeypatch, s3_first_re
 
 def test_flight_lock_released_after_s3_disk_full(tmp_path, monkeypatch, s3_first_repo):
     def _disk_full(*a, **k):
-        raise RuntimeError("Недостаточно места на диске")
+        raise we._InsufficientSpaceError("Недостаточно места на диске")
 
     monkeypatch.setattr(we, "_download_from_s3", _disk_full)
     with pytest.raises(RuntimeError, match="Недостаточно места"):
@@ -335,12 +335,19 @@ def test_mark_result_clears_pending_before_in_flight():
     from mockingbird.config import TestModeConfig
 
     w = TestWatcher.__new__(TestWatcher)
+    fp_old = [[10, 20], [30, 40]]
+    fp_new = [[11, 21], [31, 41]]
     w._last_sent_fp = None
-    w._pending_fp = "fp-old"
+    w._pending_fp = fp_old
     w._in_flight = True
     w._last_sent_at = 0.0
     w._last_answer_text = ""
     w._not_before = 0.0
+    # Attributes normally set in __init__ but needed by mark_result's
+    # commit path (this fixture builds the object via __new__).
+    w._answer_cache = []
+    w._small_shift_run = 0
+    w._state_lock = threading.Lock()
 
     from unittest.mock import MagicMock
     w._cfg = MagicMock()
@@ -348,18 +355,18 @@ def test_mark_result_clears_pending_before_in_flight():
 
     w.mark_result(True, "answer")
     # fp-old committed, slot released
-    assert w._last_sent_fp == "fp-old"
+    assert w._last_sent_fp == fp_old
     assert w._in_flight is False
 
     # Simulate the race: a tick latching a new pending fp BETWEEN the
     # ordering steps must be impossible — assert ordering via the final
     # state: a new pending set after mark_result is NOT committed.
     w._in_flight = False
-    w._pending_fp = "fp-new"
+    w._pending_fp = fp_new
     # A second mark_result (e.g. duplicate late callback) commits fp-new —
     # that's fine; the ordering fix guarantees no interleaved read.
     w.mark_result(True, "answer2")
-    assert w._last_sent_fp == "fp-new"
+    assert w._last_sent_fp == fp_new
 
 
 # ------------------------------------------------------ stale test-mode emits
@@ -384,10 +391,10 @@ def test_stale_worker_does_not_emit_busy_marker():
     """Source contract: the ⏳ busy marker and the 'LLM не настроен'
     terminal emit are inside the `if not _stale():` guards."""
     body = _on_test_frame_source()
-    # Two guarded emits: the ⏳ busy marker and the LLM-unconfigured
+    # Two guarded emits: the busy marker and the LLM-unconfigured
     # terminal marker (the finally-guard for real results is separate).
     assert body.count("if not _stale():") >= 2
-    assert '"\\u23f3"' in body or "'\\u23f3'" in body
+    assert "TEST_MARKER_BUSY" in body
 
 
 def test_stale_worker_llm_unconfigured_releases_slot():
